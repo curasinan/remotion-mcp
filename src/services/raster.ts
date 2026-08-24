@@ -10,7 +10,7 @@
  */
 
 import { Resvg } from "@resvg/resvg-js";
-import { MAX_RASTER_DIMENSION } from "../constants.js";
+import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from "../constants.js";
 import { locateBrowser } from "./browser.js";
 import { ToolInputError } from "../types.js";
 
@@ -18,6 +18,51 @@ export interface RasterResult {
   png: Buffer;
   width: number;
   height: number;
+}
+
+/**
+ * Reject an output size before anything tries to allocate it.
+ *
+ * resvg is a native addon running in this process, and an allocation it cannot
+ * satisfy aborts the whole server rather than throwing: the Rust allocator
+ * fast-fails, so there is no JavaScript exception for safeHandler to catch and
+ * every concurrent tool call dies with it. A 120-byte SVG declaring
+ * viewBox="0 0 100 5000000" reaches 288 GB at the default width of 1200, which
+ * is why this check runs on intrinsic dimensions before render() is called.
+ */
+function assertRasterBudget(
+  intrinsicWidth: number,
+  intrinsicHeight: number,
+  targetWidth: number,
+): void {
+  if (
+    !Number.isFinite(intrinsicWidth)
+    || !Number.isFinite(intrinsicHeight)
+    || intrinsicWidth <= 0
+    || intrinsicHeight <= 0
+  ) {
+    throw new ToolInputError(
+      `The SVG reports an unusable intrinsic size (${intrinsicWidth} x ${intrinsicHeight}).`,
+      'Give the root <svg> a viewBox with positive width and height, for example viewBox="0 0 800 450".',
+    );
+  }
+
+  const outputHeight = Math.round((targetWidth * intrinsicHeight) / intrinsicWidth);
+  const aspect = `${intrinsicWidth} x ${intrinsicHeight}`;
+
+  if (outputHeight > MAX_RASTER_DIMENSION) {
+    throw new ToolInputError(
+      `Rendering this SVG at width ${targetWidth} would produce a ${targetWidth} x ${outputHeight} image, and the height limit is ${MAX_RASTER_DIMENSION}.`,
+      `The source's own aspect ratio is ${aspect}, so height grows with width. Lower width to at most ${Math.max(1, Math.floor((MAX_RASTER_DIMENSION * intrinsicWidth) / intrinsicHeight))}, or correct the viewBox if that shape is not what you meant.`,
+    );
+  }
+
+  if (targetWidth * outputHeight > MAX_RASTER_PIXELS) {
+    throw new ToolInputError(
+      `Rendering this SVG at width ${targetWidth} would produce ${targetWidth * outputHeight} pixels, and the limit is ${MAX_RASTER_PIXELS}.`,
+      `The source's own aspect ratio is ${aspect}. Lower width, or correct the viewBox if that shape is not what you meant.`,
+    );
+  }
 }
 
 export function rasterizeSvg(source: string, targetWidth: number): RasterResult {
@@ -43,7 +88,21 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
     );
   }
 
-  const rendered = resvg.render();
+  // Intrinsic size is readable before render() and covers sources that carry no
+  // viewBox at all, where there is nothing for a source-level parse to measure.
+  assertRasterBudget(resvg.width, resvg.height, targetWidth);
+
+  let rendered: ReturnType<Resvg["render"]>;
+  try {
+    rendered = resvg.render();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ToolInputError(
+      `resvg failed while rendering the SVG: ${message}`,
+      "Call viz_validate_svg on the same source. If it reports no errors, simplify the document: very large element counts and deeply nested filters are the usual causes.",
+    );
+  }
+
   return {
     png: Buffer.from(rendered.asPng()),
     width: rendered.width,
