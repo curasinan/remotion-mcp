@@ -6,19 +6,20 @@
  * rasterizing SVG/HTML visualizations, with diagnostics that name the fix for
  * the failures these two workflows actually hit.
  *
- * Transports:
- *   stdio (default)  Claude Desktop, Claude Code, MCPB bundles
- *   http             Claude web and mobile custom connectors, via a tunnel
+ * Transport: stdio only.
  *
- * stdio is the default because this server spawns child processes and writes
- * files. HTTP is opt-in and requires a bearer token.
+ * This server spawns child processes, compiles and runs code out of the
+ * workspace, and writes files to paths given as tool arguments. Over stdio the
+ * only thing that can reach it is the process that launched it. Exposing that
+ * capability over a network would put a bearer token between the internet and
+ * a code execution surface, so no network transport is offered. See
+ * docs/adr/0001-transport-stdio-only.md.
  *
  * Set REMOTION_MCP_WORKSPACE to the directory that file paths resolve against.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { startHttpTransport } from "./transports/http.js";
 import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
 import { getWorkspaceRoot } from "./services/paths.js";
 import { registerEnvironmentTools } from "./tools/environment.js";
@@ -54,10 +55,6 @@ Environment:
   REMOTION_MCP_WORKSPACE  Directory that all file path arguments resolve
                           against and are confined to. Defaults to the
                           process working directory.
-  MCP_TRANSPORT           "stdio" (default) or "http"
-  MCP_HTTP_TOKEN          Bearer token. Required when transport is http.
-  MCP_HTTP_PORT           HTTP port, default 3333
-  MCP_HTTP_HOST           Bind address, default 127.0.0.1
   PUPPETEER_EXECUTABLE_PATH
                           Chrome/Edge binary for viz_render_html. Optional;
                           a system browser or Remotion's own download is
@@ -85,26 +82,6 @@ Tools:
 async function main(): Promise<void> {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     printHelp();
-    return;
-  }
-
-  const transport = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
-
-  if (transport === "http") {
-    const token = process.env.MCP_HTTP_TOKEN;
-    if (!token || token.length < 24) {
-      console.error("ERROR: MCP_TRANSPORT=http requires MCP_HTTP_TOKEN with at least 24 characters.\n"
-        + "Generate one with:  node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
-      process.exit(1);
-    }
-    console.error(`${SERVER_NAME} v${SERVER_VERSION} on streamable HTTP`);
-    console.error(`Workspace root: ${getWorkspaceRoot()}`);
-    startHttpTransport({
-      port: Number.parseInt(process.env.MCP_HTTP_PORT ?? "3333", 10),
-      host: process.env.MCP_HTTP_HOST ?? "127.0.0.1",
-      token,
-      createServer,
-    });
     return;
   }
 
