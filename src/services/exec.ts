@@ -6,7 +6,7 @@
  * be interpreted as shell metacharacters.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import fs from "node:fs";
@@ -20,6 +20,46 @@ export interface RunOptions {
   cwd?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Kill a process and everything it started.
+ *
+ * child.kill() signals one pid. The Remotion CLI is a supervisor - it spawns a
+ * bundler and a browser per render worker - so signalling it leaves the
+ * expensive half running. Worse, an orphaned render keeps writing the output
+ * file after the tool has already reported failure, so the model says the
+ * render failed while the file on disk grows.
+ *
+ * POSIX gets a process group, which is why spawn passes detached:true; the
+ * negative pid signals the whole group. Windows has no process groups worth
+ * using here, so taskkill /T walks the tree instead.
+ */
+function killTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      return;
+    } catch {
+      // Fall through to the single-process kill below.
+    }
+  } else {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // No process group, or already gone.
+    }
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Already exited.
+  }
 }
 
 export async function runCommand(
@@ -47,6 +87,9 @@ async function runCommandUnlimited(
         cwd,
         shell: false,
         windowsHide: true,
+        // Makes the child a process-group leader on POSIX so the whole group
+        // can be signalled on timeout. Windows uses taskkill /T instead.
+        detached: process.platform !== "win32",
         env: { ...process.env, CI: "1", ...env },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -86,13 +129,21 @@ async function runCommandUnlimited(
       stderr = append(stderr, chunk);
     });
 
+    let escalation: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      const pid = child.pid;
+      if (pid === undefined) return;
+      // Ask first, then insist. A render that is mid-encode can close its
+      // output file cleanly given a moment.
+      killTree(pid, "SIGTERM");
+      escalation = setTimeout(() => killTree(pid, "SIGKILL"), 5_000);
+      escalation.unref();
     }, timeoutMs);
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
       clearTimeout(timer);
+      if (escalation) clearTimeout(escalation);
       resolve({
         command: [file, ...args].join(" "),
         exitCode,
@@ -106,6 +157,7 @@ async function runCommandUnlimited(
 
     child.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
+      if (escalation) clearTimeout(escalation);
       resolve({
         command: [file, ...args].join(" "),
         exitCode: null,

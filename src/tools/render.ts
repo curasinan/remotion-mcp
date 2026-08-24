@@ -165,7 +165,20 @@ function renderFailure(
   label: string,
   cliSource: "local" | "npx",
   result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean },
+  outputPath?: string,
 ): ToolResponse {
+  // A render killed mid-encode leaves a truncated file. Reporting failure while
+  // leaving it on disk invites the next step to be taken against a broken
+  // artefact that looks like a finished one.
+  if (result.timedOut && outputPath) {
+    try {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    } catch {
+      // Something that outlived the kill still holds it open; the error below
+      // already says the render did not finish.
+    }
+  }
+
   const combined = tailOutput(`${result.stdout}\n${result.stderr}`);
   return buildErrorResponse(
     `${label} exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n\`\`\`\n${combined}\n\`\`\``,
@@ -247,7 +260,7 @@ Error Handling:
       });
 
       if (result.exitCode !== 0 || !fs.existsSync(ctx.output)) {
-        return renderFailure("remotion still", cli.source, result);
+        return renderFailure("remotion still", cli.source, result, ctx.output);
       }
 
       const size = fs.statSync(ctx.output).size;
@@ -360,7 +373,7 @@ Error Handling:
       });
 
       if (result.exitCode !== 0 || !fs.existsSync(ctx.output)) {
-        return renderFailure("remotion render", cli.source, result);
+        return renderFailure("remotion render", cli.source, result, ctx.output);
       }
 
       const size = fs.statSync(ctx.output).size;
