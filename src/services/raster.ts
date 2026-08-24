@@ -13,12 +13,15 @@ import { Resvg } from "@resvg/resvg-js";
 import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from "../constants.js";
 import { locateBrowser } from "./browser.js";
 import { findFilesystemReferences } from "./svg.js";
+import { DENY_ALL, decideRequest, type NetworkPolicy } from "./network.js";
 import { ToolInputError } from "../types.js";
 
 export interface RasterResult {
   png: Buffer;
   width: number;
   height: number;
+  /** Resources the network policy refused, deduplicated. Empty when none. */
+  blockedRequests?: string[];
 }
 
 /**
@@ -123,14 +126,23 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
   };
 }
 
+interface InterceptedRequest {
+  url(): string;
+  continue(): Promise<void>;
+  abort(): Promise<void>;
+}
+
+interface PuppeteerPage {
+  setViewport(v: { width: number; height: number; deviceScaleFactor: number }): Promise<void>;
+  setContent(html: string, options: Record<string, unknown>): Promise<void>;
+  screenshot(options: Record<string, unknown>): Promise<Uint8Array>;
+  setRequestInterception(enabled: boolean): Promise<void>;
+  on(event: string, handler: (arg: never) => void): void;
+}
+
 interface PuppeteerLike {
   launch(options: Record<string, unknown>): Promise<{
-    newPage(): Promise<{
-      setViewport(v: { width: number; height: number; deviceScaleFactor: number }): Promise<void>;
-      setContent(html: string, options: Record<string, unknown>): Promise<void>;
-      screenshot(options: Record<string, unknown>): Promise<Uint8Array>;
-      on(event: string, handler: (arg: unknown) => void): void;
-    }>;
+    newPage(): Promise<PuppeteerPage>;
     close(): Promise<void>;
   }>;
 }
@@ -162,6 +174,7 @@ export async function rasterizeHtml(
   fullPage: boolean,
   deviceScaleFactor: number,
   projectDir?: string,
+  policy: NetworkPolicy = DENY_ALL,
 ): Promise<RasterResult> {
   const { lib, full } = await loadPuppeteer();
 
@@ -187,6 +200,21 @@ export async function rasterizeHtml(
     const page = await browser.newPage();
     await page.setViewport({ width, height, deviceScaleFactor });
 
+    // The gate goes on before any content exists, so nothing can slip out
+    // between page creation and setContent.
+    const blocked = new Map<string, string>();
+    await page.setRequestInterception(true);
+    page.on("request", (request: InterceptedRequest) => {
+      const url = request.url();
+      const decision = decideRequest(url, policy);
+      if (decision.allowed) {
+        void request.continue();
+        return;
+      }
+      if (!blocked.has(url)) blocked.set(url, decision.reason ?? "blocked");
+      void request.abort();
+    });
+
     const consoleErrors: string[] = [];
     page.on("pageerror", (error: unknown) => {
       consoleErrors.push(error instanceof Error ? error.message : String(error));
@@ -200,14 +228,23 @@ export async function rasterizeHtml(
     await page.setContent(document, { waitUntil: "networkidle0", timeout: 30_000 });
     const shot = await page.screenshot({ type: "png", fullPage });
 
+    const blockedRequests = [...blocked.entries()].map(([url, reason]) => `${url} (${reason})`);
+
     if (consoleErrors.length > 0) {
+      // A blocked fetch surfaces as "Failed to fetch", which reads like a bug in
+      // the markup. Say which policy decision caused it instead.
+      const cause = blockedRequests.length > 0
+        ? ` ${blockedRequests.length} network request(s) were refused by policy, which is the usual cause: ${blockedRequests.slice(0, 3).join("; ")}`
+        : "";
       throw new ToolInputError(
-        `The page threw ${consoleErrors.length} script error(s): ${consoleErrors.slice(0, 3).join("; ")}`,
-        "Fix the script errors, or remove the script if the visual does not depend on it. A page that throws during load usually screenshots blank.",
+        `The page threw ${consoleErrors.length} script error(s): ${consoleErrors.slice(0, 3).join("; ")}.${cause}`,
+        blockedRequests.length > 0
+          ? "Rendering runs with no network access. Inline the data the script needs, or remove the request."
+          : "Fix the script errors, or remove the script if the visual does not depend on it. A page that throws during load usually screenshots blank.",
       );
     }
 
-    return { png: Buffer.from(shot), width, height };
+    return { png: Buffer.from(shot), width, height, blockedRequests };
   } finally {
     await browser.close();
   }

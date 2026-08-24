@@ -25,6 +25,7 @@ import {
 } from "../services/format.js";
 import { displayPath, ensureParentDirectory, resolveInWorkspace } from "../services/paths.js";
 import { rasterizeHtml, rasterizeSvg } from "../services/raster.js";
+import { networkPolicyFromEnvironment } from "../services/network.js";
 import { validateSvg } from "../services/svg.js";
 import { ToolInputError } from "../types.js";
 
@@ -373,6 +374,7 @@ Error Handling:
         );
       }
 
+      const policy = networkPolicyFromEnvironment();
       const raster = await rasterizeHtml(
         input.html,
         input.width,
@@ -380,6 +382,7 @@ Error Handling:
         input.full_page,
         input.device_scale_factor,
         input.project_dir ? resolveInWorkspace(input.project_dir) : undefined,
+        policy,
       );
 
       const structuredBase = {
