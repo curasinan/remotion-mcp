@@ -4,6 +4,7 @@
  */
 
 import { CHARACTER_LIMIT } from "../constants.js";
+import { log, summariseArguments } from "./log.js";
 import { ResponseFormat, ToolInputError } from "../types.js";
 
 export interface ToolTextContent {
@@ -65,13 +66,26 @@ export function safeHandler<TInput>(
   handler: (input: TInput) => Promise<ToolResponse>,
 ): (input: TInput) => Promise<ToolResponse> {
   return async (input: TInput): Promise<ToolResponse> => {
+    const startedAt = Date.now();
+    log.info("tool_call", { tool: toolName, arguments: summariseArguments(input) });
     try {
-      return await handler(input);
+      const response = await handler(input);
+      log.info("tool_result", {
+        tool: toolName,
+        outcome: response.isError ? "error" : "ok",
+        duration_ms: Date.now() - startedAt,
+      });
+      return response;
     } catch (error) {
+      const duration_ms = Date.now() - startedAt;
       if (error instanceof ToolInputError) {
+        // A rejected input is an expected outcome, logged as a refusal rather
+        // than a crash. The message can carry a path, so it is not logged.
+        log.warn("tool_rejected", { tool: toolName, duration_ms });
         return buildErrorResponse(`${toolName}: ${error.message}`, error.hint);
       }
       const message = error instanceof Error ? error.message : String(error);
+      log.error("tool_failed", { tool: toolName, duration_ms });
       return buildErrorResponse(
         `${toolName} failed: ${message}`,
         "Run remotion_check_environment to confirm Node, the Remotion CLI and the Chrome Headless Shell are all available.",

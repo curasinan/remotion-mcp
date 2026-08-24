@@ -87,7 +87,7 @@ export function resolveExistingDirectory(candidate: string): string {
   if (!fs.existsSync(resolved)) {
     throw new ToolInputError(
       `Directory '${candidate}' does not exist.`,
-      `Resolved to '${resolved}'. Create it first, or call remotion_init_project to scaffold a new Remotion project there.`,
+      `Resolved to '${displayPath(resolved)}' inside the workspace. Create it first, or call remotion_init_project to scaffold a new Remotion project there.`,
     );
   }
   if (!fs.statSync(resolved).isDirectory()) {

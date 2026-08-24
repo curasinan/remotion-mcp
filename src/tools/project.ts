@@ -55,7 +55,7 @@ export function requireEntryPoint(projectDir: string, explicit?: string): string
     if (!fs.existsSync(absolute)) {
       throw new ToolInputError(
         `Entry point '${explicit}' does not exist inside the project.`,
-        `Looked at '${absolute}'. Call remotion_check_environment to see which entry points were auto-detected.`,
+        `Looked at '${displayPath(absolute)}'. Call remotion_check_environment to see which entry points were auto-detected.`,
       );
     }
     assertSafePositional(explicit, "entry point");
