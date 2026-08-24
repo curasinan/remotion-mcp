@@ -154,9 +154,12 @@ interface PuppeteerLike {
 }
 
 async function loadPuppeteer(): Promise<{ lib: PuppeteerLike; full: boolean }> {
-  // Prefer the full package when present: it manages its own Chrome.
+  // Prefer the full package when present: it manages its own Chrome. It is
+  // optional and usually absent, so this is a runtime probe through an indirect
+  // specifier rather than a static import the compiler would try to resolve.
+  const optionalPuppeteer = "puppeteer";
   try {
-    const mod = (await import("puppeteer")) as unknown as { default?: PuppeteerLike };
+    const mod = (await import(optionalPuppeteer)) as unknown as { default?: PuppeteerLike };
     return { lib: mod.default ?? (mod as unknown as PuppeteerLike), full: true };
   } catch {
     // Fall through to puppeteer-core, which needs an executable path.
