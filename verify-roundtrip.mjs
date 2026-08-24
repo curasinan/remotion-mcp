@@ -1,11 +1,15 @@
 /**
- * Round-trip check.
+ * Round-trip check — HISTORICAL, no longer expected to pass.
  *
- * The source tree was reconstructed in part from the compiled JS shipped in the
- * .mcpb bundle, because the original tarball was an older revision. This script
- * proves the reconstruction is faithful: compile the tree, then compare every
- * emitted module against the module actually installed. A clean run means a
- * full rebuild produces the server that is running today.
+ * This proved that the reconstructed source rebuilt byte-for-byte to the JS in
+ * the originally installed 1.0.0 bundle. The hardening work has since changed
+ * the source deliberately, so it no longer matches that old install and is not
+ * meant to. The source tree is now the source of truth; the bundle is rebuilt
+ * from it (see docs/BUNDLE.md), not the other way round.
+ *
+ * Kept for reference and for the case where you want to diff a freshly built
+ * dist/ against a specific installed server via REMOTION_MCP_INSTALL_DIR. For
+ * ordinary verification use `npm test`.
  *
  * Usage:  npx tsc ; node verify-roundtrip.mjs
  */
