@@ -325,6 +325,8 @@ Scripts run before the screenshot is taken. If any script throws during load the
 
 Drives a browser that already exists on the machine: an explicit PUPPETEER_EXECUTABLE_PATH, a full puppeteer install, a system Chrome/Chromium/Edge/Brave, or the Chrome Headless Shell that Remotion downloaded. Nothing is downloaded by this tool.
 
+The page renders with no network access. Anything it tries to fetch is refused and listed in blocked_requests, so inline what the markup needs as data: URIs. Set REMOTION_MCP_ALLOWED_HOSTS to permit specific hosts; loopback, private and link-local addresses stay blocked regardless.
+
 Args:
   - html (string, required): HTML markup or fragment
   - width (number): Viewport width in CSS pixels (default: 1280)
@@ -357,7 +359,8 @@ Examples:
 Error Handling:
   - Returns a browser-not-found message naming every location that was searched
   - Returns the script error message when the page throws during load
-  - Times out after 30 seconds waiting for the network to go idle; remove external resource loads if that happens`,
+  - Times out after 30 seconds, including when a script blocks the renderer
+  - Network requests are refused by default; blocked_requests lists what was skipped`,
       inputSchema: RenderHtmlShape,
       annotations: {
         readOnlyHint: false,

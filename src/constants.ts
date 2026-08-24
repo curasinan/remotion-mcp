@@ -11,6 +11,18 @@ export const CHARACTER_LIMIT = 25_000;
 /** Maximum bytes of SVG/HTML source accepted by the visualization tools. */
 export const MAX_SOURCE_BYTES = 2_000_000;
 
+/**
+ * How long viz_render_html may spend loading a page.
+ *
+ * This has to be passed to puppeteer as protocolTimeout, not only as the
+ * setContent timeout. setContent runs the document write as a
+ * Runtime.callFunctionOn before it builds the lifecycle watcher the `timeout`
+ * option governs, so a script that blocks the renderer thread is bounded only
+ * by protocolTimeout, which defaults to 180 s. A page containing
+ * `while(true){}` therefore held the tool for 181 s while the docs promised 30.
+ */
+export const TIMEOUT_PAGE_LOAD_MS = 30_000;
+
 /** Default timeouts, in milliseconds. */
 export const TIMEOUT_FAST_MS = 30_000;
 export const TIMEOUT_BUNDLE_MS = 300_000;
