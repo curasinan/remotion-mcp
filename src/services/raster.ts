@@ -12,6 +12,7 @@
 import { Resvg } from "@resvg/resvg-js";
 import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from "../constants.js";
 import { locateBrowser } from "./browser.js";
+import { findFilesystemReferences } from "./svg.js";
 import { ToolInputError } from "../types.js";
 
 export interface RasterResult {
@@ -70,6 +71,18 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
     throw new ToolInputError(
       `width must be between 1 and ${MAX_RASTER_DIMENSION}, got ${targetWidth}.`,
       `Pick a width inside that range. ${MAX_RASTER_DIMENSION} is the cap that keeps memory use bounded.`,
+    );
+  }
+
+  // Enforced here rather than only in validateSvg because this is the sink.
+  // validateSvg is also exposed as its own advisory tool, and an advisory check
+  // is not a security control: rasterizeSvg is where the file would be opened.
+  const references = findFilesystemReferences(source);
+  if (references.length > 0) {
+    const shown = references.slice(0, 3).map((r) => `'${r.slice(0, 80)}'`).join(", ");
+    throw new ToolInputError(
+      `The SVG references ${references.length} resource(s) outside the document and will not be rendered: ${shown}.`,
+      'Embed the asset as a data: URI instead. A local path would be read off disk and composited into the returned image, which is why it is refused; a remote URL is never fetched and would render as a blank gap. Fragment references such as href="#id" are unaffected.',
     );
   }
 
