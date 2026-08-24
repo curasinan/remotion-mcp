@@ -14,6 +14,7 @@ import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS, TIMEOUT_PAGE_LOAD_MS } from ".
 import { locateBrowser } from "./browser.js";
 import { findFilesystemReferences } from "./svg.js";
 import { DENY_ALL, decideRequest, type NetworkPolicy } from "./network.js";
+import { browserLimiter } from "./limit.js";
 import { ToolInputError } from "../types.js";
 
 export interface RasterResult {
@@ -172,6 +173,20 @@ async function loadPuppeteer(): Promise<{ lib: PuppeteerLike; full: boolean }> {
 }
 
 export async function rasterizeHtml(
+  html: string,
+  width: number,
+  height: number,
+  fullPage: boolean,
+  deviceScaleFactor: number,
+  projectDir?: string,
+  policy: NetworkPolicy = DENY_ALL,
+): Promise<RasterResult> {
+  return browserLimiter.run(() =>
+    rasterizeHtmlUnlimited(html, width, height, fullPage, deviceScaleFactor, projectDir, policy),
+  );
+}
+
+async function rasterizeHtmlUnlimited(
   html: string,
   width: number,
   height: number,
