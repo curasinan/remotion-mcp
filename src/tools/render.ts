@@ -15,12 +15,13 @@ import { TIMEOUT_RENDER_MS } from "../constants.js";
 import {
   compositionIdField,
   entryPointField,
+  outputPathField,
   projectDirField,
   propsJsonField,
   responseFormatField,
 } from "../schemas/common.js";
 import { isRemotionProject } from "../services/environment.js";
-import { diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -52,11 +53,9 @@ const RenderStillShape = {
   project_dir: projectDirField,
   entry_point: entryPointField,
   composition_id: compositionIdField,
-  output_path: z
-    .string()
-    .min(1)
-    .max(500)
-    .describe("Output PNG path relative to the workspace root, e.g. 'tactics-video/out/frame.png'"),
+  output_path: outputPathField(
+    "Output PNG path relative to the workspace root, e.g. 'tactics-video/out/frame.png'",
+  ),
   frame: z
     .number()
     .int()
@@ -81,11 +80,9 @@ const RenderVideoShape = {
   project_dir: projectDirField,
   entry_point: entryPointField,
   composition_id: compositionIdField,
-  output_path: z
-    .string()
-    .min(1)
-    .max(500)
-    .describe("Output file path relative to the workspace root, e.g. 'tactics-video/out/clip.mp4'"),
+  output_path: outputPathField(
+    "Output file path relative to the workspace root, e.g. 'tactics-video/out/clip.mp4'",
+  ),
   codec: z
     .enum(CODECS)
     .default("h264")
@@ -137,6 +134,8 @@ interface RenderContext {
   dir: string;
   entry: string;
   output: string;
+  /** The exact token handed to the CLI as the output positional. */
+  outputArg: string;
 }
 
 function prepareRender(
@@ -154,7 +153,12 @@ function prepareRender(
   const entry = requireEntryPoint(dir, entryPoint);
   const output = resolveInWorkspace(outputPath);
   ensureParentDirectory(output);
-  return { dir, entry, output };
+
+  const outputArg = path.relative(dir, output);
+  assertSafePositional(outputArg, "output path");
+  assertSafePositional(entry, "entry point");
+
+  return { dir, entry, output, outputArg };
 }
 
 function renderFailure(
@@ -228,7 +232,7 @@ Error Handling:
         "still",
         ctx.entry,
         input.composition_id,
-        path.relative(ctx.dir, ctx.output),
+        ctx.outputArg,
         `--frame=${input.frame}`,
         `--scale=${input.scale}`,
         "--image-format=png",
@@ -340,7 +344,7 @@ Error Handling:
         "render",
         ctx.entry,
         input.composition_id,
-        path.relative(ctx.dir, ctx.output),
+        ctx.outputArg,
         `--codec=${input.codec}`,
         `--scale=${input.scale}`,
         "--overwrite",

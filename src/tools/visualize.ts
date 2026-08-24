@@ -15,7 +15,7 @@ import {
   MAX_RASTER_DIMENSION,
   MAX_SOURCE_BYTES,
 } from "../constants.js";
-import { responseFormatField } from "../schemas/common.js";
+import { outputPathField, projectDirField, responseFormatField } from "../schemas/common.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -50,12 +50,9 @@ const RenderSvgShape = {
     .max(MAX_RASTER_DIMENSION)
     .default(DEFAULT_RASTER_WIDTH)
     .describe("Output width in pixels. Height follows from the viewBox aspect ratio."),
-  output_path: z
-    .string()
-    .min(1)
-    .max(500)
-    .optional()
-    .describe("Optional PNG path relative to the workspace root. Omit to only attach the image to the response without writing a file."),
+  output_path: outputPathField(
+    "Optional PNG path relative to the workspace root. Omit to only attach the image to the response without writing a file.",
+  ).optional(),
   return_image: z
     .boolean()
     .default(true)
@@ -90,18 +87,12 @@ const RenderHtmlShape = {
     .max(3)
     .default(2)
     .describe("Pixel density multiplier. 2 gives crisp text on high-DPI displays."),
-  output_path: z
-    .string()
-    .min(1)
-    .max(500)
-    .optional()
-    .describe("Optional PNG path relative to the workspace root"),
-  project_dir: z
-    .string()
-    .min(1)
-    .max(500)
-    .optional()
-    .describe("Optional Remotion project directory. Given one, the tool can reuse the browser Remotion already downloaded instead of needing a separate Chrome install."),
+  output_path: outputPathField(
+    "Optional PNG path relative to the workspace root",
+  ).optional(),
+  project_dir: projectDirField
+    .describe("Optional Remotion project directory. Given one, the tool can reuse the browser Remotion already downloaded instead of needing a separate Chrome install.")
+    .optional(),
   return_image: z
     .boolean()
     .default(true)
