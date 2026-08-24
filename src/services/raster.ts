@@ -10,7 +10,7 @@
  */
 
 import { Resvg } from "@resvg/resvg-js";
-import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from "../constants.js";
+import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS, TIMEOUT_PAGE_LOAD_MS } from "../constants.js";
 import { locateBrowser } from "./browser.js";
 import { findFilesystemReferences } from "./svg.js";
 import { DENY_ALL, decideRequest, type NetworkPolicy } from "./network.js";
@@ -140,11 +140,15 @@ interface PuppeteerPage {
   on(event: string, handler: (arg: never) => void): void;
 }
 
+interface PuppeteerBrowser {
+  newPage(): Promise<PuppeteerPage>;
+  close(): Promise<void>;
+  /** The underlying OS process, so a wedged browser can be killed outright. */
+  process(): { kill(signal?: string): boolean } | null;
+}
+
 interface PuppeteerLike {
-  launch(options: Record<string, unknown>): Promise<{
-    newPage(): Promise<PuppeteerPage>;
-    close(): Promise<void>;
-  }>;
+  launch(options: Record<string, unknown>): Promise<PuppeteerBrowser>;
 }
 
 async function loadPuppeteer(): Promise<{ lib: PuppeteerLike; full: boolean }> {
@@ -178,9 +182,23 @@ export async function rasterizeHtml(
 ): Promise<RasterResult> {
   const { lib, full } = await loadPuppeteer();
 
+  const args = ["--disable-dev-shm-usage", "--font-render-hinting=none"];
+
+  // The renderer sandbox is the boundary between attacker-supplied markup and
+  // this machine, and it was switched off. Verified working when left on, so it
+  // stays on. The escape hatch exists for environments that genuinely cannot
+  // provide it - an unprivileged container without user namespaces - and it is
+  // named so that turning it on reads like the weakening it is.
+  if (process.env.REMOTION_MCP_DISABLE_BROWSER_SANDBOX === "1") {
+    args.push("--no-sandbox");
+  }
+
   const launchOptions: Record<string, unknown> = {
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--font-render-hinting=none"],
+    args,
+    // Without this the effective bound is puppeteer's 180 s default, not the
+    // timeout passed to setContent below.
+    protocolTimeout: TIMEOUT_PAGE_LOAD_MS,
   };
 
   if (!full) {
@@ -225,7 +243,7 @@ export async function rasterizeHtml(
       ? html
       : `<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;}</style></head><body>${html}</body></html>`;
 
-    await page.setContent(document, { waitUntil: "networkidle0", timeout: 30_000 });
+    await page.setContent(document, { waitUntil: "networkidle0", timeout: TIMEOUT_PAGE_LOAD_MS });
     const shot = await page.screenshot({ type: "png", fullPage });
 
     const blockedRequests = [...blocked.entries()].map(([url, reason]) => `${url} (${reason})`);
@@ -246,6 +264,24 @@ export async function rasterizeHtml(
 
     return { png: Buffer.from(shot), width, height, blockedRequests };
   } finally {
-    await browser.close();
+    // close() waits on a renderer that may be wedged, and a browser that
+    // outlives this process leaves orphaned chrome processes behind: they
+    // detach from the job object, so nothing reclaims them. Bound the graceful
+    // path, then kill what is left.
+    const child = browser.process();
+    try {
+      await Promise.race([
+        browser.close(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref()),
+      ]);
+    } catch {
+      // Already gone, or never came up. The kill below is the backstop.
+    } finally {
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // Process had already exited.
+      }
+    }
   }
 }
