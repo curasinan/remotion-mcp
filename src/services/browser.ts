@@ -18,6 +18,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Resolved at runtime; see hasBundledPuppeteer. */
+const OPTIONAL_PUPPETEER = "puppeteer";
+
 export interface BrowserLocation {
   executablePath: string | null;
   source: "env" | "puppeteer-bundled" | "system" | "remotion-cache" | "none";
@@ -112,7 +115,11 @@ function remotionCachedBrowser(projectDir?: string): string | null {
 /** Whether a full `puppeteer` install (which manages its own Chrome) is present. */
 export async function hasBundledPuppeteer(): Promise<boolean> {
   try {
-    await import("puppeteer");
+    // The full puppeteer package is optional and usually absent - only
+    // puppeteer-core is a dependency - so this is a runtime probe, not a static
+    // import. The indirection keeps the compiler from trying to resolve a module
+    // that is not installed while leaving the runtime behaviour identical.
+    await import(OPTIONAL_PUPPETEER);
     return true;
   } catch {
     return false;

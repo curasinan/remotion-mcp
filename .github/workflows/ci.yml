@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # puppeteer-core needs no browser download; the tests that need one are
+      # Windows-only and skip elsewhere. resvg's platform binary comes from its
+      # own optional dependency, so a plain install is enough.
+      - run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # Gate: fail the build only on a critical advisory. The three high and one
+      # moderate advisories currently reported are all in code paths this server
+      # never executes (extract-zip via @puppeteer/browsers on the
+      # browser-download path; fast-xml-parser's XMLBuilder, while only
+      # XMLValidator is called). Documented as unreachable in docs/BUNDLE.md
+      # rather than force-upgraded through a breaking change.
+      - name: Audit (gate on critical)
+        run: npm audit --omit=dev --audit-level=critical
+
+      # Informational: the full report, so a newly introduced high is visible in
+      # the log for a human to look at, without breaking the build on the known
+      # unreachable ones.
+      - name: Audit (full report, informational)
+        run: npm audit --omit=dev || true
+
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate SBOM
+        run: npm sbom --sbom-format cyclonedx --omit=dev > sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
