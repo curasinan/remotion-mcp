@@ -99,9 +99,47 @@ export function resolveExistingDirectory(candidate: string): string {
   return resolved;
 }
 
-/** Ensure the parent directory of an output file exists. */
+/**
+ * Create the parent directory of an output file, then re-assert confinement.
+ *
+ * resolveInWorkspace canonicalises the longest prefix that exists at the time
+ * it is called and re-appends the rest verbatim, so a component created between
+ * the check and the write is never resolved. Re-checking the parent once it
+ * definitely exists closes that gap for the ordinary case, and costs one
+ * realpath.
+ *
+ * This is not a defence against a determined race - a component swapped in the
+ * instant between this call and the write would still be followed - but that
+ * needs an attacker already able to create symlinks inside the workspace, which
+ * on Windows needs administrator or Developer Mode.
+ */
 export function ensureParentDirectory(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const parent = path.dirname(filePath);
+  fs.mkdirSync(parent, { recursive: true });
+
+  let canonicalParent: string;
+  try {
+    canonicalParent = fs.realpathSync(parent);
+  } catch {
+    // Cannot be resolved: refuse rather than write somewhere unverified.
+    throw new ToolInputError(
+      `The directory for '${displayPath(filePath)}' could not be resolved.`,
+      "Check that the path is writable and does not contain a broken link.",
+    );
+  }
+
+  const relative = path.relative(REAL_WORKSPACE_ROOT, canonicalParent);
+  const escapes =
+    relative === ".."
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative);
+
+  if (escapes) {
+    throw new ToolInputError(
+      `The directory for '${displayPath(filePath)}' resolves outside the workspace root.`,
+      `It points at '${canonicalParent}'. A link in the path leads out of '${REAL_WORKSPACE_ROOT}'.`,
+    );
+  }
 }
 
 /** Display a path relative to the workspace root when possible. */
