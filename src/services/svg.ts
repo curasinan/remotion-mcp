@@ -27,6 +27,39 @@ function readAttribute(tag: string, name: string): string | null {
   return match[1] ?? match[2] ?? null;
 }
 
+/**
+ * Every href/src/xlink:href in the document that points outside the document.
+ *
+ * resvg resolves a bare path such as href="C:/Users/me/Pictures/x.png" against
+ * the filesystem and composites the decoded pixels into the output, so an SVG
+ * body is a read primitive. That path never passes through resolveInWorkspace,
+ * which only ever sees output_path and project_dir.
+ *
+ * Two forms are safe and both are load-bearing in ordinary SVG, so they are
+ * allowed: "#id" fragment references, which <use> and paint servers depend on,
+ * and inline data: URIs, which carry their own bytes.
+ *
+ * Measured against resvg 2.6.2: href, xlink:href on <image>, and href on
+ * <feImage> and on <image> inside <pattern> all read the file. CSS url() and
+ * the file:// scheme do not resolve, so no rule is written for them - a rule
+ * that forbids something the renderer already refuses only produces false
+ * positives on documents that would have rendered safely.
+ */
+export function findFilesystemReferences(source: string): string[] {
+  const pattern = /(?<![-\w:])(?:xlink:href|href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+  const offenders: string[] = [];
+
+  for (const match of source.matchAll(pattern)) {
+    const value = (match[1] ?? match[2] ?? "").trim();
+    if (value === "") continue;
+    if (value.startsWith("#")) continue;
+    if (/^data:/i.test(value)) continue;
+    offenders.push(value);
+  }
+
+  return [...new Set(offenders)];
+}
+
 export function validateSvg(source: string): SvgValidationReport {
   const issues: SvgIssue[] = [];
   const byteSize = Buffer.byteLength(source, "utf8");
@@ -117,13 +150,14 @@ export function validateSvg(source: string): SvgValidationReport {
     });
   }
 
-  const externalRef = /(?:xlink:href|href|src)\s*=\s*["'](https?:)?\/\//i.exec(source);
-  if (externalRef) {
+  const references = findFilesystemReferences(source);
+  if (references.length > 0) {
+    const shown = references.slice(0, 3).map((r) => `'${r.slice(0, 80)}'`).join(", ");
     issues.push({
       severity: "error",
       code: "external_reference",
-      message: "The SVG references an external URL.",
-      fix: "Inline the asset instead. Network fetches are blocked during rendering, so the element silently disappears. Embed images as data: URIs and convert text to paths or system fonts.",
+      message: `The SVG references ${references.length} resource(s) outside the document: ${shown}.`,
+      fix: "Inline the asset as a data: URI. A remote URL is never fetched, so the element silently disappears, and a local path is refused because the rasterizer would read that file off disk and composite it into the output. Fragment references like href=\"#id\" are fine.",
     });
   }
 
