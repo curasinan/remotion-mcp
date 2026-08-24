@@ -68,7 +68,11 @@ test("path traversal in output_path is refused", async () => {
 });
 
 test("an absolute output_path outside the workspace is refused", async () => {
-  const r = await callTool("viz_render_svg", { svg: GOOD_SVG, output_path: "C:/Windows/Temp/escape.png" });
+  // Absolute on whatever platform runs: "/" on POSIX, the drive root on Windows.
+  // A Windows-style "C:/..." is not absolute on POSIX and would resolve inside
+  // the workspace, which is why this is built from the real filesystem root.
+  const absolute = path.join(path.parse(process.cwd()).root, "viz-escape-test.png");
+  const r = await callTool("viz_render_svg", { svg: GOOD_SVG, output_path: absolute });
   assert.equal(r.result.isError, true);
 });
 
