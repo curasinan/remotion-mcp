@@ -12,6 +12,7 @@ import type { Readable } from "node:stream";
 import fs from "node:fs";
 import path from "node:path";
 import { MAX_CHILD_OUTPUT_BYTES, TIMEOUT_FAST_MS } from "../constants.js";
+import { cliLimiter } from "./limit.js";
 import { ToolInputError } from "../types.js";
 import type { CommandResult } from "../types.js";
 
@@ -22,6 +23,14 @@ export interface RunOptions {
 }
 
 export async function runCommand(
+  file: string,
+  args: string[],
+  options: RunOptions = {},
+): Promise<CommandResult> {
+  return cliLimiter.run(() => runCommandUnlimited(file, args, options));
+}
+
+async function runCommandUnlimited(
   file: string,
   args: string[],
   options: RunOptions = {},
