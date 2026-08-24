@@ -46,12 +46,15 @@ test("concurrent renders do not launch one browser each", { skip: !isWindows }, 
   const before = chromeCount();
   let peak = before;
   let polling = true;
-  (async () => {
+  // Held and awaited below so no promise outlives the test - a floating async
+  // loop makes node --test exit non-zero even with every assertion passing.
+  const poll = (async () => {
     while (polling) { const c = chromeCount(); if (c > peak) peak = c; await new Promise((r) => setTimeout(r, 500)); }
   })();
   const html = '<div style="background:#0af;width:200px;height:100px"></div>';
   await Promise.all(Array.from({ length: 5 }, () => rasterizeHtml(html, 400, 200, false, 1).catch(() => null)));
   polling = false;
+  await poll;
   // With a one-at-a-time limiter, five calls never hold five browsers. Each
   // browser is ~9 processes, so a per-call launch would peak near +45.
   assert.ok(peak - before < 20, `peak was +${peak - before}, expected the limiter to hold it well below five browsers`);
