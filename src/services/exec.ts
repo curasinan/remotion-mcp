@@ -345,10 +345,30 @@ export function stripAnsi(input: string): string {
 }
 
 /** Keep only the last `maxChars` of noisy build output, where errors live. */
-export function tailOutput(input: string, maxChars = 6_000): string {
+export function tailOutput(input: string, maxChars = 2_500): string {
   const trimmed = input.trim();
   if (trimmed.length <= maxChars) return trimmed;
   return `... (${trimmed.length - maxChars} earlier characters omitted)\n${trimmed.slice(-maxChars)}`;
+}
+
+/**
+ * Render untrusted CLI output as a fenced block the content cannot break out of.
+ *
+ * That output is a project's own bundler messages, which an attacker controls
+ * by shipping a file that throws a chosen string. Wrapping it in a plain triple
+ * backtick fence let a literal triple backtick in that string close the fence
+ * early, so the text after it arrived as unfenced prose - which a model reads
+ * as narration rather than as quoted tool output. Backticks in the untrusted
+ * span are replaced with a modifier-letter grave accent (U+02CB), which looks
+ * the same and cannot form a fence, so the fence this returns is the only one.
+ *
+ * Defence in depth, not the control: a model can still act on unfenced prose.
+ * The controls are the capability limits in the other commits. This removes the
+ * easy forgery and bounds how much untrusted text arrives.
+ */
+export function fenceUntrusted(raw: string, maxChars = 2_500): string {
+  const neutralised = tailOutput(raw, maxChars).replace(/`/g, "ˋ");
+  return "```text\n" + neutralised + "\n```";
 }
 
 /**

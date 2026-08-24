@@ -9,7 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { TIMEOUT_BUNDLE_MS } from "../constants.js";
 import { entryPointField, projectDirField, responseFormatField } from "../schemas/common.js";
 import { findEntryPoint, isRemotionProject } from "../services/environment.js";
-import { assertSafePositional, diagnoseCliFailure, resolveNpmCli, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, fenceUntrusted, resolveNpmCli, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -153,8 +153,15 @@ Error Handling:
       if (fs.existsSync(target)) {
         const entries = fs.readdirSync(target);
         if (entries.length > 0) {
+          // Real on-disk names, so an attacker can name files to read as
+          // instructions. Neutralise backticks and cap each so the list cannot
+          // forge a fence or run long.
+          const shown = entries
+            .slice(0, 8)
+            .map((name) => name.replace(/`/g, "ˋ").slice(0, 60))
+            .join(", ");
           return buildErrorResponse(
-            `Directory '${input.project_dir}' already exists and is not empty (${entries.length} entries: ${entries.slice(0, 8).join(", ")}).`,
+            `Directory '${input.project_dir}' already exists and is not empty (${entries.length} entries: ${shown}).`,
             "Pick an empty directory, or if this is already a Remotion project call remotion_check_environment against it instead.",
           );
         }
@@ -303,7 +310,7 @@ Error Handling:
         entry_point: entry,
         count: compositions.length,
         compositions,
-        raw_output: tailOutput(result.stdout, 3_000),
+        raw_output: tailOutput(result.stdout),
       };
 
       const markdown = [

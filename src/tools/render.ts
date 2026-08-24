@@ -21,7 +21,7 @@ import {
   responseFormatField,
 } from "../schemas/common.js";
 import { isRemotionProject } from "../services/environment.js";
-import { assertSafePositional, diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, fenceUntrusted, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,

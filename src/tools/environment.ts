@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { projectDirField, responseFormatField } from "../schemas/common.js";
 import { buildEnvironmentReport } from "../services/environment.js";
-import { resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { fenceUntrusted, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
