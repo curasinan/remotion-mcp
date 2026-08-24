@@ -35,7 +35,7 @@ export interface RunOptions {
  * negative pid signals the whole group. Windows has no process groups worth
  * using here, so taskkill /T walks the tree instead.
  */
-function killTree(pid: number, signal: NodeJS.Signals): void {
+export function killTree(pid: number, signal: NodeJS.Signals): void {
   if (process.platform === "win32") {
     try {
       spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {

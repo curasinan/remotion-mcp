@@ -13,7 +13,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { entryPointField, projectDirField, responseFormatField } from "../schemas/common.js";
 import { isRemotionProject } from "../services/environment.js";
-import { resolveRemotionCli, spawnDetached } from "../services/exec.js";
+import { killTree, resolveRemotionCli, spawnDetached } from "../services/exec.js";
 import { buildErrorResponse, buildResponse, safeHandler } from "../services/format.js";
 import { displayPath, resolveExistingDirectory } from "../services/paths.js";
 import { ToolInputError } from "../types.js";
@@ -27,7 +27,60 @@ interface StudioProcess {
   startedAt: number;
 }
 
-const started = new Map<number, StudioProcess>();
+/**
+ * Where the registry lives between sessions.
+ *
+ * Studios are spawned detached so they survive this process, which means an
+ * in-memory registry loses them at exactly the moment they most need stopping:
+ * after a restart, remotion_stop_studio - the only tool that exists to clean
+ * them up - refused every pid it had itself created, leaving a dev server
+ * publishing the user's source on :3000 with no way to stop it through the
+ * server that started it.
+ */
+const REGISTRY_FILE = path.join(os.tmpdir(), "remotion-viz-studios.json");
+
+function loadRegistry(): Map<number, StudioProcess> {
+  try {
+    const raw = fs.readFileSync(REGISTRY_FILE, "utf8");
+    const entries = JSON.parse(raw) as StudioProcess[];
+    return new Map(entries.map((entry) => [entry.pid, entry]));
+  } catch {
+    // Absent or corrupt: an empty registry is the correct starting point.
+    return new Map();
+  }
+}
+
+function saveRegistry(registry: Map<number, StudioProcess>): void {
+  try {
+    fs.writeFileSync(REGISTRY_FILE, JSON.stringify([...registry.values()], null, 2), "utf8");
+  } catch {
+    // Losing persistence degrades stop_studio to its previous behaviour rather
+    // than failing the start that just succeeded.
+  }
+}
+
+/**
+ * The Studio is a dev server: it holds a bundler and a browser of its own, so
+ * signalling only its own pid leaves the port occupied.
+ */
+function killStudioTree(pid: number): boolean {
+  try {
+    killTree(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    // Signal 0 performs the permission and existence check without delivering.
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const StartStudioShape = {
   project_dir: projectDirField,
@@ -123,13 +176,20 @@ Error Handling:
         );
       }
 
-      started.set(pid, {
+      const registry = loadRegistry();
+      // Drop entries whose process is gone so a recycled pid cannot inherit an
+      // older record's identity.
+      for (const [knownPid] of registry) {
+        if (!isAlive(knownPid)) registry.delete(knownPid);
+      }
+      registry.set(pid, {
         pid,
         port: input.port,
         projectDir: dir,
         logFile,
         startedAt: Date.now(),
       });
+      saveRegistry(registry);
 
       const structured = {
         pid,
@@ -192,24 +252,27 @@ Error Handling:
       },
     },
     safeHandler("remotion_stop_studio", async (input: StopStudioInput) => {
-      const record = started.get(input.pid);
+      const registry = loadRegistry();
+      const record = registry.get(input.pid);
       if (!record) {
-        const known = [...started.keys()];
+        const known = [...registry.keys()];
         return buildErrorResponse(
           `PID ${input.pid} was not started by this server.`,
           known.length > 0
-            ? `Known Studio PIDs from this session: ${known.join(", ")}.`
-            : "No Studio processes have been started in this session. Stop the process yourself if you started it another way.",
+            ? `Studio PIDs this server started: ${known.join(", ")}.`
+            : "This server has no record of starting a Studio. Stop the process yourself if you started it another way.",
         );
       }
 
-      let stopped = true;
-      try {
-        process.kill(record.pid, "SIGTERM");
-      } catch {
-        stopped = false;
+      // The registry now outlives the process, so a pid in it may since have
+      // been recycled by an unrelated program. Confirm it is still alive before
+      // signalling; a dead entry means the Studio is already gone.
+      let stopped = false;
+      if (isAlive(record.pid)) {
+        stopped = killStudioTree(record.pid);
       }
-      started.delete(input.pid);
+      registry.delete(input.pid);
+      saveRegistry(registry);
 
       const structured = {
         pid: record.pid,
