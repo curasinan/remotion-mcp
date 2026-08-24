@@ -1,3 +1,5 @@
+import { loadConfig } from "../config.js";
+
 /**
  * Network policy for rendered content.
  *
@@ -126,10 +128,7 @@ export function decideRequest(url: string, policy: NetworkPolicy): RequestDecisi
  * Unset means deny everything, which is the intended out-of-the-box state.
  */
 export function networkPolicyFromEnvironment(): NetworkPolicy {
-  const raw = process.env.REMOTION_MCP_ALLOWED_HOSTS ?? "";
-  const allowedHosts = raw
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter((entry) => entry !== "");
-  return { allowedHosts };
+  // Parsing and validation live in the config module; a malformed value has
+  // already stopped the server at startup by the time this runs.
+  return { allowedHosts: loadConfig().allowedHosts };
 }

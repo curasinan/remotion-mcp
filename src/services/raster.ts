@@ -15,6 +15,7 @@ import { locateBrowser } from "./browser.js";
 import { findFilesystemReferences } from "./svg.js";
 import { DENY_ALL, decideRequest, type NetworkPolicy } from "./network.js";
 import { browserLimiter } from "./limit.js";
+import { loadConfig } from "../config.js";
 import { ToolInputError } from "../types.js";
 
 export interface RasterResult {
@@ -204,7 +205,7 @@ async function rasterizeHtmlUnlimited(
   // stays on. The escape hatch exists for environments that genuinely cannot
   // provide it - an unprivileged container without user namespaces - and it is
   // named so that turning it on reads like the weakening it is.
-  if (process.env.REMOTION_MCP_DISABLE_BROWSER_SANDBOX === "1") {
+  if (loadConfig().disableBrowserSandbox) {
     args.push("--no-sandbox");
   }
 
