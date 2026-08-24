@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { MAX_CHILD_OUTPUT_BYTES, TIMEOUT_FAST_MS } from "../constants.js";
+import { ToolInputError } from "../types.js";
 import type { CommandResult } from "../types.js";
 
 export interface RunOptions {
@@ -175,4 +176,23 @@ export function tailOutput(input: string, maxChars = 6_000): string {
   const trimmed = input.trim();
   if (trimmed.length <= maxChars) return trimmed;
   return `... (${trimmed.length - maxChars} earlier characters omitted)\n${trimmed.slice(-maxChars)}`;
+}
+
+/**
+ * Last check before a string becomes a positional argv element.
+ *
+ * shell:false stops a value from being reparsed by a shell, but it does not
+ * stop the program itself from reading it as an option. The Remotion CLI parses
+ * with minimist, so any token beginning with "-" is an option no matter how it
+ * got there. The tokens reaching the CLI are derived rather than raw - an entry
+ * point returned verbatim, an output path put through path.relative() - so the
+ * derived form is what has to be asserted.
+ */
+export function assertSafePositional(token: string, label: string): void {
+  if (token.startsWith("-")) {
+    throw new ToolInputError(
+      `The ${label} resolves to '${token}', which the Remotion CLI would read as a command-line option rather than a path.`,
+      "Choose a value whose first character is not '-'.",
+    );
+  }
 }

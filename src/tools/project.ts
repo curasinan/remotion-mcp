@@ -9,7 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { TIMEOUT_BUNDLE_MS } from "../constants.js";
 import { entryPointField, projectDirField, responseFormatField } from "../schemas/common.js";
 import { findEntryPoint, isRemotionProject } from "../services/environment.js";
-import { diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -58,6 +58,7 @@ export function requireEntryPoint(projectDir: string, explicit?: string): string
         `Looked at '${absolute}'. Call remotion_check_environment to see which entry points were auto-detected.`,
       );
     }
+    assertSafePositional(explicit, "entry point");
     return explicit;
   }
 
@@ -68,6 +69,7 @@ export function requireEntryPoint(projectDir: string, explicit?: string): string
       "Create src/index.ts containing `registerRoot(RemotionRoot)`, or pass entry_point explicitly.",
     );
   }
+  assertSafePositional(detected, "entry point");
   return detected;
 }
 
@@ -85,7 +87,7 @@ export function parseCompositionsOutput(stdout: string): CompositionSummary[] {
 
     const columns = line.split(/\s{2,}|\t/).map((c) => c.trim()).filter(Boolean);
     const id = columns[0];
-    if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) continue;
+    if (!id || !/^[A-Za-z0-9._][A-Za-z0-9._-]*$/.test(id)) continue;
 
     const summary: CompositionSummary = { id };
     const dimensions = /(\d+)\s*x\s*(\d+)/i.exec(line);
