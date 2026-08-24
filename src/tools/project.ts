@@ -9,7 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { TIMEOUT_BUNDLE_MS } from "../constants.js";
 import { entryPointField, projectDirField, responseFormatField } from "../schemas/common.js";
 import { findEntryPoint, isRemotionProject } from "../services/environment.js";
-import { assertSafePositional, diagnoseCliFailure, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, resolveNpmCli, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -172,8 +172,8 @@ Error Handling:
       let installed = false;
       let installLog = "";
       if (input.install) {
-        const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-        const result = await runCommand(npm, ["install"], {
+        const npm = resolveNpmCli();
+        const result = await runCommand(npm.file, [...npm.prefixArgs, "install"], {
           cwd: target,
           timeoutMs: TIMEOUT_BUNDLE_MS,
         });

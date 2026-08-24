@@ -7,6 +7,8 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import fs from "node:fs";
 import path from "node:path";
 import { MAX_CHILD_OUTPUT_BYTES, TIMEOUT_FAST_MS } from "../constants.js";
@@ -28,13 +30,36 @@ export async function runCommand(
   const startedAt = Date.now();
 
   return new Promise<CommandResult>((resolve) => {
-    const child = spawn(file, args, {
-      cwd,
-      shell: false,
-      windowsHide: true,
-      env: { ...process.env, CI: "1", ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Narrowed to match the stdio configuration below, so stdout/stderr are
+    // known non-null.
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(file, args, {
+        cwd,
+        shell: false,
+        windowsHide: true,
+        env: { ...process.env, CI: "1", ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      // spawn can fail synchronously rather than emitting 'error'. EINVAL on a
+      // Windows .cmd shim is the case that matters, and letting it reject the
+      // promise turned a precise platform fault into a generic tool failure.
+      const err = error as NodeJS.ErrnoException;
+      resolve({
+        command: [file, ...args].join(" "),
+        exitCode: null,
+        signal: null,
+        stdout: "",
+        stderr:
+          err.code === "EINVAL"
+            ? `Could not start '${file}': Node refuses to spawn a .cmd shim without a shell (EINVAL). This is a bug in how the command was resolved, not a problem with your project.`
+            : `Could not start '${file}': ${err.message}`,
+        durationMs: Date.now() - startedAt,
+        timedOut: false,
+      });
+      return;
+    }
 
     let stdout = "";
     let stderr = "";
@@ -98,33 +123,120 @@ export function spawnDetached(
   logFile: string,
 ): number | undefined {
   const out = fs.openSync(logFile, "a");
-  const child = spawn(file, args, {
-    cwd,
-    shell: false,
-    windowsHide: true,
-    detached: true,
-    stdio: ["ignore", out, out],
-  });
-  child.unref();
-  return child.pid;
+  try {
+    const child = spawn(file, args, {
+      cwd,
+      shell: false,
+      windowsHide: true,
+      detached: true,
+      stdio: ["ignore", out, out],
+    });
+    child.unref();
+    return child.pid;
+  } finally {
+    // The child has inherited the descriptor; this process no longer needs it.
+    fs.closeSync(out);
+  }
 }
 
-/**
- * Locate the Remotion CLI for a project. Prefers the locally installed binary
- * so the project's own Remotion version is used, and only falls back to npx.
- */
-export function resolveRemotionCli(projectDir: string): {
+export interface ResolvedCli {
+  /** An executable spawn() can start with shell:false on every platform. */
   file: string;
   prefixArgs: string[];
   source: "local" | "npx";
-} {
-  const binName = process.platform === "win32" ? "remotion.cmd" : "remotion";
-  const local = path.join(projectDir, "node_modules", ".bin", binName);
-  if (fs.existsSync(local)) {
-    return { file: local, prefixArgs: [], source: "local" };
+}
+
+/**
+ * Read a package's declared bin script, resolved to a real .js path.
+ *
+ * `bin` is either a string or a name-to-path map, so both shapes are handled.
+ * Returns null rather than throwing: an unreadable or absent package simply
+ * means this candidate is not the one, and the caller moves on.
+ */
+function readPackageBin(packageDir: string, binName: string): string | null {
+  const manifestPath = path.join(packageDir, "package.json");
+  if (!fs.existsSync(manifestPath)) return null;
+
+  let manifest: { bin?: string | Record<string, string> };
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as typeof manifest;
+  } catch {
+    return null;
   }
-  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-  return { file: npx, prefixArgs: ["--yes", "remotion"], source: "npx" };
+
+  const bin = manifest.bin;
+  const relative = typeof bin === "string" ? bin : bin?.[binName];
+  if (!relative) return null;
+
+  const resolved = path.join(packageDir, relative);
+  return fs.existsSync(resolved) ? resolved : null;
+}
+
+/**
+ * npm ships its own CLIs as plain scripts next to the node binary. Using those
+ * directly avoids the .cmd shims for the same reason resolveRemotionCli does.
+ */
+function nodeBundledCli(name: "npm-cli.js" | "npx-cli.js"): string | null {
+  const candidate = path.join(
+    path.dirname(process.execPath),
+    "node_modules",
+    "npm",
+    "bin",
+    name,
+  );
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+/** npm itself, spawned without going through npm.cmd. */
+export function resolveNpmCli(): { file: string; prefixArgs: string[] } {
+  const cli = nodeBundledCli("npm-cli.js");
+  if (cli) return { file: process.execPath, prefixArgs: [cli] };
+  return { file: process.platform === "win32" ? "npm.cmd" : "npm", prefixArgs: [] };
+}
+
+/**
+ * Locate the Remotion CLI for a project, as something spawnable without a shell.
+ *
+ * Prefers the project's own install so its Remotion version is the one that
+ * runs, and only falls back to npx.
+ *
+ * Both paths deliberately end at `node <script>.js` rather than at a bin shim.
+ * Since Node 20.12, spawning a .cmd file with shell:false throws EINVAL, and it
+ * throws SYNCHRONOUSLY - not as an 'error' event - so on Windows every Remotion
+ * tool failed before the child existed. The obvious repair, shell:true, would
+ * hand every argument to cmd.exe and turn the argument-injection surface that
+ * assertSafePositional guards into shell command injection. Resolving to the
+ * underlying .js keeps shell:false and fixes the platform difference at its
+ * source.
+ */
+export function resolveRemotionCli(projectDir: string): ResolvedCli {
+  const modules = path.join(projectDir, "node_modules");
+
+  for (const pkg of [path.join(modules, "@remotion", "cli"), path.join(modules, "remotion")]) {
+    const script = readPackageBin(pkg, "remotion");
+    if (script) {
+      return { file: process.execPath, prefixArgs: [script], source: "local" };
+    }
+  }
+
+  // A local install whose manifest could not be read still works on platforms
+  // where the bin is a shebang script rather than a .cmd shim.
+  if (process.platform !== "win32") {
+    const shim = path.join(modules, ".bin", "remotion");
+    if (fs.existsSync(shim)) {
+      return { file: shim, prefixArgs: [], source: "local" };
+    }
+  }
+
+  const npx = nodeBundledCli("npx-cli.js");
+  if (npx) {
+    return { file: process.execPath, prefixArgs: [npx, "--yes", "remotion"], source: "npx" };
+  }
+  return {
+    file: process.platform === "win32" ? "npx.cmd" : "npx",
+    prefixArgs: ["--yes", "remotion"],
+    source: "npx",
+  };
 }
 
 /**
