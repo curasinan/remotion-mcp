@@ -18,9 +18,16 @@ const pending = new Map();
 function request(method, params) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    pending.set(id, resolve);
+    // Cleared on response. An armed 30s timer that outlives the last request
+    // makes node --test exit non-zero even with zero failures, and it hung the
+    // suite for the full 30s on the POSIX CI legs.
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`timeout on ${method}`));
+    }, 30_000);
+    timer.unref?.();
+    pending.set(id, (msg) => { clearTimeout(timer); resolve(msg); });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    setTimeout(() => reject(new Error(`timeout on ${method}`)), 30_000);
   });
 }
 
@@ -56,7 +63,14 @@ before(async () => {
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n");
 });
 
-after(() => { child?.kill(); });
+after(async () => {
+  if (!child) return;
+  await new Promise((resolve) => {
+    child.on("close", resolve);
+    child.kill();
+    setTimeout(resolve, 3000).unref?.();
+  });
+});
 
 const GOOD_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20" fill="#0af"/></svg>';
 
