@@ -71,11 +71,13 @@ Error Handling:
   - Returns an error if project_dir does not exist or escapes the workspace root
   - Never throws for a missing tool; a missing tool is reported as found=false with a fix`,
       inputSchema: CheckEnvironmentShape,
+      // Reports rather than changes, but it probes by running the Remotion CLI,
+      // and with no local install that means npx fetching it from the registry.
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     safeHandler("remotion_check_environment", async (input: CheckEnvironmentInput) => {

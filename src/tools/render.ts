@@ -228,11 +228,13 @@ Error Handling:
   - Browser or Chrome errors mean the headless shell is missing; call remotion_ensure_browser
   - Returns an error if props_json is not a valid JSON object`,
       inputSchema: RenderStillShape,
+      // openWorld: rendering bundles and executes the project's own code, which
+      // decides for itself what it loads.
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     safeHandler("remotion_render_still", async (input: RenderStillInput) => {
@@ -340,11 +342,12 @@ Error Handling:
   - Browser or Chrome errors: call remotion_ensure_browser first
   - Times out after 30 minutes; render a frames subset instead of the full composition`,
       inputSchema: RenderVideoShape,
+      // openWorld: see remotion_render_still.
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     safeHandler("remotion_render_video", async (input: RenderVideoInput) => {

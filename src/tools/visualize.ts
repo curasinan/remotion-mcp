@@ -250,6 +250,9 @@ Error Handling:
   - Parse failures return the resvg message plus a pointer to viz_validate_svg
   - Images over 1.5 MB are written but not attached; lower width to inspect inline`,
       inputSchema: RenderSvgShape,
+      // openWorldHint:false is only true because rasterizeSvg refuses every
+      // reference that is not a data: URI. Before that, this tool read arbitrary
+      // local files while advertising a closed world.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

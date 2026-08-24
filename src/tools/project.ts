@@ -139,11 +139,12 @@ Error Handling:
   - Returns an error if the directory exists and is not empty, listing what is in it
   - Returns an error if the path escapes the workspace root`,
       inputSchema: InitProjectShape,
+      // openWorld because install:true runs npm install against the registry.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     safeHandler("remotion_init_project", async (input: InitProjectInput) => {
@@ -261,11 +262,14 @@ Error Handling:
   - Returns the bundler's compile error verbatim when the project does not build
   - Returns an error if no entry point can be found, listing the paths that were tried`,
       inputSchema: ListCompositionsShape,
+      // Not read-only: listing compositions bundles the project, which executes
+      // its code and writes a build cache. Not a closed world either - bundling
+      // resolves imports, and with no local install the CLI is fetched by npx.
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     safeHandler("remotion_list_compositions", async (input: ListCompositionsInput) => {
