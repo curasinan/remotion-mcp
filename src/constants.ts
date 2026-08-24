@@ -24,6 +24,16 @@ export const MAX_RASTER_DIMENSION = 8_000;
 export const DEFAULT_RASTER_WIDTH = 1_200;
 
 /**
+ * Total pixel budget for one rasterization, across both axes.
+ *
+ * MAX_RASTER_DIMENSION alone bounds only the width the caller asked for. Height
+ * is derived from the source's own aspect ratio, so a tall viewBox turns a legal
+ * width into an arbitrarily large allocation. At 4 bytes per pixel this cap is
+ * 256 MB, and it is the same area as a MAX_RASTER_DIMENSION square.
+ */
+export const MAX_RASTER_PIXELS = MAX_RASTER_DIMENSION * MAX_RASTER_DIMENSION;
+
+/**
  * Root directory that every file path argument is resolved against and
  * confined to. Prevents directory traversal out of the user's workspace.
  */
