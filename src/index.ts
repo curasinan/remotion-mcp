@@ -21,6 +21,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
+import { ConfigError, loadConfig } from "./config.js";
 import { getWorkspaceRoot } from "./services/paths.js";
 import { registerEnvironmentTools } from "./tools/environment.js";
 import { registerProjectTools } from "./tools/project.js";
@@ -83,6 +84,18 @@ async function main(): Promise<void> {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     printHelp();
     return;
+  }
+
+  // Fail fast: a bad workspace, allowlist or browser path stops the server here
+  // with a specific message rather than surfacing later as a tool failure.
+  try {
+    loadConfig();
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      console.error(`Configuration error: ${error.message}`);
+      process.exit(1);
+    }
+    throw error;
   }
 
   const server = createServer();
