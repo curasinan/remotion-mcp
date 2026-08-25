@@ -5,6 +5,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { loadConfig, ConfigError } from "../dist/config.js";
 import { recordAuditEvent, readAuditEvents } from "../dist/services/audit.js";
+import { rasterizeSvg } from "../dist/services/raster.js";
+import { ToolInputError } from "../dist/types.js";
 
 test("audit log defaults to a per-user state dir outside the workspace", () => {
   const c = loadConfig({});
@@ -51,4 +53,25 @@ test("the log rotates and never exceeds the byte cap by more than one segment", 
   const events = readAuditEvents();
   assert.equal(events[events.length - 1].detail.i, 119);
   delete process.env.REMOTION_MCP_AUDIT_LOG;
+});
+
+test("an oversized SVG throws with category raster_budget", () => {
+  const tall = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 5000000"><rect width="100" height="5000000"/></svg>';
+  try {
+    rasterizeSvg(tall, 1200);
+    assert.fail("should have thrown");
+  } catch (e) {
+    assert.ok(e instanceof ToolInputError);
+    assert.equal(e.category, "raster_budget");
+  }
+});
+
+test("a local-file SVG reference throws with category svg_reference", () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><image href="C:/x.png"/></svg>';
+  try {
+    rasterizeSvg(svg, 100);
+    assert.fail("should have thrown");
+  } catch (e) {
+    assert.equal(e.category, "svg_reference");
+  }
 });

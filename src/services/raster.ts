@@ -50,6 +50,7 @@ function assertRasterBudget(
     throw new ToolInputError(
       `The SVG reports an unusable intrinsic size (${intrinsicWidth} x ${intrinsicHeight}).`,
       'Give the root <svg> a viewBox with positive width and height, for example viewBox="0 0 800 450".',
+      "raster_budget",
     );
   }
 
@@ -60,6 +61,7 @@ function assertRasterBudget(
     throw new ToolInputError(
       `Rendering this SVG at width ${targetWidth} would produce a ${targetWidth} x ${outputHeight} image, and the height limit is ${MAX_RASTER_DIMENSION}.`,
       `The source's own aspect ratio is ${aspect}, so height grows with width. Lower width to at most ${Math.max(1, Math.floor((MAX_RASTER_DIMENSION * intrinsicWidth) / intrinsicHeight))}, or correct the viewBox if that shape is not what you meant.`,
+      "raster_budget",
     );
   }
 
@@ -67,6 +69,7 @@ function assertRasterBudget(
     throw new ToolInputError(
       `Rendering this SVG at width ${targetWidth} would produce ${targetWidth * outputHeight} pixels, and the limit is ${MAX_RASTER_PIXELS}.`,
       `The source's own aspect ratio is ${aspect}. Lower width, or correct the viewBox if that shape is not what you meant.`,
+      "raster_budget",
     );
   }
 }
@@ -88,6 +91,7 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
     throw new ToolInputError(
       `The SVG references ${references.length} resource(s) outside the document and will not be rendered: ${shown}.`,
       'Embed the asset as a data: URI instead. A local path would be read off disk and composited into the returned image, which is why it is refused; a remote URL is never fetched and would render as a blank gap. Fragment references such as href="#id" are unaffected.',
+      "svg_reference",
     );
   }
 
