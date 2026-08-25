@@ -207,6 +207,14 @@ when the model is fooled.
 The architecture decisions behind this are recorded in `docs/adr/`, and the
 `.mcpb` bundle's requested permissions in `docs/BUNDLE.md`.
 
+## Auditing what the server does
+
+Every tool call to the server is logged locally — what ran, what it did, how long it took, and any security events that occurred. The audit log stays on your machine and is never sent anywhere. View it by asking Claude to "show me the gateway", or build a self-contained dashboard with `npm run gateway` and open it in your browser. See [`docs/GATEWAY.md`](docs/GATEWAY.md) for details on what is logged and the design behind the audit trail.
+
+```bash
+npm run gateway
+```
+
 ## Troubleshooting
 
 | Symptom | Do this |
