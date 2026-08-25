@@ -419,6 +419,7 @@ Error Handling:
         device_scale_factor: input.device_scale_factor,
         full_page: input.full_page,
         file_size_bytes: raster.png.byteLength,
+        blocked_requests: blockedRequests,
       };
 
       const markdown = [
@@ -427,6 +428,13 @@ Error Handling:
         `- **Viewport:** ${input.width} x ${input.height} px at ${input.device_scale_factor}x`,
         `- **Full page:** ${input.full_page ? "yes" : "no"}`,
         `- **PNG size:** ${formatBytes(raster.png.byteLength)}`,
+        ...(blockedRequests.length > 0
+          ? [
+              "",
+              `${blockedRequests.length} network request(s) were refused (rendering runs with no network access by default):`,
+              ...blockedRequests.slice(0, 10).map((r) => `- ${r}`),
+            ]
+          : []),
       ].join("\n");
 
       const response = buildResponse(markdown, structuredBase, input.response_format);
