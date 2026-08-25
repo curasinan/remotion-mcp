@@ -1,0 +1,524 @@
+<title>Gateway Audit Dashboard</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-alt: #f0f1f4;
+    --border: #dcdfe4;
+    --text: #1c1e21;
+    --text-muted: #5b6068;
+    --accent: #2f6fed;
+    --danger-bg: #fdecec;
+    --danger-border: #f3b6b6;
+    --danger-text: #9a1c1c;
+    --warn-bg: #fff6e0;
+    --warn-border: #f0d38a;
+    --warn-text: #7a5a00;
+    --ok-bg: #e8f6ec;
+    --ok-text: #1e6b3a;
+    --code-bg: #eef0f3;
+    --shadow: 0 1px 2px rgba(20, 20, 30, 0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16181d;
+      --surface: #1e2127;
+      --surface-alt: #24272e;
+      --border: #33373f;
+      --text: #e7e9ec;
+      --text-muted: #9aa0a8;
+      --accent: #6d9bff;
+      --danger-bg: #3a1e1e;
+      --danger-border: #6b2b2b;
+      --danger-text: #ff9b9b;
+      --warn-bg: #3a2f10;
+      --warn-border: #6b551c;
+      --warn-text: #f0c95c;
+      --ok-bg: #163524;
+      --ok-text: #7fd9a0;
+      --code-bg: #24272e;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #16181d;
+    --surface: #1e2127;
+    --surface-alt: #24272e;
+    --border: #33373f;
+    --text: #e7e9ec;
+    --text-muted: #9aa0a8;
+    --accent: #6d9bff;
+    --danger-bg: #3a1e1e;
+    --danger-border: #6b2b2b;
+    --danger-text: #ff9b9b;
+    --warn-bg: #3a2f10;
+    --warn-border: #6b551c;
+    --warn-text: #f0c95c;
+    --ok-bg: #163524;
+    --ok-text: #7fd9a0;
+    --code-bg: #24272e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 20px 64px;
+  }
+
+  header.page-header {
+    margin-bottom: 24px;
+  }
+
+  header.page-header h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 650;
+  }
+
+  header.page-header .meta {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .stat-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 16px 0 8px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    min-width: 130px;
+    box-shadow: var(--shadow);
+  }
+
+  .stat-card .value {
+    font-size: 22px;
+    font-weight: 650;
+  }
+
+  .stat-card .label {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  section.panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+    box-shadow: var(--shadow);
+  }
+
+  section.panel h2 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    font-weight: 650;
+  }
+
+  section.panel .subtitle {
+    color: var(--text-muted);
+    font-size: 12.5px;
+    margin: 0 0 14px;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 560px;
+    font-size: 13px;
+  }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface-alt);
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  tbody td.wrap {
+    white-space: normal;
+    min-width: 220px;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:hover {
+    background: var(--surface-alt);
+  }
+
+  code,
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+
+  .badge-danger {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: var(--danger-text);
+  }
+
+  .badge-warn {
+    background: var(--warn-bg);
+    border-color: var(--warn-border);
+    color: var(--warn-text);
+  }
+
+  .badge-ok {
+    background: var(--ok-bg);
+    color: var(--ok-text);
+  }
+
+  .badge-neutral {
+    background: var(--surface-alt);
+    border-color: var(--border);
+    color: var(--text-muted);
+  }
+
+  .empty-note {
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 10px 2px;
+  }
+
+  .agg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+  }
+
+  .agg-grid h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 40px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    font-size: 13px;
+  }
+
+  .bar-row .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bar-track {
+    background: var(--surface-alt);
+    border-radius: 4px;
+    height: 10px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    background: var(--accent);
+    height: 100%;
+  }
+
+  .bar-count {
+    text-align: right;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+
+<main>
+  <header class="page-header">
+    <h1>Gateway Audit Dashboard</h1>
+    <div class="meta" id="generated-meta">Generated —</div>
+    <div class="stat-row" id="stat-row"></div>
+  </header>
+
+  <section class="panel" id="security-panel">
+    <h2>Security events</h2>
+    <p class="subtitle">Rejections, tool failures, and network blocks — what the gateway caught.</p>
+    <div class="table-scroll">
+      <table id="security-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Event</th>
+            <th>Tool</th>
+            <th>Category</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="timeline-panel">
+    <h2>Tool timeline</h2>
+    <p class="subtitle">Every recorded call, in order.</p>
+    <div class="table-scroll">
+      <table id="timeline-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Tool</th>
+            <th>Event</th>
+            <th>Outcome</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="aggregates-panel">
+    <h2>Aggregates</h2>
+    <p class="subtitle">Calls per tool and refusals per category.</p>
+    <div class="agg-grid">
+      <div>
+        <h3>Calls per tool</h3>
+        <div id="agg-by-tool"></div>
+      </div>
+      <div>
+        <h3>Refusals per category</h3>
+        <div id="agg-by-category"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script id="audit-data" type="application/json">__AUDIT_DATA__</script>
+<script>
+  (function () {
+    "use strict";
+
+    function readData() {
+      var el = document.getElementById("audit-data");
+      if (!el || !el.textContent) return { generatedAt: null, total: 0, events: [], securityEvents: [], byTool: {}, byCategory: {} };
+      try {
+        return JSON.parse(el.textContent);
+      } catch (err) {
+        return { generatedAt: null, total: 0, events: [], securityEvents: [], byTool: {}, byCategory: {} };
+      }
+    }
+
+    function esc(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+      });
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return "—";
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return esc(ts);
+      return d.toISOString().replace("T", " ").replace("Z", " UTC");
+    }
+
+    function fmtDuration(ms) {
+      if (typeof ms !== "number") return "—";
+      if (ms < 1000) return ms + " ms";
+      return (ms / 1000).toFixed(2) + " s";
+    }
+
+    function fmtDetail(detail) {
+      if (detail == null) return "—";
+      if (typeof detail === "string") return esc(detail);
+      if (detail.message) return esc(detail.message);
+      try {
+        return '<code>' + esc(JSON.stringify(detail)) + '</code>';
+      } catch (err) {
+        return "—";
+      }
+    }
+
+    function eventBadge(eventName) {
+      var cls = "badge-neutral";
+      if (eventName === "tool_rejected" || eventName === "network_block") cls = "badge-danger";
+      else if (eventName === "tool_failed") cls = "badge-warn";
+      else if (eventName === "tool_call" || eventName === "tool_result") cls = "badge-ok";
+      return '<span class="badge ' + cls + '">' + esc(eventName || "—") + "</span>";
+    }
+
+    function outcomeBadge(outcome) {
+      if (!outcome) return "—";
+      var cls = outcome === "ok" ? "badge-ok" : "badge-danger";
+      return '<span class="badge ' + cls + '">' + esc(outcome) + "</span>";
+    }
+
+    function categoryBadge(category) {
+      if (!category) return "—";
+      return '<span class="badge badge-warn">' + esc(category) + "</span>";
+    }
+
+    function renderStats(data) {
+      var row = document.getElementById("stat-row");
+      var stats = [
+        { label: "Total events", value: data.total || 0 },
+        { label: "Security events", value: (data.securityEvents || []).length },
+        { label: "Tools seen", value: Object.keys(data.byTool || {}).length },
+        { label: "Categories seen", value: Object.keys(data.byCategory || {}).length },
+      ];
+      row.innerHTML = stats
+        .map(function (s) {
+          return '<div class="stat-card"><div class="value">' + esc(s.value) + '</div><div class="label">' + esc(s.label) + "</div></div>";
+        })
+        .join("");
+    }
+
+    function renderMeta(data) {
+      var el = document.getElementById("generated-meta");
+      el.textContent = data.generatedAt ? "Generated " + fmtTime(data.generatedAt) : "Generated —";
+    }
+
+    function renderSecurity(data) {
+      var tbody = document.querySelector("#security-table tbody");
+      var rows = data.securityEvents || [];
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-note">No security events recorded.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows
+        .map(function (e) {
+          return (
+            "<tr>" +
+            "<td>" + esc(fmtTime(e.ts)) + "</td>" +
+            "<td>" + eventBadge(e.event) + "</td>" +
+            "<td>" + (e.tool ? '<span class="mono">' + esc(e.tool) + "</span>" : "—") + "</td>" +
+            "<td>" + categoryBadge(e.category) + "</td>" +
+            '<td class="wrap">' + fmtDetail(e.detail) + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    function renderTimeline(data) {
+      var tbody = document.querySelector("#timeline-table tbody");
+      var rows = data.events || [];
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-note">No events recorded.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows
+        .map(function (e) {
+          return (
+            "<tr>" +
+            "<td>" + esc(fmtTime(e.ts)) + "</td>" +
+            "<td>" + (e.tool ? '<span class="mono">' + esc(e.tool) + "</span>" : "—") + "</td>" +
+            "<td>" + eventBadge(e.event) + "</td>" +
+            "<td>" + outcomeBadge(e.outcome) + "</td>" +
+            "<td>" + esc(fmtDuration(e.duration_ms)) + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    function renderBars(containerId, counts) {
+      var container = document.getElementById(containerId);
+      var entries = Object.keys(counts || {}).map(function (k) {
+        return [k, counts[k]];
+      });
+      if (entries.length === 0) {
+        container.innerHTML = '<div class="empty-note">None.</div>';
+        return;
+      }
+      entries.sort(function (a, b) {
+        return b[1] - a[1];
+      });
+      var max = entries[0][1] || 1;
+      container.innerHTML = entries
+        .map(function (entry) {
+          var pct = Math.max(4, Math.round((entry[1] / max) * 100));
+          return (
+            '<div class="bar-row">' +
+            '<div class="name mono" title="' + esc(entry[0]) + '">' + esc(entry[0]) + "</div>" +
+            '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="bar-count">' + esc(entry[1]) + "</div>" +
+            "</div>"
+          );
+        })
+        .join("");
+    }
+
+    var data = readData();
+    renderMeta(data);
+    renderStats(data);
+    renderSecurity(data);
+    renderTimeline(data);
+    renderBars("agg-by-tool", data.byTool);
+    renderBars("agg-by-category", data.byCategory);
+  })();
+</script>
