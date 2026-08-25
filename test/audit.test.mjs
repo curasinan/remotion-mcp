@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
 import { loadConfig, ConfigError } from "../dist/config.js";
+import { recordAuditEvent, readAuditEvents } from "../dist/services/audit.js";
 
 test("audit log defaults to a per-user state dir outside the workspace", () => {
   const c = loadConfig({});
@@ -19,4 +21,34 @@ test("REMOTION_MCP_AUDIT_LOG overrides the path", () => {
 test("config exposes a positive auditMaxBytes default", () => {
   const c0 = loadConfig({});
   assert.ok(typeof c0.auditMaxBytes === "number" && c0.auditMaxBytes > 0);
+});
+
+test("recordAuditEvent appends and readAuditEvents reads it back", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-rw-"));
+  process.env.REMOTION_MCP_AUDIT_LOG = path.join(dir, "audit.jsonl");
+  recordAuditEvent({ event: "tool_call", tool: "viz_validate_svg" });
+  const events = readAuditEvents();
+  const last = events[events.length - 1];
+  assert.equal(last.tool, "viz_validate_svg");
+  assert.equal(last.event, "tool_call");
+  assert.equal(last.decision, "observe"); // default seam value
+  assert.ok(typeof last.ts === "string" && last.ts.includes("T"));
+  delete process.env.REMOTION_MCP_AUDIT_LOG;
+});
+
+test("the log rotates and never exceeds the byte cap by more than one segment", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-rot-"));
+  process.env.REMOTION_MCP_AUDIT_LOG = path.join(dir, "audit.jsonl");
+  // Force many writes; cap is 5MB (2.5MB/segment). Use a large detail to fill fast.
+  const big = "x".repeat(50_000);
+  for (let i = 0; i < 120; i++) recordAuditEvent({ event: "tool_call", tool: "t", detail: { big, i } });
+  const current = path.join(dir, "audit.jsonl");
+  const prev = current + ".1";
+  const total = (fs.existsSync(current) ? fs.statSync(current).size : 0)
+    + (fs.existsSync(prev) ? fs.statSync(prev).size : 0);
+  assert.ok(total <= 5_000_000 + 60_000, `total ${total} exceeded cap`);
+  // Most recent event is still readable after rotation.
+  const events = readAuditEvents();
+  assert.equal(events[events.length - 1].detail.i, 119);
+  delete process.env.REMOTION_MCP_AUDIT_LOG;
 });
