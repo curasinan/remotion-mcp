@@ -20,6 +20,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface ServerConfig {
@@ -33,6 +34,10 @@ export interface ServerConfig {
   disableBrowserSandbox: boolean;
   /** Explicit browser executable, or null to auto-detect. */
   browserExecutable: string | null;
+  /** Durable audit log, outside the workspace. */
+  auditLogPath: string;
+  /** Total bytes kept across the two rotating segments. */
+  auditMaxBytes: number;
 }
 
 /** A configuration problem that should stop the server at startup. */
@@ -92,6 +97,31 @@ function parseBrowserExecutable(env: NodeJS.ProcessEnv): string | null {
   return explicit;
 }
 
+function defaultAuditLogPath(): string {
+  const home = os.homedir();
+  if (process.platform === "win32") {
+    const base = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+    return path.join(base, "remotion-viz", "audit.jsonl");
+  }
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "remotion-viz", "audit.jsonl");
+  }
+  const base = process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state");
+  return path.join(base, "remotion-viz", "audit.jsonl");
+}
+
+function parseAuditLogPath(raw: string | undefined): string {
+  const resolved = raw && raw.trim() !== "" ? path.resolve(raw) : defaultAuditLogPath();
+  try {
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  } catch (error) {
+    throw new ConfigError(
+      `REMOTION_MCP_AUDIT_LOG's directory '${path.dirname(resolved)}' could not be created: ${error instanceof Error ? error.message : String(error)}. Point it at a writable location, or unset it to use the default.`,
+    );
+  }
+  return resolved;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const workspace = parseWorkspace(env.REMOTION_MCP_WORKSPACE);
   return {
@@ -99,5 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     allowedHosts: parseAllowedHosts(env.REMOTION_MCP_ALLOWED_HOSTS),
     disableBrowserSandbox: env.REMOTION_MCP_DISABLE_BROWSER_SANDBOX === "1",
     browserExecutable: parseBrowserExecutable(env),
+    auditLogPath: parseAuditLogPath(env.REMOTION_MCP_AUDIT_LOG),
+    auditMaxBytes: 5_000_000,
   };
 }
