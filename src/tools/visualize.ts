@@ -26,6 +26,7 @@ import {
 import { displayPath, ensureParentDirectory, resolveInWorkspace } from "../services/paths.js";
 import { rasterizeHtml, rasterizeSvg } from "../services/raster.js";
 import { networkPolicyFromEnvironment } from "../services/network.js";
+import { recordAuditEvent } from "../services/audit.js";
 import { validateSvg } from "../services/svg.js";
 import { ToolInputError } from "../types.js";
 
@@ -390,6 +391,26 @@ Error Handling:
         input.project_dir ? resolveInWorkspace(input.project_dir) : undefined,
         policy,
       );
+
+      const blockedRequests = raster.blockedRequests ?? [];
+      if (blockedRequests.length > 0) {
+        recordAuditEvent({
+          event: "network_block",
+          tool: "viz_render_html",
+          category: "network_block",
+          detail: {
+            count: blockedRequests.length,
+            hosts: blockedRequests.slice(0, 10).map((r) => {
+              const url = r.split(" ")[0] ?? "";
+              try {
+                return new URL(url).hostname;
+              } catch {
+                return url;
+              }
+            }),
+          },
+        });
+      }
 
       const structuredBase = {
         success: true,
