@@ -36,3 +36,39 @@ test("the generator builds a self-contained dashboard from the audit log", () =>
   assert.ok(html.includes("network_block"));
   assert.ok(/security/i.test(html));
 });
+
+test("the generator does not corrupt embedded JSON when detail contains $-pattern sequences", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-"));
+  const logPath = path.join(dir, "audit.jsonl");
+  const out = path.join(dir, "gateway.html");
+  // String.prototype.replace with a STRING replacement interprets $$, $&, $`,
+  // and $' in the replacement text. Attacker-influenceable content (paths,
+  // refusal messages) flows into `detail`, so a message containing these
+  // sequences must not corrupt the embedded JSON.
+  const trickyMessage = "weird $` and $' and $& and $$ value";
+  const events = [
+    {
+      ts: "2026-08-25T10:00:00.000Z",
+      event: "tool_rejected",
+      tool: "viz_render_svg",
+      decision: "observe",
+      category: "path_traversal",
+      detail: { message: trickyMessage },
+    },
+  ];
+  fs.writeFileSync(logPath, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+
+  execFileSync("node", ["scripts/build-dashboard.mjs", "--out", out], {
+    env: { ...process.env, REMOTION_MCP_AUDIT_LOG: logPath },
+  });
+
+  const html = fs.readFileSync(out, "utf8");
+  const match = html.match(
+    /<script id="audit-data" type="application\/json">([\s\S]*?)<\/script>/,
+  );
+  assert.ok(match, "audit-data script block must be present");
+
+  const data = JSON.parse(match[1]);
+  const found = data.events.find((e) => e.detail && e.detail.message === trickyMessage);
+  assert.ok(found, "the exact tricky message must survive round-trip through the generated HTML");
+});

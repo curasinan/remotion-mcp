@@ -45,7 +45,10 @@ const template = fs.readFileSync(templatePath, "utf8");
 // JSON is safe inside a <script type="application/json"> block, but escape the
 // closing-tag sequence so a string value cannot break out of it.
 const json = JSON.stringify(data).replace(/</g, "\\u003c");
-const html = template.replace("__AUDIT_DATA__", json);
+// Use a function replacer: a string replacement would interpret $-patterns
+// ($$, $&, $`, $') that can appear in attacker-influenceable content (file
+// paths, refusal messages) flowing into `detail`, corrupting the embedded JSON.
+const html = template.replace("__AUDIT_DATA__", () => json);
 
 const out = outPath();
 fs.writeFileSync(out, html, "utf8");

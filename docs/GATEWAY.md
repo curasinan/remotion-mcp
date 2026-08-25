@@ -4,10 +4,10 @@ Every interaction with the remotion-viz MCP server is logged to a local audit tr
 
 ## What is recorded
 
-The audit log records one entry per tool call. Each entry captures:
+The audit log records multiple events per tool call: a `tool_call` event on entry, followed by one of `tool_result`, `tool_rejected`, or `tool_failed`, plus a `network_block` event for any HTTP request blocked by network policy. Together these capture:
 
-- **Tool call**: The tool name and full arguments
-- **Outcome**: Whether the call succeeded (`ok`), was refused (`error`), or failed unexpectedly (`tool_failed`)
+- **Tool call**: The tool name and summarised arguments
+- **Outcome**: On `tool_result`, whether the call succeeded (`ok`) or returned an error (`error`); a refusal is recorded separately as `tool_rejected`, and an unexpected failure as `tool_failed`
 - **Duration**: Execution time in milliseconds
 - **Security refusal category** (when applicable): One of:
   - `path_traversal` — an argument tried to escape the workspace root
@@ -19,7 +19,7 @@ The audit log records one entry per tool call. Each entry captures:
 - **Tool result**: Outcome data and any error message
 - **Decision field**: Always `"observe"` (see below)
 
-No credentials, workspace paths beyond the filename, or sensitive argument values are included; the log is designed to stay on the machine and be human-readable.
+Summarised tool arguments and refusal/failure messages are recorded, and these can include file paths (for example a rejected `output_path` or a path-traversal refusal message names the candidate path). No credentials or tokens are included — this server does not handle any — and long string arguments are truncated to a length marker (`<string:N chars>`) rather than recorded in full. Recording paths is exactly why the log stays on the machine and is never sent anywhere; see Privacy below.
 
 ## Where it lives
 
