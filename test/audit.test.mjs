@@ -75,3 +75,27 @@ test("a local-file SVG reference throws with category svg_reference", () => {
     assert.equal(e.category, "svg_reference");
   }
 });
+
+import { spawn } from "node:child_process";
+
+test("a tool call and its rejection are recorded in the audit log", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-e2e-"));
+  const logPath = path.join(dir, "audit.jsonl");
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "audit-ws-"));
+  const child = spawn("node", ["dist/index.js"], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, REMOTION_MCP_WORKSPACE: ws, REMOTION_MCP_AUDIT_LOG: logPath },
+  });
+  let buf = ""; const pending = new Map(); let id = 1;
+  child.stdout.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\n")) !== -1) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l) continue; const m = JSON.parse(l); const r = pending.get(m.id); if (r) { pending.delete(m.id); r(m); } } });
+  const req = (method, params) => new Promise((res) => { const i = id++; pending.set(i, res); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method, params }) + "\n"); });
+  await req("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "1" } });
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n");
+  // A rejected path traversal.
+  await req("tools/call", { name: "viz_render_svg", arguments: { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"/>', output_path: "../../../escape.png" } });
+  await new Promise((r) => setTimeout(r, 300));
+  child.kill();
+  const lines = fs.readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.ok(lines.some((e) => e.event === "tool_call" && e.tool === "viz_render_svg"));
+  assert.ok(lines.some((e) => e.event === "tool_rejected" && e.category === "path_traversal"));
+});

@@ -6,6 +6,7 @@
 import { CHARACTER_LIMIT } from "../constants.js";
 import { log, summariseArguments } from "./log.js";
 import { ResponseFormat, ToolInputError } from "../types.js";
+import { recordAuditEvent } from "./audit.js";
 
 export interface ToolTextContent {
   type: "text";
@@ -68,13 +69,13 @@ export function safeHandler<TInput>(
   return async (input: TInput): Promise<ToolResponse> => {
     const startedAt = Date.now();
     log.info("tool_call", { tool: toolName, arguments: summariseArguments(input) });
+    recordAuditEvent({ event: "tool_call", tool: toolName, detail: summariseArguments(input) });
     try {
       const response = await handler(input);
-      log.info("tool_result", {
-        tool: toolName,
-        outcome: response.isError ? "error" : "ok",
-        duration_ms: Date.now() - startedAt,
-      });
+      const outcome = response.isError ? "error" : "ok";
+      const duration_ms = Date.now() - startedAt;
+      log.info("tool_result", { tool: toolName, outcome, duration_ms });
+      recordAuditEvent({ event: "tool_result", tool: toolName, outcome, duration_ms });
       return response;
     } catch (error) {
       const duration_ms = Date.now() - startedAt;
@@ -82,10 +83,18 @@ export function safeHandler<TInput>(
         // A rejected input is an expected outcome, logged as a refusal rather
         // than a crash. The message can carry a path, so it is not logged.
         log.warn("tool_rejected", { tool: toolName, duration_ms });
+        recordAuditEvent({
+          event: "tool_rejected",
+          tool: toolName,
+          duration_ms,
+          category: error.category,
+          detail: { message: error.message },
+        });
         return buildErrorResponse(`${toolName}: ${error.message}`, error.hint);
       }
       const message = error instanceof Error ? error.message : String(error);
       log.error("tool_failed", { tool: toolName, duration_ms });
+      recordAuditEvent({ event: "tool_failed", tool: toolName, duration_ms, detail: { message } });
       return buildErrorResponse(
         `${toolName} failed: ${message}`,
         "Run remotion_check_environment to confirm Node, the Remotion CLI and the Chrome Headless Shell are all available.",
