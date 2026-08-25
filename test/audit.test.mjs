@@ -99,3 +99,15 @@ test("a tool call and its rejection are recorded in the audit log", async () => 
   assert.ok(lines.some((e) => e.event === "tool_call" && e.tool === "viz_render_svg"));
   assert.ok(lines.some((e) => e.event === "tool_rejected" && e.category === "path_traversal"));
 });
+
+test("a network_block event round-trips through the audit log", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-net-"));
+  process.env.REMOTION_MCP_AUDIT_LOG = path.join(dir, "audit.jsonl");
+  recordAuditEvent({ event: "network_block", tool: "viz_render_html", category: "network_block", detail: { count: 2, hosts: ["evil.example", "169.254.169.254"] } });
+  const events = readAuditEvents();
+  const last = events[events.length - 1];
+  assert.equal(last.event, "network_block");
+  assert.equal(last.category, "network_block");
+  assert.equal(last.detail.count, 2);
+  delete process.env.REMOTION_MCP_AUDIT_LOG;
+});
