@@ -36,6 +36,7 @@ export class Limiter {
         throw new ToolInputError(
           `Too many ${this.options.label} operations are already in flight (${this.active} running, ${this.waiting.length} queued).`,
           "Wait for the current ones to finish and try again. Running these in parallel is slower than running them one at a time, because each one already uses the whole machine.",
+          "concurrency",
         );
       }
       await new Promise<void>((resolve) => this.waiting.push(resolve));

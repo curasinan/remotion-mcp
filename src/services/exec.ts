@@ -386,6 +386,7 @@ export function assertSafePositional(token: string, label: string): void {
     throw new ToolInputError(
       `The ${label} resolves to '${token}', which the Remotion CLI would read as a command-line option rather than a path.`,
       "Choose a value whose first character is not '-'.",
+      "argv_injection",
     );
   }
 }

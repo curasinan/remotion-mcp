@@ -66,10 +66,12 @@ export interface SvgValidationReport {
 /** Thrown for user-correctable problems; message is surfaced verbatim. */
 export class ToolInputError extends Error {
   public readonly hint: string;
+  public readonly category?: string;
 
-  constructor(message: string, hint: string) {
+  constructor(message: string, hint: string, category?: string) {
     super(message);
     this.name = "ToolInputError";
     this.hint = hint;
+    this.category = category;
   }
 }

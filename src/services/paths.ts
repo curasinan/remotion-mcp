@@ -40,6 +40,7 @@ export function resolveInWorkspace(candidate: string): string {
     throw new ToolInputError(
       "Path contains a null byte.",
       "Remove the null byte from the path argument.",
+      "path_traversal",
     );
   }
 
@@ -56,6 +57,7 @@ export function resolveInWorkspace(candidate: string): string {
     throw new ToolInputError(
       `Path '${candidate}' resolves outside the workspace root.`,
       `The workspace root is '${REAL_WORKSPACE_ROOT}'. Either pass a path inside it, or restart the server with REMOTION_MCP_WORKSPACE set to a directory that contains your project.`,
+      "path_traversal",
     );
   }
 
@@ -125,6 +127,7 @@ export function ensureParentDirectory(filePath: string): void {
     throw new ToolInputError(
       `The directory for '${displayPath(filePath)}' could not be resolved.`,
       "Check that the path is writable and does not contain a broken link.",
+      "path_traversal",
     );
   }
 
@@ -138,6 +141,7 @@ export function ensureParentDirectory(filePath: string): void {
     throw new ToolInputError(
       `The directory for '${displayPath(filePath)}' resolves outside the workspace root.`,
       `It points at '${canonicalParent}'. A link in the path leads out of '${REAL_WORKSPACE_ROOT}'.`,
+      "path_traversal",
     );
   }
 }
