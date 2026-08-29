@@ -217,7 +217,7 @@ Error Handling:
         input.install
           ? installed
             ? "npm install succeeded."
-            : `npm install failed:\n\n\`\`\`\n${installLog}\n\`\`\``
+            : `npm install failed:\n\n${fenceUntrusted(installLog)}`
           : "Skipped (install=false).",
         "",
         "## Next steps",
@@ -299,7 +299,7 @@ Error Handling:
       if (result.exitCode !== 0) {
         const combined = tailOutput(`${result.stdout}\n${result.stderr}`);
         return buildErrorResponse(
-          `remotion compositions exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n\`\`\`\n${combined}\n\`\`\``,
+          `remotion compositions exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
           diagnoseCliFailure(combined, cli.source, result.timedOut),
         );
       }
@@ -319,7 +319,7 @@ Error Handling:
         `Entry point: \`${entry}\` (bundled in ${formatDuration(result.durationMs)})`,
         "",
         compositions.length === 0
-          ? "No compositions were parsed. Raw CLI output:\n\n```\n" + tailOutput(result.stdout, 3_000) + "\n```"
+          ? "No compositions were parsed. Raw CLI output:\n\n" + fenceUntrusted(result.stdout, 3_000)
           : compositions
               .map((c) => {
                 const meta = [
