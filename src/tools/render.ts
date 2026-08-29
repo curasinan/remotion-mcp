@@ -181,7 +181,7 @@ function renderFailure(
 
   const combined = tailOutput(`${result.stdout}\n${result.stderr}`);
   return buildErrorResponse(
-    `${label} exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n\`\`\`\n${combined}\n\`\`\``,
+    `${label} exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
     diagnoseCliFailure(combined, cliSource, result.timedOut),
   );
 }

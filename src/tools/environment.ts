@@ -168,7 +168,7 @@ Error Handling:
 
       if (result.exitCode !== 0) {
         return buildErrorResponse(
-          `remotion browser ensure exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${tailOutput(combined)}`,
+          `remotion browser ensure exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
           result.timedOut
             ? "The download exceeded 5 minutes. Check the network connection, then call this tool again; partial downloads resume."
             : "If this says the CLI was not found, run `npm install` in the project directory first.",
@@ -190,7 +190,7 @@ Error Handling:
           ? "Already cached, nothing downloaded."
           : `Downloaded in ${formatDuration(result.durationMs)}.`,
         "",
-        combined ? "```\n" + tailOutput(combined, 2_000) + "\n```" : "",
+        combined ? fenceUntrusted(combined, 2_000) : "",
       ].join("\n");
 
       return buildResponse(markdown, structured, input.response_format);
