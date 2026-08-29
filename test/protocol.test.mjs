@@ -38,9 +38,16 @@ async function callTool(name, args) {
 
 before(async () => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "viz-proto-"));
+  // Redirect the audit log into the throwaway workspace; otherwise the server uses
+  // defaultAuditLogPath() and this suite pollutes the user's real audit trail.
+  // See test/audit-isolation.test.mjs.
   child = spawn("node", ["dist/index.js"], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, REMOTION_MCP_WORKSPACE: workspace },
+    env: {
+      ...process.env,
+      REMOTION_MCP_WORKSPACE: workspace,
+      REMOTION_MCP_AUDIT_LOG: path.join(workspace, "audit.jsonl"),
+    },
   });
   let buffer = "";
   child.stdout.on("data", (chunk) => {
