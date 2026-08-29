@@ -9,9 +9,17 @@ import path from "node:path";
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "viz-mcp-"));
 
+// The audit log is redirected into the throwaway workspace. Without this the
+// server falls back to defaultAuditLogPath() and every run of this file appends to
+// the user's real audit trail — the one `npm run gateway` renders as a usage
+// dashboard. See test/audit-isolation.test.mjs.
 const child = spawn("node", ["dist/index.js"], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, REMOTION_MCP_WORKSPACE: workspace },
+  env: {
+    ...process.env,
+    REMOTION_MCP_WORKSPACE: workspace,
+    REMOTION_MCP_AUDIT_LOG: path.join(workspace, "audit.jsonl"),
+  },
 });
 
 let buffer = "";
