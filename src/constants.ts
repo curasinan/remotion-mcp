@@ -3,7 +3,17 @@
  */
 
 export const SERVER_NAME = "remotion-viz-mcp-server";
-export const SERVER_VERSION = "1.0.0";
+
+/**
+ * Must equal manifest.json's `version`, which is the source of truth for what
+ * ships. They disagreed once — the manifest said 1.1.0 while this said 1.0.0 — so
+ * a bug report would have cited one version while the running code was the other.
+ *
+ * Two things now stop that recurring: the guard in test/unit.test.mjs, which fails
+ * `npm test`, and the fail-fast in scripts/build-bundle.mjs, which refuses to
+ * produce a bundle at all. Bump both together.
+ */
+export const SERVER_VERSION = "1.1.0";
 
 /** Maximum characters returned in any single tool response body. */
 export const CHARACTER_LIMIT = 25_000;
