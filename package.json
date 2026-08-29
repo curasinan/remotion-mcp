@@ -19,7 +19,9 @@
     "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node smoke-test.mjs",
-    "gateway": "node scripts/build-dashboard.mjs"
+    "gateway": "node scripts/build-dashboard.mjs",
+    "bundle": "node scripts/build-bundle.mjs",
+    "test:bundle": "node --test test/bundle.test.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -32,6 +34,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

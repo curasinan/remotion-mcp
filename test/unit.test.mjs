@@ -95,6 +95,20 @@ test("GUARD: frames regex stays anchored (no newline bypass)", async () => {
   assert.equal(re.test("0-9\n--evil"), false);
   assert.equal(re.test("30\n"), false);
 });
+// Packaging invariant. The bundle job catches this too, but only after a
+// multi-minute build; catching it in `npm test` is what keeps it from being
+// discovered at release time.
+test("GUARD: SERVER_VERSION equals manifest.json's version", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const repo = path.join(import.meta.dirname, "..");
+  const manifest = JSON.parse(fs.readFileSync(path.join(repo, "manifest.json"), "utf8"));
+  const { SERVER_VERSION } = await import("../dist/constants.js");
+  assert.equal(SERVER_VERSION, manifest.version,
+    `manifest.json is the source of truth for what ships. It says ${manifest.version}; `
+    + `src/constants.ts says ${SERVER_VERSION}. Bump both together.`);
+});
+
 test("GUARD: composition_id regex forbids a leading hyphen", () => {
   const re = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
   assert.equal(re.test("Example"), true);
