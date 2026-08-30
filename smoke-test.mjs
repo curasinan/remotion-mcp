@@ -90,6 +90,38 @@ async function main() {
   const names = tools.map((t) => t.name).sort();
   check("tools/list returns 12 tools", tools.length === 12, `got ${tools.length}: ${names.join(", ")}`);
   check("every tool has a description", tools.every((t) => (t.description ?? "").length > 100));
+
+  // Context budget. Every tool definition is sent on every conversation, so this
+  // payload is a standing cost paid before any work happens. The ceiling is set
+  // just above what the current 12 tools need, which means a 13th has to be paid
+  // for by deleting text somewhere else. That is the only mechanism that reliably
+  // holds a budget.
+  const listBytes = JSON.stringify(tools).length;
+  check("tools/list stays inside the context budget", listBytes <= 30_500,
+    `${listBytes} chars (~${Math.round(listBytes / 3.7)} tokens), ceiling 30500`);
+
+  // Args: restated inputSchema, which the client already sends to the model with
+  // each field's .describe() text attached. Verified in this client: an MCP tool's
+  // per-field descriptions arrive intact, so the prose copy was pure duplication.
+  check("no description restates its own parameter list",
+    tools.every((t) => !/^Args:/m.test(t.description ?? "")),
+    tools.filter((t) => /^Args:/m.test(t.description ?? "")).map((t) => t.name).join(", "));
+
+  // Compression must not eat the two properties that make a description useful:
+  // what to do when it fails, and when to reach for something else instead.
+  // A substantive Error Handling bullet, or an explicit statement that the tool
+  // cannot fail — remotion_get_workspace_info reads a variable and returns it, and
+  // padding that to 40 characters would be worse writing, not better documentation.
+  const documentsFailure = (t) => {
+    const d = t.description ?? "";
+    return /Error Handling:\s*\n\s*-\s*.{40,}/.test(d) || /Error Handling:\s*\n\s*-\s*Cannot fail/.test(d);
+  };
+  check("every description still names its failure modes",
+    tools.every(documentsFailure),
+    tools.filter((t) => !documentsFailure(t)).map((t) => t.name).join(", "));
+  check("every description still says when NOT to use it",
+    tools.every((t) => /Don't use when:/.test(t.description ?? "")),
+    tools.filter((t) => !/Don't use when:/.test(t.description ?? "")).map((t) => t.name).join(", "));
   check("every tool has annotations", tools.every((t) => t.annotations && "readOnlyHint" in t.annotations));
   check("every tool has an inputSchema", tools.every((t) => t.inputSchema?.type === "object"));
 

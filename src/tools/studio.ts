@@ -117,12 +117,6 @@ The Studio gives a live preview with hot reload and a timeline scrubber. Use it 
 
 The process is detached, so it keeps running after this tool returns and after the MCP session ends. Stop it with remotion_stop_studio.
 
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - port (number): Port to serve on, 1024 to 65535 (default: 3000)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "pid": number,          // Pass to remotion_stop_studio
@@ -221,11 +215,7 @@ Error Handling:
       title: "Stop Remotion Studio",
       description: `Stop a Remotion Studio process that was started by remotion_start_studio.
 
-Only PIDs recorded by this server in the current session can be stopped. Any other PID is refused, so this cannot be used to terminate unrelated processes.
-
-Args:
-  - pid (number, required): PID returned by remotion_start_studio
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
+Only PIDs this server recorded when it started them can be stopped, and the record survives a restart, so a Studio left running by an earlier session can still be stopped. Any other PID is refused.
 
 Returns (JSON format):
   {

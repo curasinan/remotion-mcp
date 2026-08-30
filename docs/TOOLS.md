@@ -4,6 +4,16 @@ Twelve tools in three groups. Every tool takes `response_format` (`markdown` |
 `json`, default `markdown`). Annotations shown are the MCP hints a client reads;
 they are UX signals, not access control — the enforcement is in the server.
 
+**Where parameter detail lives.** The tables below name each tool's arguments; the
+types, defaults, ranges and per-field explanations live in the tool's `inputSchema`,
+which every MCP client sends to the model alongside the description. The descriptions
+used to restate all of it in an `Args:` block — 4,256 characters of duplication across
+the twelve tools, re-sent on every conversation. That block is gone. This file
+deliberately does not reproduce it either: a third copy is a third thing to keep in
+step with `src/schemas/common.ts`, and the schema is the one that cannot go stale.
+`smoke-test.mjs` asserts no description reintroduces an `Args:` block, and that
+`tools/list` stays inside a 30,500-character budget.
+
 ## Diagnostics
 
 | Tool | Args | Annotations | Notes |
