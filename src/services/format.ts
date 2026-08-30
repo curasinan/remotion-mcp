@@ -27,10 +27,14 @@ export interface ToolResponse {
 }
 
 /** Truncate a response body, telling the caller how to get the rest. */
-export function enforceCharacterLimit(text: string, remedy: string): string {
-  if (text.length <= CHARACTER_LIMIT) return text;
-  const kept = text.slice(0, CHARACTER_LIMIT - 200);
-  return `${kept}\n\n[Truncated: response was ${text.length} characters, limit is ${CHARACTER_LIMIT}. ${remedy}]`;
+export function enforceCharacterLimit(
+  text: string,
+  remedy: string,
+  limit: number = CHARACTER_LIMIT,
+): string {
+  if (text.length <= limit) return text;
+  const kept = text.slice(0, Math.max(0, limit - 200));
+  return `${kept}\n\n[Truncated: response was ${text.length} characters, limit is ${limit}. ${remedy}]`;
 }
 
 export function buildResponse(
@@ -50,8 +54,29 @@ export function buildResponse(
   };
 }
 
+/**
+ * An error response, bounded like every other response.
+ *
+ * This was the one builder that skipped the character cap, and it is the path most
+ * likely to carry unbounded text the server did not write: safeHandler's generic
+ * catch interpolates `error.message` verbatim, and a native addon or a bundler can
+ * produce a very long one.
+ *
+ * The message is truncated, never the hint. The hint is server-authored and is the
+ * only actionable part; trimming the combined string from the end would keep 25,000
+ * characters of somebody else's stack trace and drop the one sentence saying what to
+ * do about it.
+ */
 export function buildErrorResponse(message: string, hint?: string): ToolResponse {
-  const text = hint ? `${message}\n\nNext step: ${hint}` : message;
+  const suffix = hint ? `\n\nNext step: ${hint}` : "";
+  const head = enforceCharacterLimit(
+    message,
+    "The omitted text is upstream output, not part of the fix below.",
+    Math.max(200, CHARACTER_LIMIT - suffix.length),
+  );
+  // Backstop for a pathologically long hint, which would otherwise blow the cap on
+  // its own. A no-op in every ordinary case.
+  const text = enforceCharacterLimit(`${head}${suffix}`, "Narrow the request and call again.");
   return {
     isError: true,
     content: [{ type: "text", text }],
