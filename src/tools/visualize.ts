@@ -139,10 +139,6 @@ Run this before handing an SVG to any renderer. It catches the failures that oth
 
 Runs in milliseconds and touches no files or network.
 
-Args:
-  - svg (string, required): Complete SVG markup
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "valid": boolean,             // True when there are no errors; warnings do not block
@@ -222,13 +218,6 @@ Error Handling:
 Uses resvg, which needs no browser and produces deterministic output. Note that resvg ignores <foreignObject> and does not fetch external resources, which is exactly why viz_validate_svg flags both: what disappears here disappears in most sandboxed renderers too.
 
 If rasterization fails, call viz_validate_svg on the same source; it names the broken rule.
-
-Args:
-  - svg (string, required): Complete SVG markup
-  - width (number): Output width in pixels, 1 to 8000 (default: 1200). Height follows the viewBox aspect ratio.
-  - output_path (string, optional): PNG path relative to the workspace root. Omit to skip writing a file.
-  - return_image (boolean): Attach the PNG to the response (default: true)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {
@@ -330,17 +319,6 @@ Scripts run before the screenshot is taken. If any script throws during load the
 Drives a browser that already exists on the machine: an explicit PUPPETEER_EXECUTABLE_PATH, a full puppeteer install, a system Chrome/Chromium/Edge/Brave, or the Chrome Headless Shell that Remotion downloaded. Nothing is downloaded by this tool.
 
 The page renders with no network access. Anything it tries to fetch is refused and listed in blocked_requests, so inline what the markup needs as data: URIs. Set REMOTION_MCP_ALLOWED_HOSTS to permit specific hosts; loopback, private and link-local addresses stay blocked regardless.
-
-Args:
-  - html (string, required): HTML markup or fragment
-  - width (number): Viewport width in CSS pixels (default: 1280)
-  - height (number): Viewport height in CSS pixels (default: 720)
-  - full_page (boolean): Capture the whole scrollable page (default: false)
-  - device_scale_factor (number): Pixel density, 1 to 3 (default: 2)
-  - output_path (string, optional): PNG path relative to the workspace root
-  - project_dir (string, optional): Remotion project directory, so the browser Remotion downloaded can be reused
-  - return_image (boolean): Attach the screenshot to the response (default: true)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {

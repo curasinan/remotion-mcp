@@ -116,12 +116,6 @@ Use this instead of writing Remotion boilerplate by hand. The generated project 
 
 The target directory must be empty or nonexistent. This tool never overwrites existing files.
 
-Args:
-  - project_dir (string, required): Directory to create, relative to the workspace root
-  - remotion_version (string): Semver range for Remotion (default: '^4.0.0')
-  - install (boolean): Also run npm install (default: false)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "project_dir": string,        // Path relative to the workspace root
@@ -217,7 +211,7 @@ Error Handling:
         input.install
           ? installed
             ? "npm install succeeded."
-            : `npm install failed:\n\n\`\`\`\n${installLog}\n\`\`\``
+            : `npm install failed:\n\n${fenceUntrusted(installLog)}`
           : "Skipped (install=false).",
         "",
         "## Next steps",
@@ -236,11 +230,6 @@ Error Handling:
       description: `List every composition registered in a Remotion project, with its dimensions, fps and duration where the CLI reports them.
 
 This bundles the project, so it doubles as the cheapest way to find out whether the code compiles at all. If a composition you expect is missing, it was not registered in Root.tsx. If the command fails, the error output is the real compile error, returned verbatim.
-
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {
@@ -299,7 +288,7 @@ Error Handling:
       if (result.exitCode !== 0) {
         const combined = tailOutput(`${result.stdout}\n${result.stderr}`);
         return buildErrorResponse(
-          `remotion compositions exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n\`\`\`\n${combined}\n\`\`\``,
+          `remotion compositions exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
           diagnoseCliFailure(combined, cli.source, result.timedOut),
         );
       }
@@ -319,7 +308,7 @@ Error Handling:
         `Entry point: \`${entry}\` (bundled in ${formatDuration(result.durationMs)})`,
         "",
         compositions.length === 0
-          ? "No compositions were parsed. Raw CLI output:\n\n```\n" + tailOutput(result.stdout, 3_000) + "\n```"
+          ? "No compositions were parsed. Raw CLI output:\n\n" + fenceUntrusted(result.stdout, 3_000)
           : compositions
               .map((c) => {
                 const meta = [

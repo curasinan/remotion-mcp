@@ -39,10 +39,6 @@ export function registerEnvironmentTools(server: McpServer): void {
 
 Run this FIRST whenever a Remotion command fails, hangs, or produces an empty output file. It checks the four causes behind almost every Remotion failure: a Node version below 18, no local Remotion install, a missing Chrome Headless Shell, and an entry point that is not where the CLI looks for it.
 
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "workspace_root": string,          // Directory all paths are confined to
@@ -128,10 +124,6 @@ Remotion fetches this browser lazily on the first render. That means the first r
 
 Safe to call repeatedly: if the browser is already cached the command exits immediately without downloading.
 
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "success": boolean,
@@ -168,7 +160,7 @@ Error Handling:
 
       if (result.exitCode !== 0) {
         return buildErrorResponse(
-          `remotion browser ensure exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${tailOutput(combined)}`,
+          `remotion browser ensure exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
           result.timedOut
             ? "The download exceeded 5 minutes. Check the network connection, then call this tool again; partial downloads resume."
             : "If this says the CLI was not found, run `npm install` in the project directory first.",
@@ -190,7 +182,7 @@ Error Handling:
           ? "Already cached, nothing downloaded."
           : `Downloaded in ${formatDuration(result.durationMs)}.`,
         "",
-        combined ? "```\n" + tailOutput(combined, 2_000) + "\n```" : "",
+        combined ? fenceUntrusted(combined, 2_000) : "",
       ].join("\n");
 
       return buildResponse(markdown, structured, input.response_format);
@@ -204,8 +196,6 @@ Error Handling:
       description: `Report the workspace root that every file path argument in this server is resolved against and confined to.
 
 Use this when a path argument is rejected as "outside the workspace root", or before passing paths so they are written relative to the right base. The root is set by the REMOTION_MCP_WORKSPACE environment variable and falls back to the server process working directory.
-
-Args: none
 
 Returns (JSON format):
   {

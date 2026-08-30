@@ -84,6 +84,7 @@ a specific message rather than failing later.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `REMOTION_MCP_WORKSPACE` | process cwd | Directory every file path resolves against and cannot escape. Set it explicitly; the cwd under Claude Desktop is not where you want it. |
+| `REMOTION_MCP_STATE_DIR` | per-user state dir | Where server-owned state lives: the audit log and the Remotion Studio registry. Set it to isolate a test run from your real state. |
 | `REMOTION_MCP_ALLOWED_HOSTS` | empty (deny all) | Comma-separated hostnames `viz_render_html` may load from. Loopback, private and link-local stay blocked regardless. |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | auto-detect | Chrome binary for `viz_render_html`, if auto-detection fails. |
 | `REMOTION_MCP_DISABLE_BROWSER_SANDBOX` | unset | Set to `1` only in an environment that cannot provide a Chrome sandbox. It weakens the boundary around rendered HTML; leave it unset. |
@@ -108,7 +109,7 @@ if a path is ever rejected.
 | --- | --- |
 | `remotion_init_project` | Scaffolds a minimal, correct Remotion 4 project. Refuses to overwrite a non-empty directory. |
 | `remotion_list_compositions` | Lists compositions with dimensions/fps/duration. Bundles the project, so it doubles as the cheapest compile check. |
-| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so Claude can see the result. |
+| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so Claude can see the result. Pass `frames` for several tiled into one labelled strip — a single frame cannot show timing, and the extra frames render in the same pass. |
 | `remotion_render_video` | Renders to h264/h265/vp8/vp9/prores/gif/mp3/aac/wav, with frame ranges, scale and concurrency. |
 | `remotion_start_studio` / `remotion_stop_studio` | Runs the Studio dev server detached. Stop only accepts PIDs this server started. |
 
@@ -119,6 +120,7 @@ if a path is ever rejected.
 | `viz_validate_svg` | Lints SVG against what renderers actually enforce. Milliseconds, no files, no network. |
 | `viz_render_svg` | Rasterizes to PNG via resvg and attaches it. Refuses invalid SVG rather than emitting a blank image. |
 | `viz_render_html` | Screenshots HTML via headless Chrome. Reports page script errors instead of returning a blank capture. |
+| `viz_compare` | Pixel-diffs two PNGs so a fix can be verified with a number instead of asserted. Attaches the diff image and reports where the change is. |
 
 ## The two workflows
 

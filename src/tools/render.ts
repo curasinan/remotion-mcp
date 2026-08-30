@@ -21,7 +21,7 @@ import {
   responseFormatField,
 } from "../schemas/common.js";
 import { isRemotionProject } from "../services/environment.js";
-import { assertSafePositional, diagnoseCliFailure, fenceUntrusted, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { assertSafePositional, diagnoseCliFailure, fenceUntrusted, resolveRemotionCli, runCommand, tailOutput, type ResolvedCli } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -31,6 +31,7 @@ import {
   type ToolResponse,
 } from "../services/format.js";
 import { displayPath, ensureParentDirectory, resolveExistingDirectory, resolveInWorkspace } from "../services/paths.js";
+import { tilePanels } from "../services/tile.js";
 import { ToolInputError } from "../types.js";
 import { requireEntryPoint } from "./project.js";
 
@@ -56,11 +57,24 @@ const RenderStillShape = {
   output_path: outputPathField(
     "Output PNG path relative to the workspace root, e.g. 'tactics-video/out/frame.png'",
   ),
+  // Optional rather than .default(0) so that "frame was given" is distinguishable
+  // from "frame was omitted", which is what makes the conflict with `frames`
+  // detectable. Omitting it still renders frame 0.
   frame: z
     .number()
     .int()
-    .default(0)
-    .describe("Frame number to render. Negative values count from the end, so -1 is the last frame."),
+    .optional()
+    .describe("Frame number to render (default 0). Negative values count from the end, so -1 is the last frame."),
+  frames: z
+    .array(z.number().int().nonnegative())
+    .min(2)
+    .max(24)
+    .optional()
+    .describe(
+      "Render these frames and tile them into one labelled image, to see timing that a single "
+      + "frame cannot show. Rendered in one pass, so the extra frames are nearly free. "
+      + "Mutually exclusive with frame.",
+    ),
   scale: z
     .number()
     .min(0.1)
@@ -181,9 +195,129 @@ function renderFailure(
 
   const combined = tailOutput(`${result.stdout}\n${result.stderr}`);
   return buildErrorResponse(
-    `${label} exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n\`\`\`\n${combined}\n\`\`\``,
+    `${label} exited with code ${result.exitCode}${result.timedOut ? " after timing out" : ""}.\n\n${fenceUntrusted(combined)}`,
     diagnoseCliFailure(combined, cliSource, result.timedOut),
   );
+}
+
+/**
+ * Render several frames and tile them into one labelled image.
+ *
+ * One CLI invocation, not one per frame. `remotion still` renders a single frame
+ * and re-bundles the project each time, so six frames that way is six bundles;
+ * `remotion render` takes a sparse comma-separated frame list and produces an
+ * image sequence from one bundle. Measured on a real 1080x1920 project: six
+ * sequential stills 23.3 s, sixteen frames in one pass 2.24 s - about 21 ms per
+ * additional frame. The bundle is the cost; the frames are nearly free.
+ *
+ * Frame validation is left to Remotion. Duplicates, and frames past the
+ * composition's duration, are rejected by its own validateSelectedFrames with its
+ * own message; re-implementing those rules here would drift from the CLI as
+ * versions change.
+ */
+async function renderStrip(
+  input: RenderStillInput,
+  ctx: RenderContext,
+  cli: ResolvedCli,
+  props: string | null,
+): Promise<ToolResponse> {
+  const requested = input.frames ?? [];
+  // A sibling of the output, so it inherits the workspace confinement already
+  // asserted for it, and is removed either way.
+  const seqDir = `${ctx.output}.frames`;
+  const seqArg = path.relative(ctx.dir, seqDir);
+  assertSafePositional(seqArg, "frame sequence directory");
+
+  try {
+    fs.rmSync(seqDir, { recursive: true, force: true });
+    const args = [
+      ...cli.prefixArgs,
+      "render",
+      ctx.entry,
+      input.composition_id,
+      seqArg,
+      `--frames=${requested.join(",")}`,
+      `--scale=${input.scale}`,
+      "--image-format=png",
+      "--log=info",
+    ];
+    if (props) args.push(`--props=${props}`);
+
+    const result = await runCommand(cli.file, args, { cwd: ctx.dir, timeoutMs: TIMEOUT_RENDER_MS });
+    if (result.exitCode !== 0) {
+      return renderFailure("remotion render", cli.source, result, undefined);
+    }
+
+    // Map files back to frames by the number in the name rather than by position:
+    // Remotion sorts the frame list ascending and pads the index, and depending on
+    // both would make this brittle across versions.
+    const produced = (fs.existsSync(seqDir) ? fs.readdirSync(seqDir) : [])
+      .filter((name) => name.toLowerCase().endsWith(".png"))
+      .map((name) => ({ name, frame: Number((/(\d+)/.exec(name) ?? [])[1] ?? NaN) }))
+      .filter((f) => Number.isFinite(f.frame))
+      .sort((a, b) => a.frame - b.frame);
+
+    const wanted = [...new Set(requested)].sort((a, b) => a - b);
+    if (produced.length !== wanted.length) {
+      const got = produced.map((p) => p.frame);
+      return buildErrorResponse(
+        `Asked for ${wanted.length} frames (${wanted.join(", ")}) but the render produced `
+        + `${produced.length} (${got.join(", ") || "none"}).`,
+        "A partial strip would look like a complete one, so none is returned. Check that every "
+        + "frame is below the composition's duration_in_frames - remotion_list_compositions "
+        + "reports it.",
+      );
+    }
+
+    const tile = tilePanels(produced.map((p) => ({
+      png: fs.readFileSync(path.join(seqDir, p.name)),
+      label: `frame ${p.frame}`,
+    })));
+
+    fs.writeFileSync(ctx.output, tile.png);
+    const attach = input.return_image && tile.png.byteLength <= MAX_INLINE_IMAGE_BYTES;
+    const perFrame = Math.round(result.durationMs / produced.length);
+
+    const structured = {
+      success: true,
+      output_path: displayPath(ctx.output),
+      frame: null,
+      frames_rendered: produced.map((p) => p.frame),
+      tiled: true,
+      tile_width: tile.width,
+      tile_height: tile.height,
+      columns: tile.columns,
+      rows: tile.rows,
+      file_size_bytes: tile.png.byteLength,
+      duration_ms: result.durationMs,
+      per_frame_ms: perFrame,
+      image_attached: attach,
+    };
+
+    const markdown = [
+      `# Strip of ${produced.length} frames from \`${input.composition_id}\``,
+      "",
+      `- **Frames:** ${produced.map((p) => p.frame).join(", ")}`,
+      `- **Layout:** ${tile.columns} x ${tile.rows}, ${tile.width} x ${tile.height} px`,
+      `- **Output:** \`${displayPath(ctx.output)}\``,
+      `- **Took:** ${formatDuration(result.durationMs)} (${perFrame} ms per frame; one bundle covers them all)`,
+      "",
+      "Panels are labelled with their frame number. Two that look identical mean the "
+      + "composition is holding still between them, not that a frame was repeated.",
+      ...(input.return_image && !attach
+        ? ["", `Image not attached: ${formatBytes(tile.png.byteLength)} exceeds the `
+          + `${formatBytes(MAX_INLINE_IMAGE_BYTES)} inline cap. Lower scale to inspect it inline.`]
+        : []),
+    ].join("\n");
+
+    const response = buildResponse(markdown, structured, input.response_format);
+    if (attach) {
+      response.content.push({ type: "image", data: tile.png.toString("base64"), mimeType: "image/png" });
+    }
+    return response;
+  } finally {
+    fs.rmSync(seqDir, { recursive: true, force: true });
+  }
 }
 
 export function registerRenderTools(server: McpServer): void {
@@ -195,16 +329,7 @@ export function registerRenderTools(server: McpServer): void {
 
 This is the fast feedback loop. A still takes seconds where a full video takes minutes, and most layout, colour and timing mistakes are visible in a single frame. Render a still, look at it, fix the composition, repeat, and only call remotion_render_video once a frame looks correct.
 
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - composition_id (string, required): Composition id from remotion_list_compositions
-  - output_path (string, required): Output PNG path relative to the workspace root
-  - frame (number): Frame to render; negative counts from the end (default: 0)
-  - scale (number): Resolution multiplier, 0.1 to 4 (default: 1)
-  - props_json (string, optional): Serialized JSON object of input props
-  - return_image (boolean): Attach the PNG to the response (default: true)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
+Pass frames instead of frame to get several frames tiled into one labelled image. A single frame cannot show timing, which is where compositions usually break: an interpolation with the wrong input range looks perfect at frame 0 and wrong at frame 30. The frames render in one pass, so asking for six costs about the same as asking for one.
 
 Returns (JSON format):
   {
@@ -242,13 +367,24 @@ Error Handling:
       const ctx = prepareRender(input.project_dir, input.entry_point, input.output_path);
       const cli = resolveRemotionCli(ctx.dir);
 
+      if (input.frames) {
+        if (input.frame !== undefined) {
+          throw new ToolInputError(
+            "frame and frames cannot both be given.",
+            "Use frame for a single image, or frames for a tiled strip. Not both.",
+          );
+        }
+        return renderStrip(input, ctx, cli, props);
+      }
+
+      const frame = input.frame ?? 0;
       const args = [
         ...cli.prefixArgs,
         "still",
         ctx.entry,
         input.composition_id,
         ctx.outputArg,
-        `--frame=${input.frame}`,
+        `--frame=${frame}`,
         `--scale=${input.scale}`,
         "--image-format=png",
         "--overwrite",
@@ -271,14 +407,14 @@ Error Handling:
       const structured = {
         success: true,
         output_path: displayPath(ctx.output),
-        frame: input.frame,
+        frame,
         file_size_bytes: size,
         duration_ms: result.durationMs,
         image_attached: attach,
       };
 
       const markdown = [
-        `# Rendered frame ${input.frame} of \`${input.composition_id}\``,
+        `# Rendered frame ${frame} of \`${input.composition_id}\``,
         "",
         `- **Output:** \`${displayPath(ctx.output)}\``,
         `- **Size:** ${formatBytes(size)}`,
@@ -307,18 +443,6 @@ Error Handling:
       description: `Render a Remotion composition to a video or audio file.
 
 Renders are slow and expensive, so confirm the composition works first: call remotion_list_compositions to check it builds, then remotion_render_still to check a frame looks right, then render a short frames range before committing to the full duration.
-
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - composition_id (string, required): Composition id from remotion_list_compositions
-  - output_path (string, required): Output file path relative to the workspace root
-  - codec ('h264'|'h265'|'vp8'|'vp9'|'prores'|'gif'|'mp3'|'aac'|'wav'): Default 'h264'
-  - frames (string, optional): Subset such as '0-90' or '100-'. Omit for the full composition.
-  - scale (number): Resolution multiplier, 0.1 to 4 (default: 1)
-  - concurrency (number, optional): CPU threads, 1 to 64. Omit to let Remotion choose.
-  - props_json (string, optional): Serialized JSON object of input props
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {

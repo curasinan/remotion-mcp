@@ -39,6 +39,16 @@ To override the path, set the `REMOTION_MCP_AUDIT_LOG` environment variable.
 
 **Privacy:** The audit log stays on your machine. Nothing is sent to Anthropic, the MCP registry, or any other service.
 
+**If your log predates this fix, it may be mostly test data.** `smoke-test.mjs` and
+`test/protocol.test.mjs` used to spawn the server without redirecting the audit log,
+so running the test suite from a source checkout appended to this file. On one real
+install, 418 of 420 recorded events were test fixtures — including a 48% "security
+refusal" rate that was entirely path-traversal and oversized-SVG *test inputs*, not
+anything that happened to a real project. If your dashboard shows an implausible
+refusal rate or a flood of `viz_render_svg` calls you do not recognise, that is why.
+Delete the log to start clean; it is regenerated on the next tool call.
+`test/audit-isolation.test.mjs` now guards against the regression.
+
 ## How to view it
 
 You have two ways to view the audit log:
