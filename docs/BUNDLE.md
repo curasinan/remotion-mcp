@@ -20,6 +20,24 @@ The workspace has **no default**. An earlier bundle defaulted it to `${HOME}`,
 which combined with the SVG file-read finding meant the whole home tree was
 reachable. The user now chooses the directory deliberately.
 
+## Platform support
+
+`compatibility.platforms` lists `darwin`, `win32` and `linux`, and the bundle carries
+a prebuilt `@resvg/resvg-js` binary for each of six targets: win32 x64/arm64, darwin
+x64/arm64, and **linux x64/arm64 glibc**.
+
+**Linux means glibc.** There are no musl binaries, so the bundle will not load on
+Alpine or another musl distribution — `@resvg/resvg-js` fails with "Failed to load
+native binding", and none of this server's own diagnostics fire, because the failure
+happens before its code runs. This is deliberate: a `.mcpb` runs inside Claude
+Desktop, which is not distributed for musl, so the two extra binaries would add ~8 MB
+to a 19.3 MiB bundle for a platform that cannot run the host application.
+
+To reverse that, uncomment the two musl entries in `NATIVE_TARGETS` in
+`scripts/build-bundle.mjs`. The test *"the linux claim is either backed by musl
+binaries or documented as glibc-only"* in `test/bundle.test.mjs` enforces that one of
+the two is always true.
+
 ## Capabilities the running server exercises
 
 The bundle grants a Node process, and that process:

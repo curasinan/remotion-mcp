@@ -1,6 +1,6 @@
 {
   "name": "remotion-viz-mcp-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "MCP server for Remotion video rendering and SVG/HTML visualization rasterization",
   "type": "module",
   "main": "dist/index.js",
@@ -16,10 +16,12 @@
     "dev": "tsx watch src/index.ts",
     "clean": "rm -rf dist",
     "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
-    "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs",
+    "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/html.test.mjs test/studio.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node smoke-test.mjs",
-    "gateway": "node scripts/build-dashboard.mjs"
+    "gateway": "node scripts/build-dashboard.mjs",
+    "bundle": "node scripts/build-bundle.mjs",
+    "test:bundle": "node --test test/bundle.test.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -28,11 +30,15 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@resvg/resvg-js": "^2.6.2",
     "fast-xml-parser": "^4.5.0",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
     "puppeteer-core": "^24.15.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
     "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

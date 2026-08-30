@@ -32,6 +32,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      # test/html.test.mjs and the blocking-render timeout test gate themselves on
+      # locateBrowser(), so without a browser they SKIP rather than fail - and a
+      # skipped suite is indistinguishable from a passing one in the summary. All
+      # three runner images ship Chrome; this asserts that rather than assuming it,
+      # so an image change surfaces as a red build instead of silently dropping the
+      # only coverage the HTML path has.
+      - name: Assert a browser is available
+        run: >
+          node -e "import('./dist/services/browser.js').then(async m => {
+          const l = await m.locateBrowser();
+          console.log('browser:', l.source, l.executablePath || '');
+          if (l.source === 'none') {
+          console.error('No browser found. test/html.test.mjs would skip silently, leaving viz_render_html untested on this leg.');
+          console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
+          process.exit(1); } })"
+
       - name: Test
         run: npm test
 
@@ -65,3 +81,34 @@ jobs:
         with:
           name: sbom
           path: sbom.cyclonedx.json
+
+  # Builds the distributable .mcpb and asserts what it contains. Ubuntu only: the
+  # bundle carries every platform's native binary by construction, so building it
+  # three times proves nothing. Runs after the matrix so a broken commit fails on
+  # the cheap job first.
+  bundle:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run bundle
+      - name: Verify the bundle
+        run: npm run test:bundle
+        env:
+          # Turns a missing artifact from a skip into a failure. Without it a broken
+          # build step leaves every assertion skipped and the job green - the same
+          # shape as the Windows-only process-leak tests.
+          REQUIRE_BUNDLE: '1'
+      - uses: actions/upload-artifact@v4
+        # Gated to main so pull requests do not each retain a ~20 MB artifact.
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: mcpb-bundle
+          path: '*.mcpb'
+          retention-days: 30

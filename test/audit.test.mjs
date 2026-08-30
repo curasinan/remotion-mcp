@@ -84,7 +84,7 @@ test("a tool call and its rejection are recorded in the audit log", async () => 
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "audit-ws-"));
   const child = spawn("node", ["dist/index.js"], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, REMOTION_MCP_WORKSPACE: ws, REMOTION_MCP_AUDIT_LOG: logPath },
+    env: { ...process.env, REMOTION_MCP_WORKSPACE: ws, REMOTION_MCP_AUDIT_LOG: logPath, REMOTION_MCP_STATE_DIR: dir },
   });
   let buf = ""; const pending = new Map(); let id = 1;
   child.stdout.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\n")) !== -1) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l) continue; const m = JSON.parse(l); const r = pending.get(m.id); if (r) { pending.delete(m.id); r(m); } } });
