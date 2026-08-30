@@ -195,17 +195,6 @@ export function registerRenderTools(server: McpServer): void {
 
 This is the fast feedback loop. A still takes seconds where a full video takes minutes, and most layout, colour and timing mistakes are visible in a single frame. Render a still, look at it, fix the composition, repeat, and only call remotion_render_video once a frame looks correct.
 
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - composition_id (string, required): Composition id from remotion_list_compositions
-  - output_path (string, required): Output PNG path relative to the workspace root
-  - frame (number): Frame to render; negative counts from the end (default: 0)
-  - scale (number): Resolution multiplier, 0.1 to 4 (default: 1)
-  - props_json (string, optional): Serialized JSON object of input props
-  - return_image (boolean): Attach the PNG to the response (default: true)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "success": boolean,
@@ -307,18 +296,6 @@ Error Handling:
       description: `Render a Remotion composition to a video or audio file.
 
 Renders are slow and expensive, so confirm the composition works first: call remotion_list_compositions to check it builds, then remotion_render_still to check a frame looks right, then render a short frames range before committing to the full duration.
-
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - composition_id (string, required): Composition id from remotion_list_compositions
-  - output_path (string, required): Output file path relative to the workspace root
-  - codec ('h264'|'h265'|'vp8'|'vp9'|'prores'|'gif'|'mp3'|'aac'|'wav'): Default 'h264'
-  - frames (string, optional): Subset such as '0-90' or '100-'. Omit for the full composition.
-  - scale (number): Resolution multiplier, 0.1 to 4 (default: 1)
-  - concurrency (number, optional): CPU threads, 1 to 64. Omit to let Remotion choose.
-  - props_json (string, optional): Serialized JSON object of input props
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {

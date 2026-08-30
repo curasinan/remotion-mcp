@@ -116,12 +116,6 @@ Use this instead of writing Remotion boilerplate by hand. The generated project 
 
 The target directory must be empty or nonexistent. This tool never overwrites existing files.
 
-Args:
-  - project_dir (string, required): Directory to create, relative to the workspace root
-  - remotion_version (string): Semver range for Remotion (default: '^4.0.0')
-  - install (boolean): Also run npm install (default: false)
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
-
 Returns (JSON format):
   {
     "project_dir": string,        // Path relative to the workspace root
@@ -236,11 +230,6 @@ Error Handling:
       description: `List every composition registered in a Remotion project, with its dimensions, fps and duration where the CLI reports them.
 
 This bundles the project, so it doubles as the cheapest way to find out whether the code compiles at all. If a composition you expect is missing, it was not registered in Root.tsx. If the command fails, the error output is the real compile error, returned verbatim.
-
-Args:
-  - project_dir (string): Project directory relative to the workspace root (default: '.')
-  - entry_point (string, optional): Entry point relative to project_dir; omit to auto-detect
-  - response_format ('markdown' | 'json'): Output format (default: 'markdown')
 
 Returns (JSON format):
   {
