@@ -31,7 +31,7 @@ step with `src/schemas/common.ts`, and the schema is the one that cannot go stal
 | `remotion_render_still` | `project_dir`, `entry_point`, `composition_id`, `output_path`, `frame`, `scale`, `props_json`, `return_image` | destructive, open-world, idempotent | Renders one frame; attaches the PNG. |
 | `remotion_render_video` | `project_dir`, `entry_point`, `composition_id`, `output_path`, `codec`, `frames`, `scale`, `concurrency`, `props_json` | destructive, open-world, idempotent | Renders video/audio. |
 | `remotion_start_studio` | `project_dir`, `entry_point`, `port` | not read-only, open-world | Detached dev server; survives the session. Stop with `remotion_stop_studio`. |
-| `remotion_stop_studio` | `pid` | destructive, idempotent | Only stops PIDs this server started; registry survives a restart. |
+| `remotion_stop_studio` | `pid` | destructive, idempotent | Only stops PIDs this server started; registry survives a restart. The registry lives in the per-user state directory beside the audit log, not `os.tmpdir()`, and the target process is checked against the OS before signalling so a recycled PID is refused. |
 
 `composition_id` and `entry_point` are charset-restricted and may not begin with
 `-`; `output_path` may not contain a flag-like segment. These are the argument-
