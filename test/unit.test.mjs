@@ -95,6 +95,58 @@ test("GUARD: frames regex stays anchored (no newline bypass)", async () => {
   assert.equal(re.test("0-9\n--evil"), false);
   assert.equal(re.test("30\n"), false);
 });
+// viz_compare's guards, at the service level. The protocol-level behaviour is in
+// smoke-test.mjs; these are the two that must fire before anything is allocated.
+import { comparePngs, readPngSize } from "../dist/services/png.js";
+import { MAX_RASTER_PIXELS } from "../dist/constants.js";
+
+/** A 24-byte PNG header claiming a size, with no image data behind it. */
+function fakePngHeader(width, height) {
+  const b = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(width, 16);
+  b.writeUInt32BE(height, 20);
+  return b;
+}
+
+test("readPngSize reads dimensions without decoding", () => {
+  assert.deepEqual(readPngSize(fakePngHeader(1200, 675), "x.png"), { width: 1200, height: 675 });
+});
+
+test("readPngSize names a file that is not a PNG", () => {
+  assert.throws(() => readPngSize(Buffer.from("<html>not a png</html>"), "notes.txt"), (e) => {
+    assert.equal(e.category, "png_decode");
+    assert.match(e.message, /notes\.txt/, "the error should name which file was bad");
+    return true;
+  });
+});
+
+test("comparePngs refuses an oversized pair BEFORE allocating", () => {
+  // 9000x9000 is 81M pixels against a 64M cap. The buffers here are 24 bytes: if
+  // the budget check ran after decoding, this would fail on a decode error rather
+  // than the budget, and the real path would have allocated 324 MB per image first.
+  const big = fakePngHeader(9_000, 9_000);
+  assert.ok(9_000 * 9_000 > MAX_RASTER_PIXELS);
+  assert.throws(() => comparePngs(big, big, 0.1, "a.png", "b.png"), (e) => {
+    assert.equal(e.category, "raster_budget",
+      `expected the budget to fire first, got category ${e.category}: ${e.message}`);
+    return true;
+  });
+});
+
+test("comparePngs refuses mismatched dimensions, naming both", () => {
+  assert.throws(
+    () => comparePngs(fakePngHeader(400, 300), fakePngHeader(200, 300), 0.1, "a.png", "b.png"),
+    (e) => {
+      assert.equal(e.category, "dimension_mismatch");
+      assert.match(e.message, /400x300/);
+      assert.match(e.message, /200x300/);
+      assert.match(e.hint, /viewBox/, "the hint should explain why this happens, not just that it did");
+      return true;
+    },
+  );
+});
+
 // T-8 / prompt injection: untrusted child-process output cannot forge a fence.
 //
 // README.md's security model claims "untrusted CLI output is length-bounded and

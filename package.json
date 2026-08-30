@@ -1,6 +1,6 @@
 {
   "name": "remotion-viz-mcp-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "MCP server for Remotion video rendering and SVG/HTML visualization rasterization",
   "type": "module",
   "main": "dist/index.js",
@@ -30,12 +30,15 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@resvg/resvg-js": "^2.6.2",
     "fast-xml-parser": "^4.5.0",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
     "puppeteer-core": "^24.15.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@anthropic-ai/mcpb": "2.1.2",
     "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

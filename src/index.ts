@@ -23,6 +23,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { getWorkspaceRoot } from "./services/paths.js";
+import { registerCompareTools } from "./tools/compare.js";
 import { registerEnvironmentTools } from "./tools/environment.js";
 import { registerProjectTools } from "./tools/project.js";
 import { registerRenderTools } from "./tools/render.js";
@@ -40,6 +41,7 @@ export function createServer(): McpServer {
   registerRenderTools(server);
   registerStudioTools(server);
   registerVisualizationTools(server);
+  registerCompareTools(server);
 
   return server;
 }
@@ -76,6 +78,7 @@ Tools:
   viz_validate_svg             Lint SVG against real renderer constraints
   viz_render_svg               Rasterize SVG to PNG and attach it
   viz_render_html              Screenshot HTML to PNG and attach it
+  viz_compare                  Pixel-diff two PNGs and report what changed
 `,
   );
 }
