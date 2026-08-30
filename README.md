@@ -109,7 +109,7 @@ if a path is ever rejected.
 | --- | --- |
 | `remotion_init_project` | Scaffolds a minimal, correct Remotion 4 project. Refuses to overwrite a non-empty directory. |
 | `remotion_list_compositions` | Lists compositions with dimensions/fps/duration. Bundles the project, so it doubles as the cheapest compile check. |
-| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so Claude can see the result. |
+| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so Claude can see the result. Pass `frames` for several tiled into one labelled strip — a single frame cannot show timing, and the extra frames render in the same pass. |
 | `remotion_render_video` | Renders to h264/h265/vp8/vp9/prores/gif/mp3/aac/wav, with frame ranges, scale and concurrency. |
 | `remotion_start_studio` / `remotion_stop_studio` | Runs the Studio dev server detached. Stop only accepts PIDs this server started. |
 

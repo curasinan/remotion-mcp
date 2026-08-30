@@ -247,6 +247,118 @@ test("a failed render is reported through renderFailure, fenced", async () => {
     "the out-of-memory branch of diagnoseCliFailure did not fire");
 });
 
+// ---------------------------------------------------------------------------
+// The frame strip. A stub CLI stands in for Remotion: it records how many times
+// it was invoked and writes one PNG per requested frame, which is enough to
+// exercise argument construction, the file-to-frame mapping, tiling and the
+// shortfall guard without a Remotion install.
+
+/** A project whose @remotion/cli bin is a stub we control. */
+function stubProject(name, stubBody) {
+  const proj = path.join(workspace, name);
+  const cliDir = path.join(proj, "node_modules", "@remotion", "cli");
+  fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.writeFileSync(path.join(proj, "package.json"),
+    JSON.stringify({ name, dependencies: { remotion: "^4.0.0" } }));
+  fs.writeFileSync(path.join(proj, "src", "index.ts"), "");
+  fs.writeFileSync(path.join(cliDir, "package.json"),
+    JSON.stringify({ name: "@remotion/cli", version: "0.0.0", bin: { remotion: "stub.js" } }));
+  fs.writeFileSync(path.join(cliDir, "stub.js"), stubBody);
+  return proj;
+}
+
+/** Stub that writes `produce(frames)` PNGs into the output directory. */
+function sequenceStub(seedPath, produce = "frames") {
+  return `
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(path.join(workspace, "invocations.log"))}, args.join(" ") + "\\n");
+const outDir = args[3];
+const framesArg = (args.find((a) => a.startsWith("--frames=")) || "").slice("--frames=".length);
+const frames = framesArg ? framesArg.split(",").map(Number) : [];
+const chosen = ${produce};
+fs.mkdirSync(outDir, { recursive: true });
+const seed = fs.readFileSync(${JSON.stringify(seedPath)});
+for (const f of chosen) {
+  fs.writeFileSync(path.join(outDir, "element-" + String(f).padStart(3, "0") + ".png"), seed);
+}
+process.exit(0);
+`;
+}
+
+const invocationCount = () => {
+  const p = path.join(workspace, "invocations.log");
+  return fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim().split("\n").filter(Boolean).length : 0;
+};
+
+test("frame and frames together are refused", async () => {
+  const r = await callTool("remotion_render_still", {
+    project_dir: ".", composition_id: "Example", output_path: "out/x.png",
+    frame: 5, frames: [0, 10],
+  });
+  assert.equal(r.result?.isError === true || Boolean(r.error), true);
+});
+
+test("more than 24 frames is refused by the schema", async () => {
+  const r = await callTool("remotion_render_still", {
+    project_dir: ".", composition_id: "Example", output_path: "out/x.png",
+    frames: Array.from({ length: 25 }, (_, i) => i),
+  });
+  assert.equal(r.result?.isError === true || Boolean(r.error), true);
+});
+
+test("a strip is ONE CLI invocation, not one per frame", async () => {
+  // Six sequential `remotion still` calls would be six bundles. This is the
+  // measured reason the feature is worth having at all.
+  const seed = path.join(workspace, "seed.png");
+  await callTool("viz_render_svg", {
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 30"><rect width="40" height="30" fill="#0af"/></svg>',
+    width: 40, output_path: "seed.png", return_image: false,
+  });
+  assert.equal(fs.existsSync(seed), true);
+  fs.rmSync(path.join(workspace, "invocations.log"), { force: true });
+  stubProject("strip-ok", sequenceStub(seed));
+
+  const before = invocationCount();
+  const r = await callTool("remotion_render_still", {
+    project_dir: "strip-ok", composition_id: "Example",
+    output_path: "strip-ok/out/strip.png", frames: [0, 20, 40, 60, 80, 100],
+    response_format: "json",
+  });
+  assert.equal(r.result.isError, undefined, r.result.content[0].text.slice(0, 300));
+  assert.equal(invocationCount() - before, 1,
+    "the strip spawned the CLI more than once; six frames would be six bundles");
+
+  const data = JSON.parse(r.result.content[0].text);
+  assert.deepEqual(data.frames_rendered, [0, 20, 40, 60, 80, 100]);
+  assert.equal(data.tiled, true);
+  assert.equal(data.columns, 6);
+  assert.equal(data.rows, 1);
+  assert.equal(data.tile_width, 240, "six 40px panels side by side");
+  assert.ok(typeof data.per_frame_ms === "number", "the response should report what a frame costs");
+  assert.equal(fs.existsSync(path.join(workspace, "strip-ok/out/strip.png")), true);
+
+  // The scratch sequence directory must not survive.
+  assert.equal(fs.existsSync(path.join(workspace, "strip-ok/out/strip.png.frames")), false,
+    "the intermediate frame directory was left in the workspace");
+});
+
+test("a strip missing frames is refused rather than shown as complete", async () => {
+  // A partial strip looks exactly like a complete one. Returning it would let the
+  // model reason about timing from frames it never saw.
+  const seed = path.join(workspace, "seed.png");
+  stubProject("strip-short", sequenceStub(seed, "frames.slice(0, 2)"));
+  const r = await callTool("remotion_render_still", {
+    project_dir: "strip-short", composition_id: "Example",
+    output_path: "strip-short/out/strip.png", frames: [0, 10, 20, 30],
+  });
+  assert.equal(r.result.isError, true, "a 2-of-4 strip was returned as if complete");
+  assert.match(r.result.content[0].text, /Asked for 4 frames/);
+  assert.match(r.result.content[0].text, /Next step:/);
+});
+
 // A legitimate SVG round-trips.
 test("a valid SVG rasterizes and writes inside the workspace", async () => {
   const r = await callTool("viz_render_svg", { svg: GOOD_SVG, width: 100, output_path: "out/ok.png", return_image: false });

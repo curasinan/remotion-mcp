@@ -147,6 +147,82 @@ test("comparePngs refuses mismatched dimensions, naming both", () => {
   );
 });
 
+// The frame strip. Its geometry, and the invariant that decides whether it is a
+// safe feature: the SVG it generates must carry nothing but data: URIs.
+import { buildTileSvg, tilePanels } from "../dist/services/tile.js";
+import { PNG } from "pngjs";
+
+function solidPng(width, height, rgb = [0, 170, 255]) {
+  const png = new PNG({ width, height });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data[i] = rgb[0]; png.data[i + 1] = rgb[1]; png.data[i + 2] = rgb[2]; png.data[i + 3] = 255;
+  }
+  return PNG.sync.write(png);
+}
+const panels = (n, w = 40, h = 30) =>
+  Array.from({ length: n }, (_, i) => ({ png: solidPng(w, h), label: `frame ${i * 10}` }));
+
+test("the strip lays panels out in a single row up to six", () => {
+  const { width, height, columns, rows } = buildTileSvg(panels(3));
+  assert.deepEqual({ columns, rows }, { columns: 3, rows: 1 });
+  assert.equal(width, 40 * 3);
+  assert.ok(height > 30, "each panel needs a caption band under it");
+});
+
+test("the strip wraps past six panels", () => {
+  const { columns, rows } = buildTileSvg(panels(8));
+  assert.deepEqual({ columns, rows }, { columns: 6, rows: 2 });
+});
+
+test("GUARD: the generated strip SVG references nothing but data: URIs", () => {
+  // rasterizeSvg refuses any href that is not a data: URI, which is what stops an
+  // SVG being a file-read primitive. This document is machine-generated, and
+  // "we wrote it ourselves" is exactly the argument for skipping that check.
+  const { svg } = buildTileSvg(panels(4));
+  assert.deepEqual(findFilesystemReferences(svg), [],
+    "the strip would read a file off disk and composite it into the returned image");
+
+  // Positive control: an SVG with no images at all would also pass the line above.
+  assert.equal((svg.match(/data:image\/png;base64,/g) ?? []).length, 4,
+    "expected one embedded data: URI per panel");
+});
+
+test("the strip labels every panel, so two identical frames are legible", () => {
+  const { svg } = buildTileSvg(panels(3));
+  for (const label of ["frame 0", "frame 10", "frame 20"]) {
+    assert.ok(svg.includes(label), `panel label "${label}" is missing`);
+  }
+});
+
+test("the strip refuses frames of differing sizes", () => {
+  const mixed = [...panels(1), { png: solidPng(64, 64), label: "frame 1" }];
+  assert.throws(() => buildTileSvg(mixed), (e) => {
+    assert.equal(e.category, "tile");
+    assert.match(e.message, /40x30/);
+    assert.match(e.message, /64x64/);
+    return true;
+  });
+});
+
+test("the strip refuses a layout beyond the raster budget, before encoding anything", () => {
+  // 24-byte headers claiming 4000x4000. If the budget check ran after the panels
+  // were base64-encoded this would need 96 MB of real pixels to reach; that it
+  // throws on headers alone is the proof the ordering is right.
+  const huge = Array.from({ length: 6 }, (_, i) => ({ png: fakePngHeader(4_000, 4_000), label: `frame ${i}` }));
+  assert.throws(() => buildTileSvg(huge), (e) => {
+    assert.equal(e.category, "raster_budget");
+    assert.match(e.hint, /scale/, "the fix is the scale knob; the message should say so");
+    return true;
+  });
+});
+
+test("tilePanels produces a real PNG of the computed size", () => {
+  const result = tilePanels(panels(3));
+  assert.ok(result.png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
+  assert.equal(result.width, 120);
+  assert.equal(result.png.readUInt32BE(16), 120);
+});
+
 // T-8 / prompt injection: untrusted child-process output cannot forge a fence.
 //
 // README.md's security model claims "untrusted CLI output is length-bounded and
