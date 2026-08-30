@@ -13,7 +13,7 @@ export const SERVER_NAME = "remotion-viz-mcp-server";
  * `npm test`, and the fail-fast in scripts/build-bundle.mjs, which refuses to
  * produce a bundle at all. Bump both together.
  */
-export const SERVER_VERSION = "1.1.0";
+export const SERVER_VERSION = "1.2.0";
 
 /** Maximum characters returned in any single tool response body. */
 export const CHARACTER_LIMIT = 25_000;

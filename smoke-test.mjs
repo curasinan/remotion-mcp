@@ -88,17 +88,25 @@ async function main() {
   const list = await request("tools/list", {});
   const tools = list.result?.tools ?? [];
   const names = tools.map((t) => t.name).sort();
-  check("tools/list returns 12 tools", tools.length === 12, `got ${tools.length}: ${names.join(", ")}`);
+  check("tools/list returns 13 tools", tools.length === 13, `got ${tools.length}: ${names.join(", ")}`);
   check("every tool has a description", tools.every((t) => (t.description ?? "").length > 100));
 
   // Context budget. Every tool definition is sent on every conversation, so this
-  // payload is a standing cost paid before any work happens. The ceiling is set
-  // just above what the current 12 tools need, which means a 13th has to be paid
-  // for by deleting text somewhere else. That is the only mechanism that reliably
-  // holds a budget.
+  // payload is a standing cost paid before any work happens.
+  //
+  // History, because the number is a decision and not a fact: 34,547 before the
+  // Args: blocks were removed, 30,257 after, 33,393 once viz_compare landed. The
+  // ceiling was 30,500 - deliberately just above what twelve tools needed, so a
+  // thirteenth had to be argued for rather than absorbed. It was, and the ceiling
+  // was raised to 35,000 by decision.
+  //
+  // Note what that costs: 35,000 is ABOVE the 34,547 this started at, so this
+  // assertion no longer catches a drift back to the pre-compression size. It bounds
+  // growth; it no longer ratchets. Lowering it to ~33,500 would restore the ratchet
+  // at the price of re-deciding on the next tool.
   const listBytes = JSON.stringify(tools).length;
-  check("tools/list stays inside the context budget", listBytes <= 30_500,
-    `${listBytes} chars (~${Math.round(listBytes / 3.7)} tokens), ceiling 30500`);
+  check("tools/list stays inside the context budget", listBytes <= 35_000,
+    `${listBytes} chars (~${Math.round(listBytes / 3.7)} tokens), ceiling 35000`);
 
   // Args: restated inputSchema, which the client already sends to the model with
   // each field's .describe() text attached. Verified in this client: an MCP tool's
@@ -169,6 +177,95 @@ async function main() {
   });
   check("viz_render_svg refuses broken SVG", r2.result.isError === true);
   check("refusal explains the fix", /Fix:/.test(r2.result.content[0].text));
+
+  // ---- viz_compare ----------------------------------------------------------
+  // 100x100 white, and the same with one 10x10 black square: a known, countable
+  // delta of exactly 100 pixels.
+  const BASE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="#ffffff"/></svg>`;
+  const DELTA = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="#ffffff"/><rect x="10" y="10" width="10" height="10" fill="#000000"/></svg>`;
+  for (const [svg, out] of [[BASE, "cmp/base.png"], [DELTA, "cmp/delta.png"], [BASE, "cmp/base2.png"]]) {
+    await request("tools/call", {
+      name: "viz_render_svg",
+      arguments: { svg, width: 100, output_path: out, return_image: false },
+    });
+  }
+  // A wider render, for the dimension-mismatch case.
+  await request("tools/call", {
+    name: "viz_render_svg",
+    arguments: { svg: BASE, width: 200, output_path: "cmp/wide.png", return_image: false },
+  });
+
+  const same = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/base.png", after: "cmp/base2.png", response_format: "json" },
+  });
+  const sameData = JSON.parse(same.result.content[0].text);
+  check("viz_compare reports identical for two identical renders",
+    sameData.identical === true && sameData.changed_pixels === 0,
+    JSON.stringify({ identical: sameData.identical, changed: sameData.changed_pixels }));
+
+  const diff = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/base.png", after: "cmp/delta.png", response_format: "json" },
+  });
+  const diffData = JSON.parse(diff.result.content[0].text);
+  // A 10x10 square is 100 pixels; resvg may anti-alias the edges by a few.
+  check("viz_compare counts a known delta rather than just detecting it",
+    diffData.changed_pixels >= 90 && diffData.changed_pixels <= 130,
+    `changed_pixels=${diffData.changed_pixels}, expected ~100 for a 10x10 square`);
+  check("viz_compare locates the change",
+    diffData.changed_region.x >= 8 && diffData.changed_region.x <= 12
+      && diffData.changed_region.width >= 8 && diffData.changed_region.width <= 14,
+    JSON.stringify(diffData.changed_region));
+
+  const diffImg = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/base.png", after: "cmp/delta.png" },
+  });
+  const cmpImage = diffImg.result.content.find((c) => c.type === "image");
+  check("viz_compare attaches the diff image",
+    Boolean(cmpImage) && Buffer.from(cmpImage.data, "base64")
+      .subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
+
+  const mismatch = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/base.png", after: "cmp/wide.png" },
+  });
+  check("viz_compare refuses mismatched dimensions with a next step",
+    mismatch.result.isError === true
+      && /Next step:/.test(mismatch.result.content[0].text)
+      && /100x100/.test(mismatch.result.content[0].text)
+      && /200x200/.test(mismatch.result.content[0].text),
+    mismatch.result.content[0].text.slice(0, 120));
+
+  const cmpTrav = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "../../../etc/hosts", after: "cmp/base.png" },
+  });
+  check("viz_compare confines its READ arguments to the workspace",
+    cmpTrav.result.isError === true && /outside the workspace/.test(cmpTrav.result.content[0].text),
+    cmpTrav.result.content[0].text.slice(0, 90));
+
+  fs.writeFileSync(path.join(workspace, "cmp/notes.txt"), "not a png");
+  const notPng = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/notes.txt", after: "cmp/base.png" },
+  });
+  check("viz_compare names a file that is not a PNG",
+    notPng.result.isError === true && /not a PNG/i.test(notPng.result.content[0].text),
+    notPng.result.content[0].text.slice(0, 90));
+
+  // identical=true is the single most dangerous result to phrase badly: read as a
+  // pass, it tells the model its edit worked when the likeliest cause is that the
+  // edit never reached the rendered output.
+  const sameMd = await request("tools/call", {
+    name: "viz_compare",
+    arguments: { before: "cmp/base.png", after: "cmp/base2.png" },
+  });
+  check("an identical result is phrased as a non-event, not a pass",
+    /Nothing changed/.test(sameMd.result.content[0].text)
+      && /does not say the edit was correct/.test(sameMd.result.content[0].text),
+    sameMd.result.content[0].text.slice(0, 100));
 
   // Path traversal must be refused
   const trav = await request("tools/call", {

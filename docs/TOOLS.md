@@ -44,6 +44,7 @@ injection guards, not cosmetic limits.
 | `viz_validate_svg` | `svg` | read-only | Lints against renderer constraints. No files, no network. |
 | `viz_render_svg` | `svg`, `width`, `output_path`, `return_image` | not read-only, **closed-world**, idempotent | Rasterizes via resvg. Refuses any reference that is not a `data:` URI, and caps output by total pixel count. |
 | `viz_render_html` | `html`, `width`, `height`, `full_page`, `device_scale_factor`, `output_path`, `project_dir`, `return_image` | not read-only, open-world, idempotent | Screenshots via headless Chrome, sandbox on, **no network by default**. `blocked_requests` lists what was refused. |
+| `viz_compare` | `before`, `after`, `threshold`, `output_path`, `return_image` | not read-only, **closed-world**, idempotent | Pixel-diffs two PNGs already inside the workspace. Refuses mismatched dimensions rather than resizing. The only tool whose inputs are files it *reads*. |
 
 `viz_render_svg` is the one visualization tool that is a closed world, and only
 because it refuses off-document references; `viz_render_html` reaches the network

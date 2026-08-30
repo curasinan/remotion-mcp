@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "remotion-viz",
   "display_name": "Remotion & Visualization",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Render Remotion videos and rasterize SVG/HTML visualizations, with diagnostics that name the fix for every failure.",
   "long_description": "Gives Claude two capabilities it does not have on its own: the ability to actually run Remotion on your machine, and the ability to see what an SVG or HTML visualization renders to.\n\n**Remotion.** Scaffold a project, list compositions, render stills and video. `remotion_render_still` attaches the rendered PNG to its response, so a layout can be checked in seconds instead of waiting minutes for a full encode.\n\n**Visualization.** `viz_validate_svg` catches the reasons SVG renders blank — malformed XML, HTML-only entities like `&nbsp;`, a missing `xmlns` or `viewBox`, stripped `<script>` blocks, blocked external references — and returns a specific fix for each. `viz_render_svg` rasterizes to PNG so the result can be inspected rather than assumed.\n\n**Diagnostics.** `remotion_check_environment` reports on Node, the Remotion install, the entry point and the Chrome Headless Shell, with a remedy attached to each failure.\n\nEvery file path is confined to the workspace directory you choose during setup, and it is not defaulted - you pick it. No command is run through a shell, tool arguments cannot become CLI flags, rendered SVG cannot read files outside the workspace, and HTML renders with no network access unless you allow specific hosts.",
   "author": {
@@ -95,16 +95,20 @@
       "description": "Stop a Studio process started by this extension"
     },
     {
-      "name": "viz_validate_svg",
-      "description": "Lint SVG against the rules renderers actually enforce"
+      "name": "viz_compare",
+      "description": "Pixel-diff two PNGs to verify a fix rather than assume it"
+    },
+    {
+      "name": "viz_render_html",
+      "description": "Screenshot HTML to PNG and attach it to the response"
     },
     {
       "name": "viz_render_svg",
       "description": "Rasterize SVG to PNG and attach it to the response"
     },
     {
-      "name": "viz_render_html",
-      "description": "Screenshot HTML to PNG and attach it to the response"
+      "name": "viz_validate_svg",
+      "description": "Lint SVG against the rules renderers actually enforce"
     }
   ],
   "tools_generated": false,

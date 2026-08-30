@@ -119,6 +119,7 @@ if a path is ever rejected.
 | `viz_validate_svg` | Lints SVG against what renderers actually enforce. Milliseconds, no files, no network. |
 | `viz_render_svg` | Rasterizes to PNG via resvg and attaches it. Refuses invalid SVG rather than emitting a blank image. |
 | `viz_render_html` | Screenshots HTML via headless Chrome. Reports page script errors instead of returning a blank capture. |
+| `viz_compare` | Pixel-diffs two PNGs so a fix can be verified with a number instead of asserted. Attaches the diff image and reports where the change is. |
 
 ## The two workflows
 
