@@ -174,6 +174,78 @@ test("untrusted CLI output cannot break out of its fence", async () => {
   assert.match(text, /ˋ/, "backticks should be neutralised to U+02CB, not stripped");
 });
 
+// ---------------------------------------------------------------------------
+// Five tools had no test at any level. Each of these reaches a refusal that
+// happens BEFORE any process is spawned, so none of them costs a download or
+// needs the network - which is why they can live in the default suite.
+
+test("remotion_render_video rejects a codec that is not in the enum", async () => {
+  const r = await callTool("remotion_render_video", {
+    project_dir: ".", composition_id: "Example", output_path: "out/x.mp4", codec: "h266",
+  });
+  assert.equal(r.result?.isError === true || Boolean(r.error), true);
+});
+
+test("remotion_start_studio refuses a directory that is not a Remotion project", async () => {
+  const r = await callTool("remotion_start_studio", { project_dir: "." });
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /remotion_init_project|no remotion dependency/,
+    "the refusal should name the way out, not just the problem");
+});
+
+test("remotion_stop_studio refuses a PID it did not start", async () => {
+  // The tool's own description promises this: it cannot be used to terminate
+  // unrelated processes. process.pid is guaranteed alive and guaranteed not ours.
+  const r = await callTool("remotion_stop_studio", { pid: process.pid });
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /not started by this server/);
+});
+
+test("remotion_ensure_browser refuses a path outside the workspace", async () => {
+  // Confinement is checked in resolveExistingDirectory, before resolveRemotionCli
+  // runs. Worth pinning: every other guard on this tool is downstream of a spawn
+  // that would npx-fetch Remotion from the registry.
+  const r = await callTool("remotion_ensure_browser", { project_dir: "../../../elsewhere" });
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /outside the workspace/);
+});
+
+test("remotion_get_workspace_info reports the configured root", async () => {
+  const r = await callTool("remotion_get_workspace_info", {});
+  assert.equal(r.result.isError, undefined);
+  assert.equal(r.result.structuredContent.configured_via, "REMOTION_MCP_WORKSPACE");
+  assert.equal(fs.realpathSync(r.result.structuredContent.workspace_root), fs.realpathSync(workspace));
+});
+
+test("a failed render is reported through renderFailure, fenced", async () => {
+  // renderFailure formats every remotion render/still failure and nothing reached
+  // it. Same stub technique as the fence test above: resolveRemotionCli resolves
+  // through the declared bin, so this exercises the real path without Remotion.
+  const proj = path.join(workspace, "failing-render");
+  const cliDir = path.join(proj, "node_modules", "@remotion", "cli");
+  fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.writeFileSync(path.join(proj, "package.json"),
+    JSON.stringify({ name: "failing-render", dependencies: { remotion: "^4.0.0" } }));
+  fs.writeFileSync(path.join(proj, "src", "index.ts"), "");
+  fs.writeFileSync(path.join(cliDir, "package.json"),
+    JSON.stringify({ name: "@remotion/cli", version: "0.0.0", bin: { remotion: "stub.js" } }));
+  fs.writeFileSync(path.join(cliDir, "stub.js"),
+    `process.stderr.write(${JSON.stringify("Error: out of memory\n" + "`".repeat(3) + "\nnot really\n")});\n`
+    + "process.exit(1);\n");
+
+  const r = await callTool("remotion_render_video", {
+    project_dir: "failing-render", composition_id: "Example", output_path: "failing-render/out/x.mp4",
+  });
+  assert.equal(r.result.isError, true);
+  const text = r.result.content[0].text;
+  assert.equal((text.match(/```/g) ?? []).length, 2, "renderFailure did not fence the CLI output");
+  // diagnoseCliFailure maps out-of-memory to a specific remedy; this is the branch
+  // that turns a stack trace into a next step.
+  assert.match(text, /concurrency=2 and scale=0\.5/,
+    "the out-of-memory branch of diagnoseCliFailure did not fire");
+});
+
 // A legitimate SVG round-trips.
 test("a valid SVG rasterizes and writes inside the workspace", async () => {
   const r = await callTool("viz_render_svg", { svg: GOOD_SVG, width: 100, output_path: "out/ok.png", return_image: false });

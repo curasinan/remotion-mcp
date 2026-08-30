@@ -8,8 +8,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { locateBrowser } from "../dist/services/browser.js";
 
 const isWindows = process.platform === "win32";
+
+// Only the process COUNTING here is Windows-specific. The timeout bound is not,
+// and gating it on the platform left the documented "30 s including a script that
+// blocks the renderer" claim unverified on the ubuntu and macos CI legs - the two
+// where a regression would be least likely to be noticed.
+const location = await locateBrowser();
+const noBrowser = location.source === "none" ? `no browser: ${location.detail}` : false;
 
 /**
  * Count only the chrome processes THIS test spawned, not every chrome on the
@@ -46,7 +54,7 @@ test("a blocking-script render leaves no chrome process behind", { skip: !isWind
   assert.ok(after <= before, `chrome count grew: ${before} -> ${after}`);
 });
 
-test("a blocking render returns well under the old 181s in about 31s", { skip: !isWindows }, async () => {
+test("a blocking render returns well under the old 181s in about 31s", { skip: noBrowser }, async () => {
   const { rasterizeHtml } = await import("../dist/services/raster.js");
   const start = Date.now();
   await assert.rejects(() => rasterizeHtml("<script>while(true){}</script>", 200, 100, false, 1));
