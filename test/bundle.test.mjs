@@ -193,7 +193,8 @@ test("the bundled server starts and its tools match the manifest", { skip: skip(
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "mcpb-ws-"));
   const child = spawn("node", [entry], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, REMOTION_MCP_WORKSPACE: ws, REMOTION_MCP_AUDIT_LOG: path.join(ws, "audit.jsonl") },
+    env: { ...process.env, REMOTION_MCP_WORKSPACE: ws, REMOTION_MCP_AUDIT_LOG: path.join(ws, "audit.jsonl"),
+      REMOTION_MCP_STATE_DIR: path.join(ws, "state") },
   });
   let buf = "", stderr = "";
   const pending = new Map();

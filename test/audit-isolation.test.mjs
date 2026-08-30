@@ -131,7 +131,11 @@ test("a server spawned WITH an audit override leaves the default path untouched"
 // could satisfy it with the name in a comment while still polluting. That is
 // accepted — the behavioural tests above cover the mechanism, and this only has to
 // catch the plain omission, which is how the bug actually happened.
-test("every harness that spawns the server sets REMOTION_MCP_AUDIT_LOG", () => {
+test("every harness that spawns the server redirects ALL of its persistent state", () => {
+  // Two kinds now. The audit log is appended to; the Studio registry is worse -
+  // loading it UNLINKS the pre-1.2.0 file as a migration step, so a suite that
+  // missed this would delete real state on a developer's machine just by running.
+  const REQUIRED = ["REMOTION_MCP_AUDIT_LOG", "REMOTION_MCP_STATE_DIR"];
   const roots = [REPO, path.join(REPO, "test"), path.join(REPO, "scripts")];
   const offenders = [];
   for (const dir of roots) {
@@ -141,12 +145,24 @@ test("every harness that spawns the server sets REMOTION_MCP_AUDIT_LOG", () => {
       if (!e.isFile() || !e.name.endsWith(".mjs")) continue;
       const full = path.join(dir, e.name);
       const src = fs.readFileSync(full, "utf8");
-      if (!src.includes("dist/index.js")) continue;          // does not spawn the server
-      if (src.includes("REMOTION_MCP_AUDIT_LOG")) continue;  // isolated
-      offenders.push(path.relative(REPO, full));
+      // Spawns either the source build or a bundled copy, AND drives it over
+      // JSON-RPC. The second half matters: scripts/build-bundle.mjs names
+      // server/index.js to check it exists and never runs it.
+      const namesServer = src.includes("dist/index.js") || src.includes('"server", "index.js"');
+      if (!namesServer || !src.includes('"initialize"')) continue;
+      // Two valid isolations. REMOTION_MCP_STATE_DIR redirects the state dir and
+      // switches off the legacy migration. Redirecting the platform sources plus
+      // os.tmpdir() isolates everything including that migration, which is what a
+      // test of the migration itself needs.
+      const byOverride = src.includes("REMOTION_MCP_STATE_DIR");
+      const byRedirect = /LOCALAPPDATA|XDG_STATE_HOME/.test(src) && /TMPDIR|TEMP:/.test(src);
+      const missing = [];
+      if (!src.includes("REMOTION_MCP_AUDIT_LOG")) missing.push("REMOTION_MCP_AUDIT_LOG");
+      if (!byOverride && !byRedirect) missing.push("REMOTION_MCP_STATE_DIR (or a home+tmpdir redirect)");
+      if (missing.length > 0) offenders.push(`${path.relative(REPO, full)} (missing ${missing.join(", ")})`);
     }
   }
   assert.deepEqual(offenders, [],
-    `these spawn the server without redirecting the audit log, so running them pollutes the user's `
-    + `production log at the platform default location: ${offenders.join(", ")}`);
+    "these spawn the server without redirecting all of its persistent state, so running them "
+    + `reads, writes or deletes the real user's files: ${offenders.join("; ")}`);
 });

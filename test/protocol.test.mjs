@@ -47,6 +47,7 @@ before(async () => {
       ...process.env,
       REMOTION_MCP_WORKSPACE: workspace,
       REMOTION_MCP_AUDIT_LOG: path.join(workspace, "audit.jsonl"),
+      REMOTION_MCP_STATE_DIR: path.join(workspace, "state"),
     },
   });
   let buffer = "";

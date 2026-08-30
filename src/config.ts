@@ -97,17 +97,37 @@ function parseBrowserExecutable(env: NodeJS.ProcessEnv): string | null {
   return explicit;
 }
 
-function defaultAuditLogPath(): string {
+/**
+ * Per-user directory for state this server owns: the audit log, and the registry
+ * of Studio processes it has started.
+ *
+ * Per-user is the point. The Studio registry lived in os.tmpdir(), which on POSIX
+ * is shared across every account on the machine - and that registry is the
+ * authorization list remotion_stop_studio consults before signalling a process.
+ * Nothing here is reachable through a tool argument either: every path a tool
+ * accepts goes through resolveInWorkspace and is confined to the workspace, which
+ * this deliberately sits outside.
+ */
+export function stateDirectory(): string {
+  // Explicit override, for the same reason REMOTION_MCP_AUDIT_LOG exists: a test
+  // that spawns this server must not read, write or delete the real user's state.
+  // The Studio registry migration UNLINKS a file on load, so a suite without this
+  // would destroy state on the developer's machine just by running.
+  const override = process.env.REMOTION_MCP_STATE_DIR;
+  if (override && override.trim() !== "") return path.resolve(override);
+
   const home = os.homedir();
   if (process.platform === "win32") {
-    const base = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
-    return path.join(base, "remotion-viz", "audit.jsonl");
+    return path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "remotion-viz");
   }
   if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "remotion-viz", "audit.jsonl");
+    return path.join(home, "Library", "Application Support", "remotion-viz");
   }
-  const base = process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state");
-  return path.join(base, "remotion-viz", "audit.jsonl");
+  return path.join(process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state"), "remotion-viz");
+}
+
+function defaultAuditLogPath(): string {
+  return path.join(stateDirectory(), "audit.jsonl");
 }
 
 function parseAuditLogPath(raw: string | undefined): string {

@@ -84,6 +84,7 @@ a specific message rather than failing later.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `REMOTION_MCP_WORKSPACE` | process cwd | Directory every file path resolves against and cannot escape. Set it explicitly; the cwd under Claude Desktop is not where you want it. |
+| `REMOTION_MCP_STATE_DIR` | per-user state dir | Where server-owned state lives: the audit log and the Remotion Studio registry. Set it to isolate a test run from your real state. |
 | `REMOTION_MCP_ALLOWED_HOSTS` | empty (deny all) | Comma-separated hostnames `viz_render_html` may load from. Loopback, private and link-local stay blocked regardless. |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | auto-detect | Chrome binary for `viz_render_html`, if auto-detection fails. |
 | `REMOTION_MCP_DISABLE_BROWSER_SANDBOX` | unset | Set to `1` only in an environment that cannot provide a Chrome sandbox. It weakens the boundary around rendered HTML; leave it unset. |
