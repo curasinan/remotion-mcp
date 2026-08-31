@@ -48,13 +48,6 @@ jobs:
           console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
           process.exit(1); } })"
 
-      # The first Chrome launch on a fresh runner is an operating-system cost,
-      # not a rendering cost: ~100 s on macOS (Gatekeeper verifying a signed app
-      # bundle) against ~2 s for every launch after it. Paying it here keeps it
-      # out of the render deadline, which should bound rendering.
-      - name: Warm the browser
-        run: node scripts/warm-browser.mjs
-
       - name: Test
         run: npm test
         env:
