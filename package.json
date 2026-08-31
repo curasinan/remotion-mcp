@@ -19,6 +19,7 @@
     "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs",
     "test:coverage": "node --test --experimental-test-coverage test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test:smoke": "node smoke-test.mjs",
     "gateway": "node scripts/build-dashboard.mjs",
     "bundle": "node scripts/build-bundle.mjs",
@@ -38,9 +39,12 @@
   },
   "devDependencies": {
     "@anthropic-ai/mcpb": "2.1.2",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.0",
     "@types/pngjs": "^6.0.5",
+    "eslint": "^10.9.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.69.0"
   }
 }
