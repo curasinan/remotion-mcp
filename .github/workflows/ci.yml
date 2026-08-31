@@ -137,6 +137,32 @@ jobs:
           name: sbom
           path: sbom.cyclonedx.json
 
+      # Advisory only, matching the npm audit gate in build-and-test: flags
+      # CRITICAL/HIGH filesystem findings (deps, configs, IaC) without failing
+      # the build. Raising this to blocking is a separate decision with a
+      # separate argument.
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '0'          # advisory, matching the npm audit gate's posture
+          format: table
+
+      # SPDX joins the CycloneDX SBOM above because downstream consumers differ
+      # on which format they accept. anchore/sbom-action uploads the workflow
+      # artifact itself (named from artifact-name) rather than just writing a
+      # file, so no separate upload-artifact step follows it here - and that
+      # name must differ from "sbom" above or actions/upload-artifact rejects
+      # the duplicate.
+      - name: SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+
   # Builds the distributable .mcpb and asserts what it contains. Ubuntu only: the
   # bundle carries every platform's native binary by construction, so building it
   # three times proves nothing. Runs after the matrix so a broken commit fails on
