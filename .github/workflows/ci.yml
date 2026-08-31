@@ -175,3 +175,87 @@ jobs:
           name: mcpb-bundle
           path: '*.mcpb'
           retention-days: 30
+
+      # The same bytes again, ungated and short-lived. The upload above is the
+      # keepsake copy and is deliberately main-only, but verify-bundle has to run
+      # on pull requests too - that is where a packaging regression should be
+      # caught - and it cannot download an artifact that was never uploaded.
+      # One day of retention because nothing reads this after the run that
+      # produced it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-runtime
+          path: '*.mcpb'
+          retention-days: 1
+
+  # Runs the artifact a user actually installs, on every platform it claims.
+  # test/bundle.test.mjs asserts the six @resvg/resvg-js binaries are present in
+  # the zip, and presence is not loadability: a truncated or wrong-arch .node
+  # satisfies that assertion and then fails on the user's machine with "Failed to
+  # load native binding", thrown from the addon loader before any of this
+  # server's own diagnostics can run.
+  #
+  # That test does start the bundled server, so it would catch a broken binary -
+  # for the one platform it runs on. Measured, not assumed: corrupt the .node for
+  # the build platform and it fails 1 of 10; corrupt any of the other five and it
+  # passes 10 of 10 while the artifact is unusable for everyone on that platform.
+  # Closing that is what this job is for.
+  #
+  # Coverage, stated rather than left implicit. The bundle ships six native
+  # binaries; this matrix loads all six, one per leg, and no leg covers more than
+  # its own. Before this job exactly one of them was ever loaded - linux-x64-gnu,
+  # and only incidentally, because the bundle job's test:bundle step starts the
+  # bundled server on ubuntu. That step does catch a broken linux-x64 binary, so
+  # it is not the gap; the gap is the other five, where corrupting the binary
+  # leaves all ten of its assertions green and the artifact broken for everyone
+  # on that platform. If a leg is ever removed, the binary it covered goes back
+  # to that state - say so here rather than letting the job keep reading as if it
+  # proved six.
+  #
+  # Three things this job does NOT cover, so it is not read as proving them:
+  #   - the musl targets, which are neither covered nor shipped (docs/BUNDLE.md);
+  #   - fidelity. The verifier checks that a PNG came back with a PNG signature,
+  #     which is linkage, not correctness: a binary that loads and rasterizes
+  #     wrongly passes every leg;
+  #   - runtimes other than Node 24. A .mcpb runs under whatever Node the host
+  #     application supplies, and nothing here verifies the artifact against it.
+  #
+  # No `npm ci`: the bundle carries its own node_modules, and the verifier uses
+  # only Node's standard library plus test/zip-reader.mjs. The checkout is for
+  # the script, not for dependencies.
+  verify-bundle:
+    needs: bundle
+    strategy:
+      # One platform's linkage failure must not cancel the other five - which one
+      # of the six is broken is the entire finding.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest     # loads @resvg/resvg-js-linux-x64-gnu
+          - os: ubuntu-24.04-arm  # loads @resvg/resvg-js-linux-arm64-gnu
+          - os: windows-latest    # loads @resvg/resvg-js-win32-x64-msvc
+          - os: windows-11-arm    # loads @resvg/resvg-js-win32-arm64-msvc
+          - os: macos-latest      # loads @resvg/resvg-js-darwin-arm64
+          - os: macos-15-intel    # loads @resvg/resvg-js-darwin-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 24 rather than the matrix floor of 22: this job asks whether the shipped
+      # artifact runs, and 24 is Active LTS - the version a user most likely has.
+      # The floor is covered by build-and-test against the source tree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcpb-runtime
+          path: artifact
+
+      # A plain `node` line with no shell globbing, because bash is not the
+      # default shell on the two Windows legs and this step has to behave
+      # identically on all six. The script takes the download directory and
+      # fails if it does not hold exactly one .mcpb.
+      - name: Run the shipped artifact
+        run: node scripts/verify-bundle-runtime.mjs ./artifact ./extracted
