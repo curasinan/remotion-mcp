@@ -64,6 +64,37 @@ jobs:
         env:
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
 
+      # test/protocol.test.mjs handshakes the server with our own client code, so a
+      # bug shared by both sides of that harness would pass silently. MCP Inspector
+      # is an independent implementation of the protocol; querying tools/list through
+      # it catches a divergence our own client would agree with itself about. Single
+      # leg because the tool list doesn't vary by OS or Node version. The count is
+      # hardcoded at 13 deliberately, so adding a tool forces someone to touch this
+      # line rather than the check silently widening.
+      - name: MCP conformance (independent client)
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: |
+          npx -y @modelcontextprotocol/inspector --cli node dist/index.js \
+            --method tools/list > inspector-tools.json
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync('inspector-tools.json','utf8'));
+            const tools = r.tools ?? r;
+            if (!Array.isArray(tools)) { console.error('no tools array'); process.exit(1); }
+            if (tools.length !== 13) {
+              console.error('expected 13 tools, got ' + tools.length + ': ' + tools.map(t=>t.name).join(','));
+              process.exit(1);
+            }
+            for (const t of tools) {
+              if (!t.name || !t.description || !t.inputSchema) {
+                console.error('tool missing required field: ' + JSON.stringify(t).slice(0,200));
+                process.exit(1);
+              }
+            }
+            console.log('conformance OK: ' + tools.length + ' tools');
+          "
+        env:
+          REMOTION_MCP_WORKSPACE: ${{ github.workspace }}
+
       # Advisory only: ESLint just landed and the existing tree has a real
       # finding count, so failing the build on it now would block unrelated
       # PRs on a mechanical cleanup that hasn't happened yet. Runs on a single
