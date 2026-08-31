@@ -334,8 +334,27 @@ async function rasterizeHtmlUnlimited(
     // render returns, not which half of it was slow.
     const shot = await withDeadline(
       (async () => {
+        // "load", not "networkidle0". networkidle0 does not mean puppeteer counts
+        // requests - it waits for Blink to emit Page.lifecycleEvent{networkIdle},
+        // and on the macOS CI runner Blink sometimes never emits it. That produced
+        // a bimodal hang: 8.5-11.5 s or past the deadline, never in between, on
+        // byte-identical trees eight minutes apart. Because the failure time tracked
+        // whatever the deadline was (30 s budget -> 38.7 s, 90 s -> 98.3 s), no
+        // timeout value could ever have fixed it.
+        //
+        // Dropping it is right on the merits, not just to make CI green: this page
+        // is caller-supplied markup rendered under a deny-all network policy, so
+        // every http(s) request is aborted before egress. Waiting for the network
+        // to go quiet is waiting for a condition the policy already guarantees,
+        // and it stacks a second renderer-side liveness requirement on top of
+        // "load" - the one that hangs. Measured locally: load at 486 ms against
+        // networkIdle at 1455 ms, so it is also about a second faster per render.
+        //
+        // If a future tool ever needs post-load work to settle, add an explicit
+        // wait for that specific thing (document.fonts.ready, a selector). Do not
+        // reach back for networkidle0.
         await page.setContent(document, {
-          waitUntil: "networkidle0",
+          waitUntil: "load",
           timeout: pageLoadTimeoutMs,
         });
         return page.screenshot({ type: "png", fullPage });
