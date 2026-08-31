@@ -5,6 +5,16 @@ on:
     branches: [main, master]
   pull_request:
 
+# Least privilege, stated rather than inherited. The repository default is
+# currently read-only, so this changes nothing today - which is the point of
+# writing it down now. Every job below runs third-party actions, and without this
+# block the permissions they hold are whatever the repository setting happens to
+# be; one toggle in Settings would silently hand them contents: write. Nothing in
+# this workflow writes to the repository. release.yml holds the write scopes, and
+# holds them alone.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     strategy:
@@ -48,7 +58,16 @@ jobs:
           console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
           process.exit(1); } })"
 
+      # `test:coverage` runs a byte-identical file list to `test`, so on the one leg
+      # that collects coverage the two steps were the same suite twice: ~4 minutes
+      # of duplication per run, and two goes at the browser tests on the leg most
+      # likely to flake. Coverage replaces the plain run there rather than following
+      # it - the other eight legs still run `npm test`, so nothing loses coverage of
+      # the suite itself.
       - name: Test
+        # Quoted because a bare `!` starts a YAML tag; the expression itself is
+        # the exact negation of the coverage step's condition below.
+        if: "!(matrix.os == 'ubuntu-latest' && matrix.node == 24)"
         run: npm test
         env:
           # Shared runners are contended and Chrome starts cold, so the default
@@ -58,7 +77,10 @@ jobs:
           # its own conditions instead of pretending the runners are fast.
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
 
-      - name: Coverage
+      # The same suite as the step above, with coverage instrumentation. Mutually
+      # exclusive with it by construction: the two `if:` conditions are exact
+      # negations, so every leg runs the tests exactly once.
+      - name: Test (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run test:coverage
         env:
@@ -71,10 +93,16 @@ jobs:
       # leg because the tool list doesn't vary by OS or Node version. The count is
       # hardcoded at 13 deliberately, so adding a tool forces someone to touch this
       # line rather than the check silently widening.
+      #
+      # Version-pinned because this gate BLOCKS: `npx -y` with a floating specifier
+      # resolves whatever npm published most recently and runs it, so an upstream
+      # release could fail this job on a commit that changed nothing here - or,
+      # worse, execute newly published code in CI. 2.4.0 is the version this check
+      # was written and measured against. Bump it deliberately.
       - name: MCP conformance (independent client)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: |
-          npx -y @modelcontextprotocol/inspector --cli node dist/index.js \
+          npx -y @modelcontextprotocol/inspector@2.4.0 --cli node dist/index.js \
             --method tools/list > inspector-tools.json
           node -e "
             const r = JSON.parse(require('fs').readFileSync('inspector-tools.json','utf8'));
@@ -156,8 +184,15 @@ jobs:
       # file, so no separate upload-artifact step follows it here - and that
       # name must differ from "sbom" above or actions/upload-artifact rejects
       # the duplicate.
+      #
+      # SHA-pinned. `@v0` is a mutable floating major: the tag is moved onto each
+      # new release, so `@v0` runs whatever code anchore published last, and a
+      # compromised or simply broken release lands in this workflow with no
+      # change here. A commit SHA is the only immutable reference GitHub Actions
+      # accepts. The trailing comment carries the human-readable version so the
+      # pin can be read and bumped without an API call.
       - name: SPDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: spdx-json
@@ -223,8 +258,11 @@ jobs:
   #
   # That test does start the bundled server, so it would catch a broken binary -
   # for the one platform it runs on. Measured, not assumed: corrupt the .node for
-  # the build platform and it fails 1 of 10; corrupt any of the other five and it
-  # passes 10 of 10 while the artifact is unusable for everyone on that platform.
+  # the build platform and it fails 1 of 10; corrupt darwin-arm64 - a non-host
+  # platform - and it passes 10 of 10 while the artifact is unusable for everyone
+  # on that platform. One non-host binary was measured, not all five; the other
+  # four are the same code path and are expected to behave identically, but say
+  # what was measured. docs/BUNDLE.md states it the same way.
   # Closing that is what this job is for.
   #
   # Coverage, stated rather than left implicit. The bundle ships six native
