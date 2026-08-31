@@ -312,12 +312,18 @@ async function rasterizeHtmlUnlimited(
     page.on("request", (request: InterceptedRequest) => {
       const url = request.url();
       const decision = decideRequest(url, policy);
+      // .catch on both: continue()/abort() reject if the request was already
+      // handled - a navigation that raced this handler, or a page torn down
+      // mid-flight. `void` discards the promise but not the rejection, so an
+      // unhandled rejection could take the process down for an event that is
+      // routine and already decided. Nothing here can recover from it either
+      // way: the request is gone.
       if (decision.allowed) {
-        void request.continue();
+        void request.continue().catch(() => {});
         return;
       }
       if (!blocked.has(url)) blocked.set(url, decision.reason ?? "blocked");
-      void request.abort();
+      void request.abort().catch(() => {});
     });
 
     const consoleErrors: string[] = [];

@@ -79,8 +79,12 @@ if (fs.statSync(bundleArg).isDirectory()) {
 // tree and printed "Bundle runtime OK". A signature is not a claim of
 // ownership; a sentinel this script wrote is.
 const SENTINEL = ".verify-bundle-extraction";
+// The first line is the claim of ownership, and it is checked. Keeping it
+// separate from the rest of the prose means the explanatory text below can be
+// reworded without stranding extraction directories a previous run left behind.
+const SENTINEL_MAGIC = "Written by scripts/verify-bundle-runtime.mjs.";
 const SENTINEL_BODY = [
-  "Written by scripts/verify-bundle-runtime.mjs.",
+  SENTINEL_MAGIC,
   "",
   "This directory holds a .mcpb unpacked for runtime verification. It is deleted",
   "and rewritten in full on every run, and nothing in it is source. Safe to",
@@ -89,12 +93,43 @@ const SENTINEL_BODY = [
   "",
 ].join("\n");
 
+/**
+ * Whether the sentinel in `dir` is one THIS script wrote.
+ *
+ * A name is not a claim. `readdirSync(dir).includes(SENTINEL)` was true for a
+ * directory that merely contained something called .verify-bundle-extraction -
+ * including a *directory* by that name, or a symlink, neither of which this
+ * script can ever produce - and the next line then recursively force-deleted a
+ * path taken from argv. Anyone who could create one empty directory inside a
+ * tree could get the rest of that tree removed.
+ *
+ * So: it must be a regular file (lstat, so a symlink to a genuine sentinel
+ * elsewhere does not qualify either), and its contents must be what this script
+ * writes. Both checks fail closed - any error reading it means "not ours",
+ * which costs a refusal and never costs data.
+ */
+function ownsExtractionDir(dir) {
+  const marker = path.join(dir, SENTINEL);
+  try {
+    if (!fs.lstatSync(marker).isFile()) return false;
+    return fs.readFileSync(marker, "utf8").startsWith(SENTINEL_MAGIC);
+  } catch {
+    return false;
+  }
+}
+
 if (fs.existsSync(extractDir)) {
   const existing = fs.readdirSync(extractDir);
-  if (existing.length > 0 && !existing.includes(SENTINEL)) {
+  if (existing.length > 0 && !ownsExtractionDir(extractDir)) {
+    // Say which of the two it is: an impostor entry is a different problem from
+    // no sentinel at all, and the reader needs to know one is sitting there.
+    const impostor = existing.includes(SENTINEL)
+      ? `\nThere IS an entry named ${SENTINEL} here, but it is not a regular file `
+        + `written by this script, so it does not establish ownership.`
+      : "";
     console.error(
       `Refusing to clear ${extractDir}: it is not empty and was not created by `
-      + `this script (no ${SENTINEL} in it).\n`
+      + `this script (no ${SENTINEL} file written by it).${impostor}\n`
       + `This script deletes its extraction directory recursively, so it only ever `
       + `removes directories it made itself.\n`
       + `Pass a path that does not exist yet, or delete this one yourself if you are `
