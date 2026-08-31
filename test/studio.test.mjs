@@ -18,7 +18,7 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -42,10 +42,41 @@ function dummy(...args) {
 }
 after(() => { for (const c of spawned) { try { c.kill(); } catch { /* already gone */ } } });
 
-// How long to keep polling before declaring the wait itself the failure. The
-// normal case satisfies every one of these in well under a second; the cap is
-// generous because the failure it must not produce is a false red.
-const VISIBILITY_TIMEOUT_MS = 15_000;
+// How long to keep polling before declaring the wait itself the failure. One
+// sweep costs at most readCommandLine's own LOOKUP_TIMEOUT_MS (5 s) per PID, and
+// the largest wait here is three PIDs, so this has to clear 15 s by enough to
+// allow several sweeps. The normal case, once the lookup is warm, returns in
+// well under a second.
+const VISIBILITY_TIMEOUT_MS = 45_000;
+
+/**
+ * Pay the Windows process-lookup cold start once, outside any deadline.
+ *
+ * This is the fix for a real CI failure, and the reason it is not simply "poll
+ * for longer". On windows-latest/node-24 every readCommandLine() call returned
+ * null for 15 s across three separate tests - not slow, never succeeding. The
+ * cause is a feedback loop inside readCommandLine(): it spawns PowerShell with
+ * spawnSync({ timeout: 5000 }), and the FIRST powershell.exe start on a cold,
+ * contended two-core runner takes longer than that. The call is killed at 5 s,
+ * so the assemblies never finish loading, so the OS file cache is never
+ * populated, so the next call is cold too. Every call is the first call.
+ *
+ * Breaking that needs one invocation that is allowed to finish. This spawns
+ * PowerShell directly rather than through readCommandLine(), precisely so it is
+ * not subject to that 5 s cap; afterwards the cache is warm and the capped calls
+ * return promptly. Cheap and skipped entirely off Windows, where the lookup is a
+ * /proc read or a ps invocation and no such cliff exists.
+ */
+let lookupWarmed = false;
+function warmProcessLookup() {
+  if (lookupWarmed) return;
+  lookupWarmed = true;
+  if (process.platform !== "win32") return;
+  spawnSync("powershell", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `$null = (Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}").CommandLine`,
+  ], { encoding: "utf8", shell: false, windowsHide: true, timeout: 120_000 });
+}
 
 /**
  * Wait until the OS process table reports a command line for every PID given.
@@ -64,6 +95,10 @@ const VISIBILITY_TIMEOUT_MS = 15_000;
  * which PID never appeared rather than failing an assertion three lines later.
  */
 async function awaitProcessVisible(children, timeoutMs = VISIBILITY_TIMEOUT_MS) {
+  // Before the clock starts: a cold lookup would otherwise burn the whole
+  // deadline discovering that it is cold.
+  warmProcessLookup();
+
   const deadline = Date.now() + timeoutMs;
   const waiting = new Map(children.map((c) => [c.pid, c.testLabel ?? "?"]));
   for (;;) {
@@ -73,13 +108,25 @@ async function awaitProcessVisible(children, timeoutMs = VISIBILITY_TIMEOUT_MS) 
     if (waiting.size === 0) return;
     if (Date.now() >= deadline) {
       const missing = [...waiting].map(([pid, argv]) => `${pid} (${argv})`).join(", ");
+      // Distinguish the two causes the message names, so the next reader does
+      // not have to guess: if the lookup cannot even read THIS process - which
+      // certainly exists and certainly has a command line - the platform lookup
+      // is broken or too slow here, not the spawned processes.
+      const selfVisible = readCommandLine(process.pid) !== null;
       throw new Error(
         `after ${timeoutMs} ms the OS still reports no command line for: ${missing}. `
-        + "Either the process died before it could be observed, or the platform's process "
-        + "lookup is unavailable here - readCommandLine() cannot tell those apart.",
+        + (selfVisible
+          ? "The process lookup works here (it can read this test process), so those "
+            + "processes are genuinely absent - they most likely exited early."
+          : "The lookup cannot read even this test process, so the platform's process "
+            + "lookup is unavailable or slower than readCommandLine's own timeout here; "
+            + "the spawned processes are not the problem."),
       );
     }
-    await new Promise((r) => setTimeout(r, 100));
+    // 250 ms rather than 100: on Windows each sweep is one blocking PowerShell
+    // spawn per outstanding PID, so a tighter interval adds load without adding
+    // information.
+    await new Promise((r) => setTimeout(r, 250));
   }
 }
 
