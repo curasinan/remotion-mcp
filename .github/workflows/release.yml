@@ -43,6 +43,48 @@ jobs:
 
       - run: npm ci
 
+      # The gate below is the reason this job is not just `npx semantic-release`.
+      # ci.yml triggers on push to main *in parallel* with this workflow - it is not
+      # upstream of it - so without a test run here a red merge would still produce a
+      # tag, a published release, a signed 19.5 MB artifact and a version-bump commit
+      # on main. And because that commit carries [skip ci], the released commit never
+      # gets a check at all. build-bundle.mjs's version-drift check catches a version
+      # mismatch; it catches no behavioural regression.
+      #
+      # It runs before `npx semantic-release`, so a failure here means no tag was ever
+      # created and there is nothing to unpublish.
+      - name: Type-check
+        run: npm run typecheck
+
+      # The suite imports from dist/. prepareCmd builds again after sync-version.mjs
+      # rewrites SERVER_VERSION; this build is for the tests, not for the artifact.
+      - name: Build
+        run: npm run build
+
+      # Same assertion, and the same reason, as ci.yml's. test/html.test.mjs gates
+      # every test on locateBrowser() at module scope, so with no browser the file
+      # SKIPS - and a gate that passes because it ran nothing is worse than no gate,
+      # because it looks like coverage. ubuntu-latest ships Chrome today; this fails
+      # the release if a runner image change ever makes that untrue.
+      - name: Assert a browser is available
+        run: >
+          node -e "import('./dist/services/browser.js').then(async m => {
+          const l = await m.locateBrowser();
+          console.log('browser:', l.source, l.executablePath || '');
+          if (l.source === 'none') {
+          console.error('No browser found. test/html.test.mjs would skip silently, so this release gate would pass without exercising viz_render_html.');
+          console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
+          process.exit(1); } })"
+
+      - name: Test
+        run: npm test
+        env:
+          # Matches ci.yml. Shared runners are contended and Chrome starts cold, so
+          # the shipped 45 s page deadline is tight here in a way it is not on a
+          # workstation. Without this the browser tests are flaky, and a flaky gate
+          # on a release job fails releases for reasons that are not defects.
+          REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+
       # prepareCmd (package.json "release") runs scripts/sync-version.mjs, the build,
       # the bundle, and the size gate. A bundle that breaches its ceiling fails here,
       # before any tag is created and before anything is published.
@@ -99,10 +141,18 @@ jobs:
           # fails this run instead of failing the user who downloads it. The identity
           # comes from GITHUB_REPOSITORY rather than an interpolated ${{ }} expression
           # so that nothing outside this file is spliced into the shell.
+          #
+          # Anchored at both ends. Left-anchored alone would accept a certificate
+          # minted from any branch; the push trigger is main-only and
+          # workflow_dispatch needs write access, so the risk is small, but the
+          # trailing @refs/heads/main$ costs nothing. README.md's "Verifying a
+          # release" gives users this exact expression - if you change one, change
+          # both, because a workflow and a doc that disagree about the identity are
+          # worse than either alone.
           cosign verify-blob \
             --certificate "${BUNDLE}.pem" \
             --signature "${BUNDLE}.sig" \
-            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@refs/heads/main$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$BUNDLE"
 
