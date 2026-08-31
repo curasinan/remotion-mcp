@@ -23,7 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { verifyStudioProcess } from "../dist/services/process.js";
+import { verifyStudioProcess, readCommandLine } from "../dist/services/process.js";
 
 const REPO = path.join(import.meta.dirname, "..");
 
@@ -34,16 +34,73 @@ const spawned = [];
  *  stops node parsing the rest as its own flags, which would exit immediately. */
 function dummy(...args) {
   const c = spawn(process.execPath, ["-e", "setTimeout(()=>{},20000)", "marker", ...args], { stdio: "ignore" });
+  // Kept so a wait that times out can name the process by what it was meant to
+  // look like, rather than by a bare PID.
+  c.testLabel = args.join(" ");
   spawned.push(c);
   return c;
 }
 after(() => { for (const c of spawned) { try { c.kill(); } catch { /* already gone */ } } });
 
+// How long to keep polling before declaring the wait itself the failure. The
+// normal case satisfies every one of these in well under a second; the cap is
+// generous because the failure it must not produce is a false red.
+const VISIBILITY_TIMEOUT_MS = 15_000;
+
+/**
+ * Wait until the OS process table reports a command line for every PID given.
+ *
+ * Not a sleep. `spawn()` resolves as soon as Node has a handle, which is before
+ * the platform's process enumerator can answer for the new process - on Windows
+ * that enumerator is a whole PowerShell `Get-CimInstance` round trip, and on a
+ * contended two-core runner with eleven test files in flight it is nowhere near
+ * instant. readCommandLine() returning null is indistinguishable from "no such
+ * process", so verifyStudioProcess() answers "unknown" and every assertion that
+ * depends on identity - "confirmed", "mismatch", the refusal text - fails for a
+ * reason that has nothing to do with the code under test.
+ *
+ * A fixed grace period is a guess about a machine we do not control. This waits
+ * for the actual condition instead, and when it genuinely does not hold it says
+ * which PID never appeared rather than failing an assertion three lines later.
+ */
+async function awaitProcessVisible(children, timeoutMs = VISIBILITY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  const waiting = new Map(children.map((c) => [c.pid, c.testLabel ?? "?"]));
+  for (;;) {
+    for (const pid of [...waiting.keys()]) {
+      if (readCommandLine(pid) !== null) waiting.delete(pid);
+    }
+    if (waiting.size === 0) return;
+    if (Date.now() >= deadline) {
+      const missing = [...waiting].map(([pid, argv]) => `${pid} (${argv})`).join(", ");
+      throw new Error(
+        `after ${timeoutMs} ms the OS still reports no command line for: ${missing}. `
+        + "Either the process died before it could be observed, or the platform's process "
+        + "lookup is unavailable here - readCommandLine() cannot tell those apart.",
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/** The inverse: wait until a PID is genuinely gone, which is what stop_studio's
+ *  isAlive() asks. `child.kill()` returns before the OS has reaped anything. */
+async function awaitProcessGone(pid, timeoutMs = VISIBILITY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { process.kill(pid, 0); } catch { return; }
+    if (Date.now() >= deadline) {
+      throw new Error(`PID ${pid} was still alive ${timeoutMs} ms after being killed`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 test("verifyStudioProcess tells a Studio from a bystander", async () => {
   const studio = dummy("remotion", "studio", "src/index.ts", "--port=3000");
   const other = dummy("some-unrelated-server", "--port=3000");
   const otherPort = dummy("remotion", "studio", "src/index.ts", "--port=4000");
-  await new Promise((r) => setTimeout(r, 700));
+  await awaitProcessVisible([studio, other, otherPort]);
 
   // The positive case first: without it, a check that always says "mismatch"
   // would pass every negative assertion below and refuse every real Studio.
@@ -136,7 +193,10 @@ test("a PID in the registry that is not the Studio is refused, not signalled", a
   // The exact shape of PID recycling: the Studio exited, the number was reissued,
   // and the registry still names it. This process is alive and is not a Studio.
   const bystander = dummy("innocent-bystander");
-  await new Promise((r) => setTimeout(r, 600));
+  // Same wait, same reason: an unobservable process reads as "unknown", and
+  // stop_studio fails open on unknown - it would signal and report success,
+  // failing the assertion below for a timing reason rather than a real one.
+  await awaitProcessVisible([bystander]);
   writeRegistry([{ pid: bystander.pid, port: 3000, projectDir: workspace, logFile: "x.log", startedAt: Date.now() - 1000 }]);
 
   const r = await callTool("remotion_stop_studio", { pid: bystander.pid });
@@ -156,10 +216,12 @@ test("a PID in the registry that is not the Studio is refused, not signalled", a
 
 test("a PID that has already exited is reported, not signalled", async () => {
   const gone = dummy("short-lived");
-  await new Promise((r) => setTimeout(r, 300));
+  await awaitProcessVisible([gone]);
   const deadPid = gone.pid;
   gone.kill();
-  await new Promise((r) => setTimeout(r, 500));
+  // What this test needs is the inverse condition - isAlive(deadPid) false -
+  // and kill() returns long before the OS has reaped the process.
+  await awaitProcessGone(deadPid);
   writeRegistry([{ pid: deadPid, port: 3100, projectDir: workspace, logFile: "x.log", startedAt: Date.now() - 5000 }]);
 
   const r = await callTool("remotion_stop_studio", { pid: deadPid });
@@ -180,7 +242,9 @@ test("entries written before the move are carried over, and the old file removed
   // stop them stops recognising them.
   writeRegistry([]);
   const legacy = dummy("legacy", "remotion", "studio", "--port=3200");
-  await new Promise((r) => setTimeout(r, 600));
+  // identity_verified must come back "confirmed" below, which it cannot until
+  // the OS can answer for this PID.
+  await awaitProcessVisible([legacy]);
   writeRegistry(
     [{ pid: legacy.pid, port: 3200, projectDir: workspace, logFile: "x.log", startedAt: Date.now() - 2000 }],
     legacyPath(),
