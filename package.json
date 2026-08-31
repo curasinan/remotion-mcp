@@ -2,6 +2,10 @@
   "name": "remotion-viz-mcp-server",
   "version": "1.2.0",
   "description": "MCP server for Remotion video rendering and SVG/HTML visualization rasterization",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/curasinan/remotion-mcp.git"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -40,11 +44,52 @@
   "devDependencies": {
     "@anthropic-ai/mcpb": "2.1.2",
     "@eslint/js": "^10.0.1",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^11.0.1",
+    "@semantic-release/github": "^12.0.9",
     "@types/node": "^22.10.0",
     "@types/pngjs": "^6.0.5",
     "eslint": "^10.9.1",
+    "semantic-release": "^25.0.9",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.69.0"
+  },
+  "release": {
+    "branches": [
+      "main"
+    ],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      [
+        "@semantic-release/exec",
+        {
+          "verifyReleaseCmd": "node -e \"const c=require('./package.json').version,n='${nextRelease.version}',p=v=>v.split('.').map(s=>s.padStart(6,'0')).join('.');if(p(n)<=p(c)){console.error('Refusing to release '+n+': package.json already states '+c+'. semantic-release derives the next version from git tags and this repository has none, so it restarts at 1.0.0 and would publish a downgrade. Tag the commit that shipped '+c+' as v'+c+', push the tag, then re-run.');process.exit(1)}\"",
+          "prepareCmd": "node scripts/sync-version.mjs ${nextRelease.version} && npm run build && npm run bundle && node scripts/check-bundle-size.mjs"
+        }
+      ],
+      [
+        "@semantic-release/git",
+        {
+          "assets": [
+            "package.json",
+            "manifest.json",
+            "src/constants.ts"
+          ],
+          "message": "chore(release): ${nextRelease.version} [skip ci]"
+        }
+      ],
+      [
+        "@semantic-release/github",
+        {
+          "assets": [
+            {
+              "path": "*.mcpb"
+            }
+          ]
+        }
+      ]
+    ]
   }
 }

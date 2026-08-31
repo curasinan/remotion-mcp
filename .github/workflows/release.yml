@@ -1,0 +1,114 @@
+name: Release
+
+# Separate from ci.yml, and deliberately so. `id-token: write` is what makes
+# cosign keyless signing possible, and a workflow that holds it must never run
+# on pull requests: a fork PR would otherwise be able to mint a signing identity
+# that reads "signed by this repository".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release; let @semantic-release/git push the version bump
+  issues: write # @semantic-release/github comments on the issues a release closes
+  pull-requests: write # ...and on pull requests, which `issues: write` alone does not cover
+  id-token: write # the OIDC token cosign exchanges with Fulcio for a short-lived certificate
+
+# Two releases in flight would race on the tag and on the push to main. Not
+# cancel-in-progress: a half-finished release is worse than a queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release reads the whole tag history
+          # semantic-release builds its own authenticated remote from GITHUB_TOKEN,
+          # so the checkout credentials are not needed and would only widen what a
+          # compromised step could push with.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # semantic-release 25 needs ^22.14.0 || >=24.10.0 and @semantic-release/git 11
+          # needs ^22.22.2 || >=24.15. 24 is the only single major that satisfies both
+          # without pinning a patch. ci.yml still tests the matrix the package claims.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # prepareCmd (package.json "release") runs scripts/sync-version.mjs, the build,
+      # the bundle, and the size gate. A bundle that breaches its ceiling fails here,
+      # before any tag is created and before anything is published.
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+      # Every step below is gated on the bundle existing. semantic-release is a no-op
+      # when nothing since the last tag warrants a release; in that case prepareCmd
+      # never ran, there is no .mcpb, and there is nothing to sign.
+      - name: Install cosign
+        if: hashFiles('*.mcpb') != ''
+        # Pinned to the v3 line on purpose: it installs cosign 2.6.1. cosign 3, which
+        # cosign-installer v4 installs by default, replaced the detached
+        # --output-signature/--output-certificate form of sign-blob with --bundle -
+        # that changes both the files published here and the command a user runs to
+        # verify them. There is also no floating `v4` major tag on this action, so
+        # `@v4` does not resolve; moving forward means pinning v4.x and rewriting
+        # both the sign and the verify recipe together.
+        uses: sigstore/cosign-installer@v3.10.1
+
+      - name: Sign the bundle and attach the signature to the release
+        if: hashFiles('*.mcpb') != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Ambiguity is a failure, not a guess - the rule scripts/check-bundle-size.mjs
+          # already applies. `ls *.mcpb | head -1` would silently sign whichever file
+          # happened to sort first.
+          shopt -s nullglob
+          bundles=(*.mcpb)
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "Expected exactly one .mcpb in the workspace, found ${#bundles[@]}:" >&2
+            printf '  %s\n' "${bundles[@]:-(none)}" >&2
+            exit 1
+          fi
+          BUNDLE="${bundles[0]}"
+
+          # Keyless. The OIDC token that `id-token: write` grants is exchanged with
+          # Fulcio for a certificate valid for ten minutes, and the signature is
+          # written to the Rekor transparency log. No private key exists to leak,
+          # rotate, or store as a secret.
+          cosign sign-blob --yes \
+            --output-signature "${BUNDLE}.sig" \
+            --output-certificate "${BUNDLE}.pem" \
+            "$BUNDLE"
+
+          # Verify before publishing, not after. A signature nobody has verified is a
+          # signature that has not been tested; checking it here means a broken one
+          # fails this run instead of failing the user who downloads it. The identity
+          # comes from GITHUB_REPOSITORY rather than an interpolated ${{ }} expression
+          # so that nothing outside this file is spliced into the shell.
+          cosign verify-blob \
+            --certificate "${BUNDLE}.pem" \
+            --signature "${BUNDLE}.sig" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BUNDLE"
+
+          # semantic-release's default tagFormat is v${version}, and prepareCmd has
+          # already written the released version into package.json.
+          TAG="v$(jq -r .version package.json)"
+          gh release upload "$TAG" "${BUNDLE}.sig" "${BUNDLE}.pem" --clobber
+
+          echo "Signed ${BUNDLE} and attached ${BUNDLE}.sig and ${BUNDLE}.pem to ${TAG}."
