@@ -54,12 +54,31 @@ test("a blocking-script render leaves no chrome process behind", { skip: !isWind
   assert.ok(after <= before, `chrome count grew: ${before} -> ${after}`);
 });
 
-test("a blocking render returns well under the old 181s in about 31s", { skip: noBrowser }, async () => {
+// Browser launch plus teardown, on a cold and contended machine. Measured at
+// ~20 s on the slowest observed CI runner; doubled for headroom.
+const LAUNCH_TEARDOWN_ALLOWANCE_S = 45;
+
+test("a wedged renderer is bounded by the page deadline, not puppeteer's default", { skip: noBrowser }, async () => {
   const { rasterizeHtml } = await import("../dist/services/raster.js");
+  const { loadConfig } = await import("../dist/config.js");
+
+  // Derived, not hardcoded. CI raises REMOTION_MCP_PAGE_TIMEOUT_MS on contended
+  // runners, and a fixed bound would then fail for a reason that has nothing to
+  // do with the behaviour under test. What is asserted is the relationship: a
+  // renderer that never yields is bounded by OUR deadline. Before that deadline
+  // existed it was bounded only by puppeteer's 180 s protocolTimeout default,
+  // and a page containing while(true){} held the tool for 181 s.
+  const budgetS = loadConfig().pageLoadTimeoutMs / 1000;
+  const bound = budgetS + LAUNCH_TEARDOWN_ALLOWANCE_S;
+
   const start = Date.now();
   await assert.rejects(() => rasterizeHtml("<script>while(true){}</script>", 200, 100, false, 1));
   const elapsed = (Date.now() - start) / 1000;
-  assert.ok(elapsed < 60, `took ${elapsed}s, expected under 60`);
+
+  assert.ok(
+    elapsed < bound,
+    `took ${elapsed}s, expected under ${bound}s (${budgetS}s deadline + ${LAUNCH_TEARDOWN_ALLOWANCE_S}s launch/teardown allowance)`,
+  );
 });
 
 test("concurrent renders do not launch one browser each", { skip: !isWindows }, async () => {
