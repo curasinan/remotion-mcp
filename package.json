@@ -17,6 +17,7 @@
     "clean": "rm -rf dist",
     "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
     "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node smoke-test.mjs",
     "gateway": "node scripts/build-dashboard.mjs",
