@@ -23,6 +23,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { TIMEOUT_CDP_PROTOCOL_MS, TIMEOUT_PAGE_LOAD_MS } from "./constants.js";
+
 export interface ServerConfig {
   /** Directory every file path resolves against and is confined to. */
   workspaceRoot: string;
@@ -38,6 +40,8 @@ export interface ServerConfig {
   auditLogPath: string;
   /** Total bytes kept across the two rotating segments. */
   auditMaxBytes: number;
+  /** Deadline for one page render, covering setContent and screenshot together. */
+  pageLoadTimeoutMs: number;
 }
 
 /** A configuration problem that should stop the server at startup. */
@@ -84,6 +88,27 @@ function parseWorkspace(raw: string | undefined): Pick<ServerConfig, "workspaceR
     );
   }
   return { workspaceRoot: resolved, workspaceSource: "REMOTION_MCP_WORKSPACE" };
+}
+
+function parsePageLoadTimeout(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return TIMEOUT_PAGE_LOAD_MS;
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new ConfigError(
+      `REMOTION_MCP_PAGE_TIMEOUT_MS must be a positive whole number of milliseconds, got '${raw}'.`,
+    );
+  }
+  // Above the backstop the two swap roles: protocolTimeout starts refusing work
+  // before this deadline can fire, which is the exact bug the two constants were
+  // split to prevent. Refusing here keeps it from being rebuilt in config.
+  if (parsed >= TIMEOUT_CDP_PROTOCOL_MS) {
+    throw new ConfigError(
+      `REMOTION_MCP_PAGE_TIMEOUT_MS is ${parsed} ms, which is not below the ${TIMEOUT_CDP_PROTOCOL_MS} ms CDP backstop. ` +
+        `Above the backstop the page deadline never fires, because puppeteer refuses the underlying command first. Choose a smaller value.`,
+    );
+  }
+  return parsed;
 }
 
 function parseBrowserExecutable(env: NodeJS.ProcessEnv): string | null {
@@ -151,5 +176,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     browserExecutable: parseBrowserExecutable(env),
     auditLogPath: parseAuditLogPath(env.REMOTION_MCP_AUDIT_LOG),
     auditMaxBytes: 5_000_000,
+    pageLoadTimeoutMs: parsePageLoadTimeout(env.REMOTION_MCP_PAGE_TIMEOUT_MS),
   };
 }

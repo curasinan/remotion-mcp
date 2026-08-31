@@ -10,7 +10,11 @@
  */
 
 import { Resvg } from "@resvg/resvg-js";
-import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS, TIMEOUT_PAGE_LOAD_MS } from "../constants.js";
+import {
+  MAX_RASTER_DIMENSION,
+  MAX_RASTER_PIXELS,
+  TIMEOUT_CDP_PROTOCOL_MS,
+} from "../constants.js";
 import { locateBrowser } from "./browser.js";
 import { findFilesystemReferences } from "./svg.js";
 import { DENY_ALL, decideRequest, type NetworkPolicy } from "./network.js";
@@ -194,6 +198,71 @@ export async function rasterizeHtml(
   );
 }
 
+/**
+ * How far the CDP backstop must sit above the page deadline.
+ *
+ * The backstop exists to catch a command that never returns at all. It must
+ * never be the thing that fires first for work that is merely slow, or it
+ * overrides the deadline and refuses legitimate renders - which is exactly the
+ * CI failure that produced this split.
+ */
+const CDP_BACKSTOP_MARGIN_MS = 30_000;
+
+/**
+ * Puppeteer launch options, extracted so the timeout relationship is testable
+ * without launching a browser. Exported for test/timeouts.test.mjs.
+ */
+export function buildLaunchOptions(input: {
+  args: string[];
+  pageLoadTimeoutMs: number;
+}): Record<string, unknown> {
+  return {
+    headless: true,
+    args: input.args,
+    // Structurally above the page deadline, not merely above it by convention,
+    // so raising REMOTION_MCP_PAGE_TIMEOUT_MS cannot invert the relationship.
+    protocolTimeout: Math.max(
+      TIMEOUT_CDP_PROTOCOL_MS,
+      input.pageLoadTimeoutMs + CDP_BACKSTOP_MARGIN_MS,
+    ),
+  };
+}
+
+/**
+ * Bound `work` by a wall clock the caller controls.
+ *
+ * setContent's own `timeout` option cannot do this job alone: it governs the
+ * lifecycle watcher, which is built AFTER the document write, so a script that
+ * blocks the renderer thread is never seen by it. And screenshot has no
+ * deadline of its own at all. One deadline over both, enforced here, bounds
+ * every way the page phase can fail to return - and the caller's `finally`
+ * still tears the browser down, which is what actually frees the slot.
+ */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // The loser of the race keeps running until teardown kills the browser. Its
+  // rejection is expected and must not surface as an unhandled rejection.
+  work.catch(() => {});
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ToolInputError(
+              `Rendering did not finish within ${ms} ms.`,
+              "Simplify the page, or raise REMOTION_MCP_PAGE_TIMEOUT_MS if the machine is heavily loaded. A page whose script never yields will always hit this.",
+            ),
+          );
+        }, ms);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function rasterizeHtmlUnlimited(
   html: string,
   width: number,
@@ -216,13 +285,8 @@ async function rasterizeHtmlUnlimited(
     args.push("--no-sandbox");
   }
 
-  const launchOptions: Record<string, unknown> = {
-    headless: true,
-    args,
-    // Without this the effective bound is puppeteer's 180 s default, not the
-    // timeout passed to setContent below.
-    protocolTimeout: TIMEOUT_PAGE_LOAD_MS,
-  };
+  const pageLoadTimeoutMs = loadConfig().pageLoadTimeoutMs;
+  const launchOptions = buildLaunchOptions({ args, pageLoadTimeoutMs });
 
   if (!full) {
     const location = await locateBrowser(projectDir);
@@ -266,8 +330,18 @@ async function rasterizeHtmlUnlimited(
       ? html
       : `<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;}</style></head><body>${html}</body></html>`;
 
-    await page.setContent(document, { waitUntil: "networkidle0", timeout: TIMEOUT_PAGE_LOAD_MS });
-    const shot = await page.screenshot({ type: "png", fullPage });
+    // One deadline over both commands, not one each: a caller cares that the
+    // render returns, not which half of it was slow.
+    const shot = await withDeadline(
+      (async () => {
+        await page.setContent(document, {
+          waitUntil: "networkidle0",
+          timeout: pageLoadTimeoutMs,
+        });
+        return page.screenshot({ type: "png", fullPage });
+      })(),
+      pageLoadTimeoutMs,
+    );
 
     const blockedRequests = [...blocked.entries()].map(([url, reason]) => `${url} (${reason})`);
 

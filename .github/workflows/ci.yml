@@ -50,6 +50,13 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          # Shared runners are contended and Chrome starts cold, so the default
+          # 45 s page deadline is tight here in a way it is not on a workstation.
+          # Three legs failed on 2026-08-30 for exactly this reason. Raised
+          # explicitly rather than by loosening the shipped default, so CI states
+          # its own conditions instead of pretending the runners are fast.
+          REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
 
       # Gate: fail the build only on a critical advisory. The three high and one
       # moderate advisories currently reported are all in code paths this server
