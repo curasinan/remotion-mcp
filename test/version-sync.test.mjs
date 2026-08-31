@@ -38,7 +38,24 @@ test("all three files move together", () => {
 
 test("a malformed version is refused before anything is written", () => {
   const dir = makeFixture();
-  assert.throws(() => execFileSync(process.execPath, [script, "v2.0"], { cwd: dir, shell: false, stdio: "pipe" }));
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [script, "v2.0"], {
+        cwd: dir,
+        shell: false,
+        stdio: "pipe",
+        encoding: "utf8",
+      }),
+    (err) => {
+      // Assert on the specific failure, not just that something threw: a
+      // crash for an unrelated reason (broken import, stray process.exit)
+      // would also satisfy a bare assert.throws and this test would keep
+      // passing while proving nothing about refusal behaviour.
+      assert.equal(err.status, 1);
+      assert.match(err.stderr, /Expected a bare semver/);
+      return true;
+    },
+  );
   // Nothing partially written.
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version, "1.2.0");
 });
@@ -46,5 +63,19 @@ test("a malformed version is refused before anything is written", () => {
 test("a constants.ts that does not match the expected shape is refused, not silently skipped", () => {
   const dir = makeFixture();
   fs.writeFileSync(path.join(dir, "src", "constants.ts"), "export const SOMETHING_ELSE = 1;\n");
-  assert.throws(() => execFileSync(process.execPath, [script, "2.0.0"], { cwd: dir, shell: false, stdio: "pipe" }));
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [script, "2.0.0"], {
+        cwd: dir,
+        shell: false,
+        stdio: "pipe",
+        encoding: "utf8",
+      }),
+    (err) => {
+      assert.equal(err.status, 1);
+      assert.match(err.stderr, /has no 'export const SERVER_VERSION/);
+      assert.match(err.stderr, /Refusing rather than skipping it/);
+      return true;
+    },
+  );
 });
