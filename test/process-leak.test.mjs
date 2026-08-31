@@ -44,14 +44,45 @@ function puppeteerChromeCount() {
   }
 }
 
+// Generous on purpose. The normal case clears in a fraction of this; the cap
+// exists so a genuinely leaked process still fails the test rather than hanging
+// it, not as an estimate of how long reaping takes.
+const REAP_TIMEOUT_MS = 15_000;
+
+/**
+ * Poll until the OS has reaped the chrome processes down to `target`, or the
+ * deadline passes. Returns the last count either way, so the caller asserts on
+ * a real number rather than on whether the wait happened to be long enough.
+ *
+ * Why polling and not a fixed wait: by the time rasterizeHtml() rejects, its
+ * `finally` has already raced browser.close() for 5 s and then sent SIGKILL, so
+ * what remains is a post-kill reap, not a race with close(). But SIGKILL goes to
+ * the top-level chrome.exe only. Its renderer children inherit the
+ * `--user-data-dir` this counter filters on, so they keep being counted until
+ * the OS tears them down after their parent dies - and on a contended runner
+ * that is not instant. A fixed 4 s was a guess at how long that takes on a
+ * machine we do not control.
+ */
+async function awaitChromeCountAtMost(target, timeoutMs = REAP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let count = puppeteerChromeCount();
+  while (count > target && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    count = puppeteerChromeCount();
+  }
+  return count;
+}
+
 test("a blocking-script render leaves no chrome process behind", { skip: !isWindows }, async () => {
   const { rasterizeHtml } = await import("../dist/services/raster.js");
   const before = puppeteerChromeCount();
   await assert.rejects(() => rasterizeHtml("<script>while(true){}</script>", 200, 100, false, 1));
-  // Give the SIGKILL backstop a moment.
-  await new Promise((r) => setTimeout(r, 4000));
-  const after = puppeteerChromeCount();
-  assert.ok(after <= before, `chrome count grew: ${before} -> ${after}`);
+  const after = await awaitChromeCountAtMost(before);
+  assert.ok(
+    after <= before,
+    `chrome count grew: ${before} -> ${after}, and was still there ${REAP_TIMEOUT_MS / 1000}s after `
+    + `the render rejected. The SIGKILL backstop in rasterizeHtml's finally block did not clear them.`,
+  );
 });
 
 // Browser launch plus teardown, on a cold and contended machine. Measured at
