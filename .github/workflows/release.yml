@@ -105,7 +105,15 @@ jobs:
         # verify them. There is also no floating `v4` major tag on this action, so
         # `@v4` does not resolve; moving forward means pinning v4.x and rewriting
         # both the sign and the verify recipe together.
-        uses: sigstore/cosign-installer@v3.10.1
+        #
+        # Pinned by commit SHA, not by the version tag. This is the only workflow
+        # holding `id-token: write` together with `contents: write`, so an action
+        # running in it can mint a signing identity that reads "signed by this
+        # repository" - and a git tag can be moved onto any commit by whoever
+        # controls the upstream repository. v3.10.1 is immutable only by
+        # convention; the SHA is immutable by construction. The trailing comment
+        # keeps the version readable.
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign the bundle and attach the signature to the release
         if: hashFiles('*.mcpb') != ''
@@ -139,8 +147,12 @@ jobs:
           # Verify before publishing, not after. A signature nobody has verified is a
           # signature that has not been tested; checking it here means a broken one
           # fails this run instead of failing the user who downloads it. The identity
-          # comes from GITHUB_REPOSITORY rather than an interpolated ${{ }} expression
-          # so that nothing outside this file is spliced into the shell.
+          # comes from the GITHUB_REPOSITORY environment variable rather than from
+          # an interpolated GitHub Actions expression, so that nothing outside this
+          # file is spliced into the shell. (Written out in words on purpose:
+          # GitHub scans run: blocks for expression delimiters regardless of shell
+          # comments, and an empty pair of them is a workflow parse error - which
+          # is exactly what kept this file from compiling.)
           #
           # Anchored at both ends. Left-anchored alone would accept a certificate
           # minted from any branch; the push trigger is main-only and
