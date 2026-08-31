@@ -37,7 +37,7 @@ export function registerEnvironmentTools(server: McpServer): void {
       title: "Check Remotion Environment",
       description: `Diagnose whether this machine can render Remotion videos, and report a specific fix for each thing that is missing.
 
-Run this FIRST whenever a Remotion command fails, hangs, or produces an empty output file. It checks the four causes behind almost every Remotion failure: a Node version below 18, no local Remotion install, a missing Chrome Headless Shell, and an entry point that is not where the CLI looks for it.
+Run this FIRST whenever a Remotion command fails, hangs, or produces an empty output file. It checks the four causes behind almost every Remotion failure: a Node version below 22, no local Remotion install, a missing Chrome Headless Shell, and an entry point that is not where the CLI looks for it.
 
 Returns (JSON format):
   {

@@ -23,7 +23,7 @@ npm install
 npm run build
 ```
 
-Node 18 or newer. `viz_render_html` needs a Chrome/Chromium/Edge/Brave already
+Node 22 or newer. `viz_render_html` needs a Chrome/Chromium/Edge/Brave already
 on the machine, or `PUPPETEER_EXECUTABLE_PATH` pointing at one; nothing is
 downloaded. Every other tool works without a browser.
 
