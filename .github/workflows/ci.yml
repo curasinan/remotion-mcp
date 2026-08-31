@@ -153,6 +153,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run bundle
+
+      # The six @resvg/resvg-js native binaries dominate this bundle's weight, and
+      # nothing else notices if it grows. Compares against the measured baseline in
+      # scripts/bundle-size-baseline.json so an unexpected jump fails here instead
+      # of shipping.
+      - name: Bundle size gate
+        run: node scripts/check-bundle-size.mjs
+
       - name: Verify the bundle
         run: npm run test:bundle
         env:
