@@ -202,8 +202,10 @@ run(npm.file, [...npm.prefix, "ci", "--omit=dev", "--ignore-scripts"], STAGE, "n
 // neither, and the staged tree depends on where it was built. v1.2.1 shipped a
 // seventh, undecided resvg binary exactly this way, 2 MB past a baseline that
 // had been recorded on a different host. NATIVE_TARGETS is the decision about
-// what ships; everything else under @resvg/ goes, on every host, so the bundle
-// stops varying by builder. test/bundle.test.mjs asserts set equality.
+// what ships; everything else under @resvg/ goes, on every host, so the
+// shipped package SET stops varying by builder. (The bytes of the staged
+// node_modules/.package-lock.json still do — see the note below.)
+// test/bundle.test.mjs asserts set equality.
 const resvgScope = path.join(STAGE, "node_modules", "@resvg");
 if (fs.existsSync(resvgScope)) {
   for (const entry of fs.readdirSync(resvgScope)) {
@@ -219,16 +221,43 @@ if (fs.existsSync(resvgScope)) {
 // never activates, so nothing in this bundle can load them. They cannot be
 // omitted at install time: bare-fs is a HARD dependency of tar-stream, so
 // --omit=optional does not remove it. ~2 MB compressed of dead weight in every
-// bundle. The staged node_modules/.package-lock.json still lists them (npm
-// wrote it before this prune); that is a known cosmetic inconsistency, in the
-// conservative direction for anyone auditing advisories against it.
-const BARE_RUNTIME_PACKAGES = ["bare-events", "bare-fs", "bare-path", "bare-stream", "bare-url"];
-for (const name of BARE_RUNTIME_PACKAGES) {
-  const dir = path.join(STAGE, "node_modules", name);
-  if (!fs.existsSync(dir)) continue;
-  fs.rmSync(dir, { recursive: true, force: true });
-  log(`  pruned ${name} (Bare-runtime only, unreachable under Node)`);
+// bundle.
+//
+// Walks every node_modules level rather than deleting five known names at the
+// top: the bare graph has multiple dependents with independent ranges
+// (tar-stream wants bare-fs ^4.5.5, tar-fs ^4.0.1; bare-events is wanted at
+// ^2.5.4 and ^2.7.0), so a future major divergence makes npm nest a copy —
+// node_modules/tar-stream/node_modules/bare-fs — that a flat delete would
+// miss. The bare- prefix is the Bare runtime's package namespace; the guard
+// test in test/bundle.test.mjs matches the same shape, so the two cannot
+// disagree about what counts.
+//
+// Known cosmetic inconsistency, stated rather than hidden: the staged
+// node_modules/.package-lock.json (which ships, for offline advisory audits)
+// was written by npm before this prune, so it still lists the pruned bare-*
+// packages — and, on any host, only the resvg platform package npm itself
+// installed there. The shipped package SET is deterministic; that one
+// metadata file's bytes are not.
+function pruneBareRuntime(nodeModulesDir) {
+  if (!fs.existsSync(nodeModulesDir)) return;
+  for (const entry of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(nodeModulesDir, entry.name);
+    if (entry.name.startsWith("bare-")) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      log(`  pruned ${path.relative(STAGE, dir).split(path.sep).join("/")} (Bare-runtime only, unreachable under Node)`);
+      continue;
+    }
+    if (entry.name.startsWith("@")) {
+      for (const scoped of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (scoped.isDirectory()) pruneBareRuntime(path.join(dir, scoped.name, "node_modules"));
+      }
+      continue;
+    }
+    pruneBareRuntime(path.join(dir, "node_modules"));
+  }
 }
+pruneBareRuntime(path.join(STAGE, "node_modules"));
 
 fs.writeFileSync(path.join(STAGE, "package.json"), JSON.stringify({
   name: pkg.name, version: manifest.version, description: pkg.description,
