@@ -289,10 +289,12 @@ log(`  fetching ${NATIVE_TARGETS.length} native prebuilts for @resvg/resvg-js@${
 // The "already present" targets are the ones npm ci itself installed, and npm
 // verifies those against the same lockfile hashes during install.
 const rootLock = JSON.parse(fs.readFileSync(path.join(REPO, "package-lock.json"), "utf8"));
-for (const target of NATIVE_TARGETS) {
-  const dest = path.join(STAGE, "node_modules", ...target.split("/"));
-  if (fs.existsSync(path.join(dest, "package.json"))) { log(`    ${target} (already present, verified by npm ci)`); continue; }
 
+// Validate every lockfile entry before fetching anything: a lockfile problem
+// on the sixth target should fail the build before the first five tarballs
+// were pulled over the network for nothing.
+const lockedTargets = new Map();
+for (const target of NATIVE_TARGETS) {
   const entry = rootLock.packages[`node_modules/${target}`];
   if (!entry) {
     die(`${target} has no entry in package-lock.json.`,
@@ -308,10 +310,30 @@ for (const target of NATIVE_TARGETS) {
     die(`the lockfile entry for ${target} has no resolved URL or no sha512 integrity.`,
       "Refusing to fetch unpinned bytes into the bundle. Regenerate the lockfile from the registry.");
   }
+  lockedTargets.set(target, { resolved: entry.resolved, integrity });
+}
 
-  const res = await fetch(entry.resolved);
-  if (!res.ok) die(`fetching ${entry.resolved} returned HTTP ${res.status}.`, "Re-run; if it persists, check the registry.");
-  const tarball = Buffer.from(await res.arrayBuffer());
+for (const target of NATIVE_TARGETS) {
+  const dest = path.join(STAGE, "node_modules", ...target.split("/"));
+  if (fs.existsSync(path.join(dest, "package.json"))) { log(`    ${target} (already present, verified by npm ci)`); continue; }
+  const { resolved, integrity } = lockedTargets.get(target);
+
+  // Node's global fetch, not npm - so .npmrc proxy/CA/auth settings do not
+  // apply here. GitHub-hosted runners reach the registry directly; behind a
+  // corporate proxy, export NODE_USE_ENV_PROXY=1 (Node 24+) so fetch honors
+  // HTTPS_PROXY. Fail-closed either way: a fetch that cannot happen is a
+  // build that does not happen.
+  let tarball;
+  try {
+    const res = await fetch(resolved);
+    if (!res.ok) die(`fetching ${resolved} returned HTTP ${res.status}.`, "Re-run; if it persists, check the registry.");
+    tarball = Buffer.from(await res.arrayBuffer());
+  } catch (error) {
+    die(`could not fetch ${target} from ${resolved}: ${error.cause?.message ?? error.message}`,
+      "Check network reachability to the npm registry. Behind a corporate proxy, npm's proxy "
+      + "settings do not apply to this fetch - export NODE_USE_ENV_PROXY=1 (Node 24+) or build "
+      + "on a host with direct registry access.");
+  }
   const digest = "sha512-" + crypto.createHash("sha512").update(tarball).digest("base64");
   if (digest !== integrity) {
     die(`${target}: the registry served bytes that do not match the committed lockfile.\n\n`
@@ -330,6 +352,9 @@ for (const target of NATIVE_TARGETS) {
     try {
       extractNpmTarball(tgzPath, dest);
     } catch (error) {
+      // die() exits the process, which skips the finally below - clean the
+      // temp dir here or the tarball leaks into os.tmpdir() on this path.
+      fs.rmSync(tmp, { recursive: true, force: true });
       die(`could not extract ${target}@${resvgVersion}: ${error.message}`, "Re-run. If it persists, the published tarball changed shape.");
     }
   } finally {
