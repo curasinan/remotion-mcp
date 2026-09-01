@@ -5,6 +5,16 @@ on:
     branches: [main, master]
   pull_request:
 
+# Every action below - first-party included - is pinned to a commit SHA with
+# the readable version in a trailing comment. A tag is mutable by whoever
+# controls the upstream repository; a SHA is immutable by construction. That
+# argument was first written down here for the third-party actions (see the
+# anchore/sbom-action note below and the cosign-installer note in release.yml);
+# it applies unchanged to actions/*, which run in the same jobs. The @v4 line
+# of checkout/setup-node/upload-artifact also targeted the deprecated Node 20
+# action runtime - the same EOL runtime this repo's own test matrix dropped.
+# Bump a pin by editing the SHA and its comment together.
+
 # Least privilege, stated rather than inherited. The repository default is
 # currently read-only, so this changes nothing today - which is the point of
 # writing it down now. Every job below runs third-party actions, and without this
@@ -24,9 +34,9 @@ jobs:
         node: [22, 24, 26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -152,15 +162,15 @@ jobs:
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - name: Generate SBOM
         run: npm sbom --sbom-format cyclonedx --omit=dev > sbom.cyclonedx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
           path: sbom.cyclonedx.json
@@ -170,7 +180,7 @@ jobs:
       # the build. Raising this to blocking is a separate decision with a
       # separate argument.
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -206,8 +216,8 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
@@ -229,7 +239,7 @@ jobs:
           # build step leaves every assertion skipped and the job green - the same
           # shape as the Windows-only process-leak tests.
           REQUIRE_BUNDLE: '1'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         # Gated to main so pull requests do not each retain a ~20 MB artifact.
         if: github.ref == 'refs/heads/main'
         with:
@@ -243,7 +253,7 @@ jobs:
       # caught - and it cannot download an artifact that was never uploaded.
       # One day of retention because nothing reads this after the run that
       # produced it.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mcpb-runtime
           path: '*.mcpb'
@@ -305,16 +315,16 @@ jobs:
           - os: macos-15-intel    # loads @resvg/resvg-js-darwin-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 24 rather than the matrix floor of 22: this job asks whether the shipped
       # artifact runs, and 24 is Active LTS - the version a user most likely has.
       # The floor is covered by build-and-test against the source tree.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mcpb-runtime
           path: artifact
@@ -325,3 +335,52 @@ jobs:
       # fails if it does not hold exactly one .mcpb.
       - name: Run the shipped artifact
         run: node scripts/verify-bundle-runtime.mjs ./artifact ./extracted
+
+  # Workflows are code that nothing else checks: an empty ${{ }} inside a run:
+  # block made release.yml uncompilable, survived a full task review, and
+  # produced a zero-job failure run - and release.yml only ever compiles on a
+  # push to main, so the error surfaced at release time. actionlint parses
+  # every workflow here on every pull request, including release.yml.
+  #
+  # The official rhysd/actionlint image, pinned by digest - the same
+  # immutability argument as the SHA-pinned actions, and no third-party
+  # wrapper action between this job and the tool.
+  lint-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+  # The one context branch protection requires. Requiring the eighteen
+  # matrix-shaped check names would tie the ruleset to the matrix's exact
+  # spelling and silently drop coverage whenever a leg is renamed; this job
+  # needs every other job and fails unless all of them succeeded, so the
+  # ruleset requires exactly one stable name.
+  #
+  # if: always() because without it a failed dependency leaves this job
+  # "skipped", and a skipped check neither passes nor fails - it just never
+  # reports. The needs context reaches the check through an env var rather
+  # than an interpolation inside the script, for the same reason release.yml
+  # reads the identity from GITHUB_REPOSITORY: nothing outside this file
+  # should be spliced into an executable block.
+  ci-ok:
+    needs: [build-and-test, sbom, bundle, verify-bundle, lint-workflows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required jobs succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node -e "
+            const needs = JSON.parse(process.env.NEEDS_JSON);
+            const bad = Object.entries(needs).filter(([, v]) => v.result !== 'success');
+            if (bad.length > 0) {
+              console.error('jobs that did not succeed: ' + bad.map(([k, v]) => k + '=' + v.result).join(', '));
+              process.exit(1);
+            }
+            console.log('all ' + Object.keys(needs).length + ' required jobs succeeded');
+          "
