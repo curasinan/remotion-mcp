@@ -25,7 +25,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # semantic-release reads the whole tag history
           # semantic-release builds its own authenticated remote from GITHUB_TOKEN,
@@ -33,7 +33,7 @@ jobs:
           # compromised step could push with.
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # semantic-release 25 needs ^22.14.0 || >=24.10.0 and @semantic-release/git 11
           # needs ^22.22.2 || >=24.15. 24 is the only single major that satisfies both
