@@ -10,11 +10,19 @@
  *
  * So before signalling, ask the operating system what the process actually is.
  *
- * Deliberately fail-open. When the lookup cannot run at all - no /proc in a
- * stripped container, no PowerShell on a minimal Windows image - the answer is
- * "unknown", and the caller proceeds while saying so. Failing closed would make a
- * Studio unstoppable through the tool in exactly the environments where a stray
- * dev server serving the user's source is hardest to notice.
+ * Deliberately fail-open. When the lookup cannot run, the answer is "unknown",
+ * and the caller proceeds while saying so. Failing closed would make a Studio
+ * unstoppable through the tool in exactly the environments where a stray dev
+ * server serving the user's source is hardest to notice.
+ *
+ * "Cannot run" is not only exotic environments (no /proc in a stripped
+ * container, no PowerShell on a minimal Windows image). It is reachable on a
+ * stock Windows machine under load: the lookup spawns PowerShell under
+ * LOOKUP_TIMEOUT_MS, and PowerShell's cold start on a contended machine can
+ * exceed that cap - test/studio.test.mjs hit exactly this on CI runners, where
+ * every call timed out because every call paid the cold start. So "unknown"
+ * here means "could not check in time", not "checked and inconclusive", and a
+ * busy machine makes remotion_stop_studio rely on the registry alone.
  */
 
 import fs from "node:fs";
