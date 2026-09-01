@@ -133,16 +133,14 @@ jobs:
         env:
           REMOTION_MCP_WORKSPACE: ${{ github.workspace }}
 
-      # Advisory only: ESLint just landed and the existing tree has a real
-      # finding count, so failing the build on it now would block unrelated
-      # PRs on a mechanical cleanup that hasn't happened yet. Runs on a single
-      # leg because the findings don't vary by OS or Node version. Flips to
-      # blocking (continue-on-error: false) once that cleanup commit lands and
-      # the count is zero.
+      # Blocking since the count reached zero (it landed advisory while the
+      # tree carried real findings, per the Task 3 plan). Runs on a single leg
+      # because the findings don't vary by OS or Node version. Proven live in
+      # both directions before the flip: zero findings exits 0, one planted
+      # unused binding exits 1.
       - name: Lint
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run lint
-        continue-on-error: true
 
       # Gate: fail the build only on a critical advisory. The three high and one
       # moderate advisories currently reported are all in code paths this server
