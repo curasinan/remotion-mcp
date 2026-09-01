@@ -1,10 +1,13 @@
 /**
  * Write one version into every file that must state it.
  *
- * package.json, manifest.json and src/constants.ts SERVER_VERSION are three
- * statements of one fact. test/unit.test.mjs fails on drift and
- * scripts/build-bundle.mjs refuses to build on it, so a release tool that
- * updates one of them produces an unbuildable tag.
+ * package.json, manifest.json, src/constants.ts SERVER_VERSION and
+ * package-lock.json are four statements of one fact. test/unit.test.mjs fails
+ * on drift between the first three and scripts/build-bundle.mjs refuses to
+ * build on it, so a release tool that updates only some of them produces an
+ * unbuildable tag. The lockfile has no guard of its own - which is exactly how
+ * every released tag through v1.2.1 carried a lockfile one version behind the
+ * package it locks - so it is synced here and required to exist.
  *
  * Validates everything before writing anything: a half-applied version bump is
  * worse than a refused one.
@@ -21,6 +24,7 @@ if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
 const cwd = process.cwd();
 const pkgPath = path.join(cwd, "package.json");
 const manifestPath = path.join(cwd, "manifest.json");
+const lockPath = path.join(cwd, "package-lock.json");
 const constantsPath = path.join(cwd, "src", "constants.ts");
 
 const constants = fs.readFileSync(constantsPath, "utf8");
@@ -33,14 +37,29 @@ if (!pattern.test(constants)) {
   process.exit(1);
 }
 
+if (!fs.existsSync(lockPath)) {
+  console.error(
+    `${lockPath} does not exist.\n` +
+      `Refusing rather than skipping it: a lockfile left at the previous version means every\n` +
+      `checkout of the released tag carries a lockfile that disagrees with the package it locks.`,
+  );
+  process.exit(1);
+}
+
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
 
 pkg.version = version;
 manifest.version = version;
+// npm states the root version twice: at the top and in packages[""]. Move
+// both, or the file is internally inconsistent.
+lock.version = version;
+if (lock.packages?.[""]) lock.packages[""].version = version;
 
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 fs.writeFileSync(constantsPath, constants.replace(pattern, `$1${version}$3`));
 
-console.log(`version ${version} written to package.json, manifest.json, src/constants.ts`);
+console.log(`version ${version} written to package.json, manifest.json, package-lock.json, src/constants.ts`);

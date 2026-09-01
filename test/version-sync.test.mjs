@@ -20,6 +20,13 @@ function makeFixture() {
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "x", version: "1.2.0" }, null, 2) + "\n");
   fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ name: "x", version: "1.2.0" }, null, 2) + "\n");
+  // The same nesting the real lockfile has: the version lives at the top AND
+  // in packages[""] - npm writes both, and updating only one leaves the file
+  // internally inconsistent.
+  fs.writeFileSync(path.join(dir, "package-lock.json"), JSON.stringify({
+    name: "x", version: "1.2.0", lockfileVersion: 3, requires: true,
+    packages: { "": { name: "x", version: "1.2.0" } },
+  }, null, 2) + "\n");
   fs.writeFileSync(
     path.join(dir, "src", "constants.ts"),
     'export const SERVER_NAME = "x";\nexport const SERVER_VERSION = "1.2.0";\n',
@@ -27,13 +34,42 @@ function makeFixture() {
   return dir;
 }
 
-test("all three files move together", () => {
+test("all four files move together", () => {
   const dir = makeFixture();
   execFileSync(process.execPath, [script, "2.0.0"], { cwd: dir, shell: false });
 
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version, "2.0.0");
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).version, "2.0.0");
   assert.match(fs.readFileSync(path.join(dir, "src", "constants.ts"), "utf8"), /SERVER_VERSION = "2\.0\.0"/);
+
+  // Both statements inside the lockfile, not just the top-level one. After
+  // v1.2.1 shipped, the lockfile stayed at 1.2.0 because semantic-release's
+  // git assets and this script both ignored it - every checkout of a released
+  // tag then carries a lockfile one release behind the package it locks.
+  const lock = JSON.parse(fs.readFileSync(path.join(dir, "package-lock.json"), "utf8"));
+  assert.equal(lock.version, "2.0.0");
+  assert.equal(lock.packages[""].version, "2.0.0");
+});
+
+test("a missing lockfile is refused, not skipped", () => {
+  const dir = makeFixture();
+  fs.rmSync(path.join(dir, "package-lock.json"));
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [script, "2.0.0"], {
+        cwd: dir,
+        shell: false,
+        stdio: "pipe",
+        encoding: "utf8",
+      }),
+    (err) => {
+      assert.equal(err.status, 1);
+      assert.match(err.stderr, /package-lock\.json/);
+      return true;
+    },
+  );
+  // Nothing partially written.
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version, "1.2.0");
 });
 
 test("a malformed version is refused before anything is written", () => {
@@ -58,6 +94,7 @@ test("a malformed version is refused before anything is written", () => {
   );
   // Nothing partially written.
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version, "1.2.0");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package-lock.json"), "utf8")).version, "1.2.0");
 });
 
 test("a constants.ts that does not match the expected shape is refused, not silently skipped", () => {
