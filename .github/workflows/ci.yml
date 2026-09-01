@@ -277,7 +277,9 @@ jobs:
   # proved six.
   #
   # Three things this job does NOT cover, so it is not read as proving them:
-  #   - the musl targets, which are neither covered nor shipped (docs/BUNDLE.md);
+  #   - the musl targets, which are neither covered nor shipped — and since the
+  #     v1.2.1 accident, actively pruned when the build host's npm installs one
+  #     (docs/BUNDLE.md, "Platform support");
   #   - fidelity. The verifier checks that a PNG came back with a PNG signature,
   #     which is linkage, not correctness: a binary that loads and rasterizes
   #     wrongly passes every leg;
