@@ -13,6 +13,7 @@ const nodeGlobals = {
   console: "readonly",
   Buffer: "readonly",
   URL: "readonly",
+  fetch: "readonly", // global since Node 18; build-bundle.mjs fetches the locked native tarballs with it
   setTimeout: "readonly",
   clearTimeout: "readonly",
 };
