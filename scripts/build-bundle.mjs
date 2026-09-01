@@ -86,6 +86,10 @@ const STAGE = path.join(REPO, "build");
  * Deliberately duplicated in test/bundle.test.mjs rather than shared: if these two
  * lists drift, that is a change to what ships on which machines, and it should
  * fail a test rather than be absorbed silently by a common import.
+ *
+ * Enforced as an ALLOWLIST, not just a fetch list: step 3b below deletes any
+ * @resvg package npm installed that this list does not name, so what ships is
+ * this decision rather than the build host's npm resolution.
  */
 const NATIVE_TARGETS = [
   "@resvg/resvg-js-win32-x64-msvc",
@@ -189,6 +193,42 @@ fs.copyFileSync(path.join(REPO, "package-lock.json"), path.join(STAGE, "package-
 const npm = npmCli();
 log("  installing production dependencies");
 run(npm.file, [...npm.prefix, "ci", "--omit=dev", "--ignore-scripts"], STAGE, "npm ci --omit=dev");
+
+// ------------------------------------------- 3b. prune host-dependent installs
+//
+// npm ci resolves optionalDependencies by the BUILD HOST's os/cpu, and the
+// @resvg/resvg-js platform packages declare no libc field — so an ubuntu host
+// installs linux-x64-musl next to linux-x64-gnu while a Windows host installs
+// neither, and the staged tree depends on where it was built. v1.2.1 shipped a
+// seventh, undecided resvg binary exactly this way, 2 MB past a baseline that
+// had been recorded on a different host. NATIVE_TARGETS is the decision about
+// what ships; everything else under @resvg/ goes, on every host, so the bundle
+// stops varying by builder. test/bundle.test.mjs asserts set equality.
+const resvgScope = path.join(STAGE, "node_modules", "@resvg");
+if (fs.existsSync(resvgScope)) {
+  for (const entry of fs.readdirSync(resvgScope)) {
+    const name = `@resvg/${entry}`;
+    if (name === "@resvg/resvg-js" || NATIVE_TARGETS.includes(name)) continue;
+    fs.rmSync(path.join(resvgScope, entry), { recursive: true, force: true });
+    log(`  pruned ${name} (host-dependent install, not in NATIVE_TARGETS)`);
+  }
+}
+
+// Bare-runtime implementations of fs/path/url, reachable only through the
+// "bare" condition in tar-fs's and tar-stream's imports maps — a condition Node
+// never activates, so nothing in this bundle can load them. They cannot be
+// omitted at install time: bare-fs is a HARD dependency of tar-stream, so
+// --omit=optional does not remove it. ~2 MB compressed of dead weight in every
+// bundle. The staged node_modules/.package-lock.json still lists them (npm
+// wrote it before this prune); that is a known cosmetic inconsistency, in the
+// conservative direction for anyone auditing advisories against it.
+const BARE_RUNTIME_PACKAGES = ["bare-events", "bare-fs", "bare-path", "bare-stream", "bare-url"];
+for (const name of BARE_RUNTIME_PACKAGES) {
+  const dir = path.join(STAGE, "node_modules", name);
+  if (!fs.existsSync(dir)) continue;
+  fs.rmSync(dir, { recursive: true, force: true });
+  log(`  pruned ${name} (Bare-runtime only, unreachable under Node)`);
+}
 
 fs.writeFileSync(path.join(STAGE, "package.json"), JSON.stringify({
   name: pkg.name, version: manifest.version, description: pkg.description,
