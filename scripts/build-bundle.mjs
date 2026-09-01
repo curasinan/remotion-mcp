@@ -21,6 +21,7 @@
  * Usage:
  *   node scripts/build-bundle.mjs [--allow-version-drift] [--out <file>]
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -275,32 +276,68 @@ if (!fs.existsSync(resvgPkgPath)) {
 const resvgVersion = JSON.parse(fs.readFileSync(resvgPkgPath, "utf8")).version;
 log(`  fetching ${NATIVE_TARGETS.length} native prebuilts for @resvg/resvg-js@${resvgVersion}`);
 
-// Outside STAGE deliberately: a tarball left behind by a mid-loop failure would
-// otherwise be staged and shipped.
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcpb-natives-"));
-try {
-  for (const target of NATIVE_TARGETS) {
-    const spec = `${target}@${resvgVersion}`;
-    const dest = path.join(STAGE, "node_modules", ...target.split("/"));
-    if (fs.existsSync(path.join(dest, "package.json"))) { log(`    ${target} (already present)`); continue; }
+// Every fetched tarball is verified against the COMMITTED lockfile before a
+// byte of it is staged. The previous form - `npm pack ${target}@${version}` -
+// trusted whatever the registry served at release time: the packument and the
+// tarball come from the same server, so its self-consistency check proves
+// nothing against a compromised or poisoned registry, and the cosign signature
+// then attests which workflow built the file, not that the vendored binaries
+// are the ones the repository decided on. package-lock.json already records a
+// sha512 for every one of these packages (they are optionalDependencies of
+// @resvg/resvg-js), so the release only ships bytes some commit locked.
+//
+// The "already present" targets are the ones npm ci itself installed, and npm
+// verifies those against the same lockfile hashes during install.
+const rootLock = JSON.parse(fs.readFileSync(path.join(REPO, "package-lock.json"), "utf8"));
+for (const target of NATIVE_TARGETS) {
+  const dest = path.join(STAGE, "node_modules", ...target.split("/"));
+  if (fs.existsSync(path.join(dest, "package.json"))) { log(`    ${target} (already present, verified by npm ci)`); continue; }
 
-    const out = run(npm.file, [...npm.prefix, "pack", spec, "--pack-destination", tmp], REPO, `npm pack ${spec}`);
-    const tgz = out.trim().split("\n").pop().trim();
-    const tgzPath = path.join(tmp, tgz);
-    if (!fs.existsSync(tgzPath)) die(`npm pack ${spec} reported '${tgz}' but the file is not there.`, "Re-run; if it persists the registry response is malformed.");
+  const entry = rootLock.packages[`node_modules/${target}`];
+  if (!entry) {
+    die(`${target} has no entry in package-lock.json.`,
+      "Every NATIVE_TARGET must be locked so its hash is pinned by a commit. If the target was "
+      + "just added, run `npm install` so the lockfile records it, and commit the lockfile.");
+  }
+  if (entry.version !== resvgVersion) {
+    die(`package-lock.json locks ${target}@${entry.version} but @resvg/resvg-js is ${resvgVersion}.`,
+      "The platform packages must match the main package exactly. Update the lockfile and commit it.");
+  }
+  const integrity = (entry.integrity ?? "").split(/\s+/).find((s) => s.startsWith("sha512-"));
+  if (!entry.resolved || !integrity) {
+    die(`the lockfile entry for ${target} has no resolved URL or no sha512 integrity.`,
+      "Refusing to fetch unpinned bytes into the bundle. Regenerate the lockfile from the registry.");
+  }
 
+  const res = await fetch(entry.resolved);
+  if (!res.ok) die(`fetching ${entry.resolved} returned HTTP ${res.status}.`, "Re-run; if it persists, check the registry.");
+  const tarball = Buffer.from(await res.arrayBuffer());
+  const digest = "sha512-" + crypto.createHash("sha512").update(tarball).digest("base64");
+  if (digest !== integrity) {
+    die(`${target}: the registry served bytes that do not match the committed lockfile.\n\n`
+      + `  lockfile integrity  ${integrity}\n  fetched tarball     ${digest}`,
+      "Do NOT retry until this is understood: either the lockfile is stale or the registry is "
+      + "serving something other than what this repository locked.");
+  }
+
+  // Written to a temp dir outside STAGE, so a mid-loop failure cannot leave a
+  // stray tarball where it would be staged and shipped.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcpb-natives-"));
+  try {
+    const tgzPath = path.join(tmp, `${target.replace(/[@/]/g, "_")}.tgz`);
+    fs.writeFileSync(tgzPath, tarball);
     fs.mkdirSync(dest, { recursive: true });
     try {
       extractNpmTarball(tgzPath, dest);
     } catch (error) {
-      die(`could not extract ${spec}: ${error.message}`, "Re-run. If it persists, the published tarball changed shape.");
+      die(`could not extract ${target}@${resvgVersion}: ${error.message}`, "Re-run. If it persists, the published tarball changed shape.");
     }
-    const node = fs.readdirSync(dest).filter((n) => n.endsWith(".node"));
-    if (node.length === 0) die(`${target} unpacked with no .node binary.`, "The published package changed shape; inspect the tarball.");
-    log(`    ${target}  ${(fs.statSync(path.join(dest, node[0])).size / 1e6).toFixed(1)} MB`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
-} finally {
-  fs.rmSync(tmp, { recursive: true, force: true });
+  const node = fs.readdirSync(dest).filter((n) => n.endsWith(".node"));
+  if (node.length === 0) die(`${target} unpacked with no .node binary.`, "The published package changed shape; inspect the tarball.");
+  log(`    ${target}  ${(fs.statSync(path.join(dest, node[0])).size / 1e6).toFixed(1)} MB  (integrity verified against lockfile)`);
 }
 
 // ---------------------------------------------------------------- 5. server code
