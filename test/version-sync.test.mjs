@@ -51,6 +51,35 @@ test("all four files move together", () => {
   assert.equal(lock.packages[""].version, "2.0.0");
 });
 
+test("a lockfile with a packages map but no root entry is refused, not half-synced", () => {
+  // npm 7+ (lockfileVersion 2/3) always writes packages[""]. If it is absent
+  // from a file that HAS a packages map, something mangled the lockfile, and
+  // updating only the top-level version would write a success message over a
+  // silent partial sync - the exact behaviour this script refuses everywhere
+  // else. (A v1 lockfile has no packages map at all; top-level-only is
+  // complete there, so that shape stays accepted.)
+  const dir = makeFixture();
+  const lockPath = path.join(dir, "package-lock.json");
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  delete lock.packages[""];
+  fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [script, "2.0.0"], {
+        cwd: dir,
+        shell: false,
+        stdio: "pipe",
+        encoding: "utf8",
+      }),
+    (err) => {
+      assert.equal(err.status, 1);
+      assert.match(err.stderr, /packages\[""\]/);
+      return true;
+    },
+  );
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version, "1.2.0");
+});
+
 test("a missing lockfile is refused, not skipped", () => {
   const dir = makeFixture();
   fs.rmSync(path.join(dir, "package-lock.json"));

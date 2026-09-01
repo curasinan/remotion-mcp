@@ -22,7 +22,12 @@ export default tseslint.config(
   // build/** is a second compiled-output directory (gitignored, distinct from
   // dist/**) produced by an older build step; without this it was linted as
   // if it were source, worth ~109 of the original 169 findings.
-  { ignores: ["dist/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb"] },
+  // extracted/**, artifact/** and tmp-*/** are what verify-bundle-runtime.mjs
+  // leaves behind when run locally with the same arguments CI uses; eslint's
+  // flat config does not read .gitignore, so without these the now-blocking
+  // lint fails locally on extracted plain-JS server files while CI (which
+  // never creates them on the lint leg) stays green.
+  { ignores: ["dist/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb", "extracted/**", "artifact/**", "tmp-*/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
