@@ -31,7 +31,24 @@ export const MAX_SOURCE_BYTES = 2_000_000;
  * by protocolTimeout, which defaults to 180 s. A page containing
  * `while(true){}` therefore held the tool for 181 s while the docs promised 30.
  */
-export const TIMEOUT_PAGE_LOAD_MS = 30_000;
+export const TIMEOUT_PAGE_LOAD_MS = 45_000;
+
+/**
+ * Connection-wide cap on every CDP command, passed to puppeteer as
+ * `protocolTimeout`. It is a backstop against a command that never returns at
+ * all, NOT the deadline for page work - rasterizeHtml enforces that itself, so
+ * it applies to setContent and screenshot together rather than to each command
+ * separately.
+ *
+ * Keeping these separate is the fix for a real CI failure. This value used to
+ * be TIMEOUT_PAGE_LOAD_MS, which meant the page-load deadline also capped
+ * page.screenshot() - a command with no deadline of its own that legitimately
+ * takes longer on a cold browser. On 2026-08-30 that failed three CI legs in a
+ * row, always the first browser test of the run: windows-latest reported
+ * "Page.captureScreenshot timed out", macos-latest reported "Navigation
+ * timeout of 30000 ms exceeded". test/timeouts.test.mjs holds them apart.
+ */
+export const TIMEOUT_CDP_PROTOCOL_MS = 120_000;
 
 /** Default timeouts, in milliseconds. */
 export const TIMEOUT_FAST_MS = 30_000;

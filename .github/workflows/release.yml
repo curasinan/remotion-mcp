@@ -1,0 +1,176 @@
+name: Release
+
+# Separate from ci.yml, and deliberately so. `id-token: write` is what makes
+# cosign keyless signing possible, and a workflow that holds it must never run
+# on pull requests: a fork PR would otherwise be able to mint a signing identity
+# that reads "signed by this repository".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release; let @semantic-release/git push the version bump
+  issues: write # @semantic-release/github comments on the issues a release closes
+  pull-requests: write # ...and on pull requests, which `issues: write` alone does not cover
+  id-token: write # the OIDC token cosign exchanges with Fulcio for a short-lived certificate
+
+# Two releases in flight would race on the tag and on the push to main. Not
+# cancel-in-progress: a half-finished release is worse than a queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release reads the whole tag history
+          # semantic-release builds its own authenticated remote from GITHUB_TOKEN,
+          # so the checkout credentials are not needed and would only widen what a
+          # compromised step could push with.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # semantic-release 25 needs ^22.14.0 || >=24.10.0 and @semantic-release/git 11
+          # needs ^22.22.2 || >=24.15. 24 is the only single major that satisfies both
+          # without pinning a patch. ci.yml still tests the matrix the package claims.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # The gate below is the reason this job is not just `npx semantic-release`.
+      # ci.yml triggers on push to main *in parallel* with this workflow - it is not
+      # upstream of it - so without a test run here a red merge would still produce a
+      # tag, a published release, a signed 19.5 MB artifact and a version-bump commit
+      # on main. And because that commit carries [skip ci], the released commit never
+      # gets a check at all. build-bundle.mjs's version-drift check catches a version
+      # mismatch; it catches no behavioural regression.
+      #
+      # It runs before `npx semantic-release`, so a failure here means no tag was ever
+      # created and there is nothing to unpublish.
+      - name: Type-check
+        run: npm run typecheck
+
+      # The suite imports from dist/. prepareCmd builds again after sync-version.mjs
+      # rewrites SERVER_VERSION; this build is for the tests, not for the artifact.
+      - name: Build
+        run: npm run build
+
+      # Same assertion, and the same reason, as ci.yml's. test/html.test.mjs gates
+      # every test on locateBrowser() at module scope, so with no browser the file
+      # SKIPS - and a gate that passes because it ran nothing is worse than no gate,
+      # because it looks like coverage. ubuntu-latest ships Chrome today; this fails
+      # the release if a runner image change ever makes that untrue.
+      - name: Assert a browser is available
+        run: >
+          node -e "import('./dist/services/browser.js').then(async m => {
+          const l = await m.locateBrowser();
+          console.log('browser:', l.source, l.executablePath || '');
+          if (l.source === 'none') {
+          console.error('No browser found. test/html.test.mjs would skip silently, so this release gate would pass without exercising viz_render_html.');
+          console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
+          process.exit(1); } })"
+
+      - name: Test
+        run: npm test
+        env:
+          # Matches ci.yml. Shared runners are contended and Chrome starts cold, so
+          # the shipped 45 s page deadline is tight here in a way it is not on a
+          # workstation. Without this the browser tests are flaky, and a flaky gate
+          # on a release job fails releases for reasons that are not defects.
+          REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+
+      # prepareCmd (package.json "release") runs scripts/sync-version.mjs, the build,
+      # the bundle, and the size gate. A bundle that breaches its ceiling fails here,
+      # before any tag is created and before anything is published.
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+      # Every step below is gated on the bundle existing. semantic-release is a no-op
+      # when nothing since the last tag warrants a release; in that case prepareCmd
+      # never ran, there is no .mcpb, and there is nothing to sign.
+      - name: Install cosign
+        if: hashFiles('*.mcpb') != ''
+        # Pinned to the v3 line on purpose: it installs cosign 2.6.1. cosign 3, which
+        # cosign-installer v4 installs by default, replaced the detached
+        # --output-signature/--output-certificate form of sign-blob with --bundle -
+        # that changes both the files published here and the command a user runs to
+        # verify them. There is also no floating `v4` major tag on this action, so
+        # `@v4` does not resolve; moving forward means pinning v4.x and rewriting
+        # both the sign and the verify recipe together.
+        #
+        # Pinned by commit SHA, not by the version tag. This is the only workflow
+        # holding `id-token: write` together with `contents: write`, so an action
+        # running in it can mint a signing identity that reads "signed by this
+        # repository" - and a git tag can be moved onto any commit by whoever
+        # controls the upstream repository. v3.10.1 is immutable only by
+        # convention; the SHA is immutable by construction. The trailing comment
+        # keeps the version readable.
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign the bundle and attach the signature to the release
+        if: hashFiles('*.mcpb') != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Ambiguity is a failure, not a guess - the rule scripts/check-bundle-size.mjs
+          # already applies. `ls *.mcpb | head -1` would silently sign whichever file
+          # happened to sort first.
+          shopt -s nullglob
+          bundles=(*.mcpb)
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "Expected exactly one .mcpb in the workspace, found ${#bundles[@]}:" >&2
+            printf '  %s\n' "${bundles[@]:-(none)}" >&2
+            exit 1
+          fi
+          BUNDLE="${bundles[0]}"
+
+          # Keyless. The OIDC token that `id-token: write` grants is exchanged with
+          # Fulcio for a certificate valid for ten minutes, and the signature is
+          # written to the Rekor transparency log. No private key exists to leak,
+          # rotate, or store as a secret.
+          cosign sign-blob --yes \
+            --output-signature "${BUNDLE}.sig" \
+            --output-certificate "${BUNDLE}.pem" \
+            "$BUNDLE"
+
+          # Verify before publishing, not after. A signature nobody has verified is a
+          # signature that has not been tested; checking it here means a broken one
+          # fails this run instead of failing the user who downloads it. The identity
+          # comes from the GITHUB_REPOSITORY environment variable rather than from
+          # an interpolated GitHub Actions expression, so that nothing outside this
+          # file is spliced into the shell. (Written out in words on purpose:
+          # GitHub scans run: blocks for expression delimiters regardless of shell
+          # comments, and an empty pair of them is a workflow parse error - which
+          # is exactly what kept this file from compiling.)
+          #
+          # Anchored at both ends. Left-anchored alone would accept a certificate
+          # minted from any branch; the push trigger is main-only and
+          # workflow_dispatch needs write access, so the risk is small, but the
+          # trailing @refs/heads/main$ costs nothing. README.md's "Verifying a
+          # release" gives users this exact expression - if you change one, change
+          # both, because a workflow and a doc that disagree about the identity are
+          # worse than either alone.
+          cosign verify-blob \
+            --certificate "${BUNDLE}.pem" \
+            --signature "${BUNDLE}.sig" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@refs/heads/main$" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BUNDLE"
+
+          # semantic-release's default tagFormat is v${version}, and prepareCmd has
+          # already written the released version into package.json.
+          TAG="v$(jq -r .version package.json)"
+          gh release upload "$TAG" "${BUNDLE}.sig" "${BUNDLE}.pem" --clobber
+
+          echo "Signed ${BUNDLE} and attached ${BUNDLE}.sig and ${BUNDLE}.pem to ${TAG}."
