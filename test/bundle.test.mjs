@@ -112,11 +112,71 @@ test("manifest platform claims are backed by binaries", { skip: skip() }, () => 
   assert.deepEqual(unmet, [], `manifest.json claims these platforms with no binary to back them: ${unmet.join("; ")}`);
 });
 
+test("the bundle ships exactly the intended resvg packages — no host-dependent extras", { skip: skip() }, () => {
+  // npm ci resolves @resvg/resvg-js's platform packages from optionalDependencies
+  // by the BUILD HOST's os/cpu, and the resvg packages declare no libc field - so
+  // an ubuntu builder installs linux-x64-musl alongside linux-x64-gnu, while a
+  // Windows builder installs neither. That is how v1.2.1 shipped a seventh,
+  // undecided binary and grew 2 MB past the baseline recorded on a different
+  // host. scripts/build-bundle.mjs now prunes to NATIVE_TARGETS after install;
+  // this asserts set equality so the bundle's contents stop depending on where
+  // it was built, in either direction.
+  const present = new Set();
+  for (const e of ENTRIES) {
+    const m = /^node_modules\/(@resvg\/[^/]+)\//.exec(e.name);
+    if (m) present.add(m[1]);
+  }
+  const expected = new Set(["@resvg/resvg-js", ...REQUIRED_NATIVE]);
+  const unexpected = [...present].filter((p) => !expected.has(p)).sort();
+  const missing = [...expected].filter((p) => !present.has(p)).sort();
+
+  assert.deepEqual(unexpected, [],
+    `resvg packages shipped that no decision put there: ${unexpected.join(", ")}. `
+    + "These are what npm happened to install on the build host, not what NATIVE_TARGETS "
+    + "chose - the bundle's contents must not depend on where it was built. "
+    + "scripts/build-bundle.mjs prunes to the allowlist after npm ci; check that step.");
+  assert.deepEqual(missing, [],
+    `intended resvg packages absent from the bundle: ${missing.join(", ")}.`);
+});
+
+test("no Bare-runtime packages ship", { skip: skip() }, () => {
+  // bare-fs, bare-url and friends are file-system/URL implementations for the
+  // Bare runtime, reachable only through the "bare" condition in tar-fs's and
+  // tar-stream's imports maps - a condition Node never activates. They cannot be
+  // dropped at install time (bare-fs is a *hard* dependency of tar-stream, so
+  // --omit=optional does not touch it) and cost ~2 MB compressed in every
+  // bundle, so scripts/build-bundle.mjs prunes them after npm ci.
+  const bare = new Set();
+  for (const e of ENTRIES) {
+    const m = /^node_modules\/(bare-[^/]+)\//.exec(e.name);
+    if (m) bare.add(m[1]);
+  }
+  assert.deepEqual([...bare].sort(), [],
+    `Bare-runtime packages shipped: ${[...bare].sort().join(", ")}. Nothing can load these `
+    + "under Node - they resolve only behind the \"bare\" imports-map condition - so they are "
+    + "dead weight. scripts/build-bundle.mjs prunes them after npm ci; check that step.");
+
+  // Positive control: prove the pattern matches the shape it exists to catch,
+  // so an empty result means "none present", not "the scan is broken".
+  assert.ok(/^node_modules\/(bare-[^/]+)\//.test("node_modules/bare-fs/index.js"),
+    "the bare-package pattern no longer matches the shape it exists to catch - the assertion above is inert");
+});
+
 test("the linux claim is either backed by musl binaries or documented as glibc-only", { skip: skip() }, () => {
   if (!(MANIFEST.compatibility?.platforms ?? []).includes("linux")) return;
   const musl = ["@resvg/resvg-js-linux-x64-musl", "@resvg/resvg-js-linux-arm64-musl"]
     .filter((t) => has(`node_modules/${t}/`));
-  if (musl.length > 0) return;                       // claim is backed; nothing to document
+  if (musl.length === 2) return;                     // claim is backed by the pair; nothing to document
+
+  // One musl binary without its sibling is not "backed" - it is the build host's
+  // npm leaking through: v1.2.1 shipped linux-x64-musl alone (installed because
+  // resvg's packages declare no libc field, so an ubuntu npm cannot exclude it)
+  // while an arm64-musl user still crashed. The old early return here accepted
+  // that state as a deliberate decision.
+  assert.deepEqual(musl, [],
+    `a partial musl set shipped: ${musl.join(", ")}. Either both musl binaries are in `
+    + "NATIVE_TARGETS (a decision) or neither is (the current decision) - one alone is "
+    + "an accident of the build host.");
 
   // Decision: ship glibc only. A .mcpb runs inside Claude Desktop, which is not
   // distributed for Alpine/musl, so the two musl binaries would add ~8 MB (+41% on
