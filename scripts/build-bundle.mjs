@@ -86,6 +86,10 @@ const STAGE = path.join(REPO, "build");
  * Deliberately duplicated in test/bundle.test.mjs rather than shared: if these two
  * lists drift, that is a change to what ships on which machines, and it should
  * fail a test rather than be absorbed silently by a common import.
+ *
+ * Enforced as an ALLOWLIST, not just a fetch list: step 3b below deletes any
+ * @resvg package npm installed that this list does not name, so what ships is
+ * this decision rather than the build host's npm resolution.
  */
 const NATIVE_TARGETS = [
   "@resvg/resvg-js-win32-x64-msvc",
@@ -189,6 +193,71 @@ fs.copyFileSync(path.join(REPO, "package-lock.json"), path.join(STAGE, "package-
 const npm = npmCli();
 log("  installing production dependencies");
 run(npm.file, [...npm.prefix, "ci", "--omit=dev", "--ignore-scripts"], STAGE, "npm ci --omit=dev");
+
+// ------------------------------------------- 3b. prune host-dependent installs
+//
+// npm ci resolves optionalDependencies by the BUILD HOST's os/cpu, and the
+// @resvg/resvg-js platform packages declare no libc field — so an ubuntu host
+// installs linux-x64-musl next to linux-x64-gnu while a Windows host installs
+// neither, and the staged tree depends on where it was built. v1.2.1 shipped a
+// seventh, undecided resvg binary exactly this way, 2 MB past a baseline that
+// had been recorded on a different host. NATIVE_TARGETS is the decision about
+// what ships; everything else under @resvg/ goes, on every host, so the
+// shipped package SET stops varying by builder. (The bytes of the staged
+// node_modules/.package-lock.json still do — see the note below.)
+// test/bundle.test.mjs asserts set equality.
+const resvgScope = path.join(STAGE, "node_modules", "@resvg");
+if (fs.existsSync(resvgScope)) {
+  for (const entry of fs.readdirSync(resvgScope)) {
+    const name = `@resvg/${entry}`;
+    if (name === "@resvg/resvg-js" || NATIVE_TARGETS.includes(name)) continue;
+    fs.rmSync(path.join(resvgScope, entry), { recursive: true, force: true });
+    log(`  pruned ${name} (host-dependent install, not in NATIVE_TARGETS)`);
+  }
+}
+
+// Bare-runtime implementations of fs/path/url, reachable only through the
+// "bare" condition in tar-fs's and tar-stream's imports maps — a condition Node
+// never activates, so nothing in this bundle can load them. They cannot be
+// omitted at install time: bare-fs is a HARD dependency of tar-stream, so
+// --omit=optional does not remove it. ~2 MB compressed of dead weight in every
+// bundle.
+//
+// Walks every node_modules level rather than deleting five known names at the
+// top: the bare graph has multiple dependents with independent ranges
+// (tar-stream wants bare-fs ^4.5.5, tar-fs ^4.0.1; bare-events is wanted at
+// ^2.5.4 and ^2.7.0), so a future major divergence makes npm nest a copy —
+// node_modules/tar-stream/node_modules/bare-fs — that a flat delete would
+// miss. The bare- prefix is the Bare runtime's package namespace; the guard
+// test in test/bundle.test.mjs matches the same shape, so the two cannot
+// disagree about what counts.
+//
+// Known cosmetic inconsistency, stated rather than hidden: the staged
+// node_modules/.package-lock.json (which ships, for offline advisory audits)
+// was written by npm before this prune, so it still lists the pruned bare-*
+// packages — and, on any host, only the resvg platform package npm itself
+// installed there. The shipped package SET is deterministic; that one
+// metadata file's bytes are not.
+function pruneBareRuntime(nodeModulesDir) {
+  if (!fs.existsSync(nodeModulesDir)) return;
+  for (const entry of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(nodeModulesDir, entry.name);
+    if (entry.name.startsWith("bare-")) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      log(`  pruned ${path.relative(STAGE, dir).split(path.sep).join("/")} (Bare-runtime only, unreachable under Node)`);
+      continue;
+    }
+    if (entry.name.startsWith("@")) {
+      for (const scoped of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (scoped.isDirectory()) pruneBareRuntime(path.join(dir, scoped.name, "node_modules"));
+      }
+      continue;
+    }
+    pruneBareRuntime(path.join(dir, "node_modules"));
+  }
+}
+pruneBareRuntime(path.join(STAGE, "node_modules"));
 
 fs.writeFileSync(path.join(STAGE, "package.json"), JSON.stringify({
   name: pkg.name, version: manifest.version, description: pkg.description,
