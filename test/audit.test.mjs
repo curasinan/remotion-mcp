@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { loadConfig, ConfigError } from "../dist/config.js";
+import { loadConfig } from "../dist/config.js";
 import { recordAuditEvent, readAuditEvents } from "../dist/services/audit.js";
 import { rasterizeSvg } from "../dist/services/raster.js";
 import { ToolInputError } from "../dist/types.js";
