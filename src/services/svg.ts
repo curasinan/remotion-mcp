@@ -170,7 +170,7 @@ export function validateSvg(source: string): SvgValidationReport {
     });
   }
 
-  if (/@import|url\(\s*['\"]?https?:/i.test(source)) {
+  if (/@import|url\(\s*['"]?https?:/i.test(source)) {
     issues.push({
       severity: "warning",
       code: "external_font_or_css",

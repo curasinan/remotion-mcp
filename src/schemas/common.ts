@@ -21,7 +21,7 @@ import { ResponseFormat } from "../types.js";
  * fix, not a sentinel.
  */
 export function hasNoFlagLikeSegment(value: string): boolean {
-  return !value.split(/[\/]/).some((segment) => segment.startsWith("-"));
+  return !value.split(/[/]/).some((segment) => segment.startsWith("-"));
 }
 
 export const FLAG_LIKE_MESSAGE =
@@ -47,7 +47,7 @@ export const entryPointField = z
   .min(1)
   .max(500)
   .regex(
-    /^[A-Za-z0-9._][A-Za-z0-9._/\-]*$/,
+    /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/,
     "entry_point may contain only letters, digits, dot, underscore, hyphen and path separators, and may not begin with '-' or a separator",
   )
   .refine(hasNoFlagLikeSegment, FLAG_LIKE_MESSAGE)

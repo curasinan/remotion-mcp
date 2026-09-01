@@ -50,12 +50,23 @@ const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
 
+// npm 7+ states the root version twice: at the top and in packages[""]. A
+// packages map without a root entry means something mangled the file, and
+// moving only the top-level version would be a silent partial sync - refused
+// here like every other malformed input, before anything is written. (A v1
+// lockfile has no packages map; its top-level version alone is complete.)
+if (lock.packages && !lock.packages[""]) {
+  console.error(
+    `${lockPath} has a packages map but no packages[""] root entry.\n` +
+      `npm always writes both; refusing to half-sync a mangled lockfile. Regenerate it with npm install.`,
+  );
+  process.exit(1);
+}
+
 pkg.version = version;
 manifest.version = version;
-// npm states the root version twice: at the top and in packages[""]. Move
-// both, or the file is internally inconsistent.
 lock.version = version;
-if (lock.packages?.[""]) lock.packages[""].version = version;
+if (lock.packages) lock.packages[""].version = version;
 
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");

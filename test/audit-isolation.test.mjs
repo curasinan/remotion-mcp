@@ -135,7 +135,6 @@ test("every harness that spawns the server redirects ALL of its persistent state
   // Two kinds now. The audit log is appended to; the Studio registry is worse -
   // loading it UNLINKS the pre-1.2.0 file as a migration step, so a suite that
   // missed this would delete real state on a developer's machine just by running.
-  const REQUIRED = ["REMOTION_MCP_AUDIT_LOG", "REMOTION_MCP_STATE_DIR"];
   const roots = [REPO, path.join(REPO, "test"), path.join(REPO, "scripts")];
   const offenders = [];
   for (const dir of roots) {
