@@ -133,7 +133,7 @@ test("the bundle ships exactly the intended resvg packages — no host-dependent
   assert.deepEqual(unexpected, [],
     `resvg packages shipped that no decision put there: ${unexpected.join(", ")}. `
     + "These are what npm happened to install on the build host, not what NATIVE_TARGETS "
-    + "chose - the bundle's contents must not depend on where it was built. "
+    + "chose - the shipped package set must not depend on where it was built. "
     + "scripts/build-bundle.mjs prunes to the allowlist after npm ci; check that step.");
   assert.deepEqual(missing, [],
     `intended resvg packages absent from the bundle: ${missing.join(", ")}.`);
@@ -146,9 +146,16 @@ test("no Bare-runtime packages ship", { skip: skip() }, () => {
   // dropped at install time (bare-fs is a *hard* dependency of tar-stream, so
   // --omit=optional does not touch it) and cost ~2 MB compressed in every
   // bundle, so scripts/build-bundle.mjs prunes them after npm ci.
+  //
+  // The scan matches bare-* under ANY node_modules level, not just the top:
+  // the bare graph has multiple dependents with independent ranges (tar-stream
+  // needs bare-fs ^4.5.5, tar-fs ^4.0.1; bare-events is wanted at ^2.5.4 and
+  // ^2.7.0), so a future major divergence makes npm nest a copy - e.g.
+  // node_modules/tar-stream/node_modules/bare-fs - and a top-anchored scan
+  // would stay green while the dead weight returned.
   const bare = new Set();
   for (const e of ENTRIES) {
-    const m = /^node_modules\/(bare-[^/]+)\//.exec(e.name);
+    const m = /(?:^|\/)node_modules\/(bare-[^/]+)\//.exec(e.name);
     if (m) bare.add(m[1]);
   }
   assert.deepEqual([...bare].sort(), [],
@@ -156,10 +163,19 @@ test("no Bare-runtime packages ship", { skip: skip() }, () => {
     + "under Node - they resolve only behind the \"bare\" imports-map condition - so they are "
     + "dead weight. scripts/build-bundle.mjs prunes them after npm ci; check that step.");
 
-  // Positive control: prove the pattern matches the shape it exists to catch,
-  // so an empty result means "none present", not "the scan is broken".
-  assert.ok(/^node_modules\/(bare-[^/]+)\//.test("node_modules/bare-fs/index.js"),
-    "the bare-package pattern no longer matches the shape it exists to catch - the assertion above is inert");
+  // Positive control, run against the ARTIFACT rather than a string this test
+  // supplies: the same component-scan shape must find tar-fs, which ships as a
+  // hard dependency of @puppeteer/browsers. If it stops matching real entry
+  // names, the empty bare result above is silence, not evidence.
+  const control = new Set();
+  for (const e of ENTRIES) {
+    const m = /(?:^|\/)node_modules\/(tar-[^/]+)\//.exec(e.name);
+    if (m) control.add(m[1]);
+  }
+  assert.ok(control.has("tar-fs"),
+    "the component scan did not find tar-fs in the bundle. Either the scan shape no longer "
+    + "matches real zip entry names (which makes the bare assertion above inert), or tar-fs "
+    + "left the dependency tree - in which case update this control to another package that ships.");
 });
 
 test("the linux claim is either backed by musl binaries or documented as glibc-only", { skip: skip() }, () => {
@@ -179,9 +195,10 @@ test("the linux claim is either backed by musl binaries or documented as glibc-o
     + "an accident of the build host.");
 
   // Decision: ship glibc only. A .mcpb runs inside Claude Desktop, which is not
-  // distributed for Alpine/musl, so the two musl binaries would add ~8 MB (+41% on
-  // a 19.3 MiB bundle) for a platform that cannot run the host application. The
-  // claim is narrowed in documentation instead of being backed in bytes.
+  // distributed for Alpine/musl, so the two musl binaries would add ~4 MB
+  // compressed (~8 MB unpacked) for a platform that cannot run the host
+  // application. The claim is narrowed in documentation instead of being backed
+  // in bytes.
   //
   // This test is the guard on that decision: if the documentation disappears, the
   // bundle is back to claiming "linux" with nothing behind it. To reverse the
