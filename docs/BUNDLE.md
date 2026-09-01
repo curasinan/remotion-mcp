@@ -30,13 +30,33 @@ x64/arm64, and **linux x64/arm64 glibc**.
 Alpine or another musl distribution — `@resvg/resvg-js` fails with "Failed to load
 native binding", and none of this server's own diagnostics fire, because the failure
 happens before its code runs. This is deliberate: a `.mcpb` runs inside Claude
-Desktop, which is not distributed for musl, so the two extra binaries would add ~8 MB
-to a 19.3 MiB bundle for a platform that cannot run the host application.
+Desktop, which is not distributed for musl, so the two extra binaries would add
+~4 MB compressed (~8 MB unpacked) for a platform that cannot run the host
+application.
 
-To reverse that, uncomment the two musl entries in `NATIVE_TARGETS` in
-`scripts/build-bundle.mjs`. The test *"the linux claim is either backed by musl
-binaries or documented as glibc-only"* in `test/bundle.test.mjs` enforces that one of
-the two is always true.
+**The bundle's contents are pruned to that decision, because npm's alone are
+host-dependent.** `npm ci` resolves resvg's platform packages from
+`optionalDependencies` by the builder's os/cpu, and those packages declare no
+`libc` field — so a glibc Linux builder installs `linux-x64-musl` next to
+`linux-x64-gnu`, while a Windows builder installs neither. The shipped v1.2.1
+carried a seventh, undecided binary exactly this way (~2 MB compressed that no
+Windows-built bundle had), which is also why it passed its own size gate by only
+32 KB: the baseline had been recorded from a Windows build. `build-bundle.mjs`
+now deletes everything under `@resvg/` that is not in `NATIVE_TARGETS` after the
+install — along with the `bare-*` packages, Bare-runtime implementations of
+fs/path/url that nothing running under Node can load (they resolve only behind
+the `"bare"` imports-map condition, and `bare-fs` is a hard dependency of
+`tar-stream`, so no install flag removes them). Two tests in
+`test/bundle.test.mjs` hold the line: *"the bundle ships exactly the intended
+resvg packages"* asserts set equality in both directions, and *"no Bare-runtime
+packages ship"* keeps the dead weight out.
+
+To reverse the musl decision, uncomment the two musl entries in `NATIVE_TARGETS`
+in `scripts/build-bundle.mjs` — the prune keeps whatever that list names. The
+test *"the linux claim is either backed by musl binaries or documented as
+glibc-only"* in `test/bundle.test.mjs` enforces that the claim is backed by the
+**pair** or documented; one musl binary without its sibling is treated as a
+build-host accident, not a decision.
 
 ### Which of those six are actually loaded before release
 
