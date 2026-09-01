@@ -12,10 +12,10 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import zlib from "node:zlib";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractZip, readEntry, readZipEntries } from "./zip-reader.mjs";
 
 const REPO = path.join(import.meta.dirname, "..");
 const REQUIRE_BUNDLE = process.env.REQUIRE_BUNDLE === "1";
@@ -44,44 +44,10 @@ const PLATFORM_BINARIES = {
     "@resvg/resvg-js-linux-x64-musl", "@resvg/resvg-js-linux-arm64-musl"],
 };
 
-// ------------------------------------------------------------------ zip reader
-// Pure Node so the test does not depend on unzip/bsdtar being present and behaving
-// the same on three platforms.
-function readZipEntries(buf) {
-  let eocd = -1;
-  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
-  }
-  if (eocd === -1) throw new Error("not a zip: no end-of-central-directory record");
-  const count = buf.readUInt16LE(eocd + 10);
-  let p = buf.readUInt32LE(eocd + 16);
-  const entries = [];
-  for (let i = 0; i < count; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("corrupt central directory");
-    const method = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const uncompSize = buf.readUInt32LE(p + 24);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const localOffset = buf.readUInt32LE(p + 42);
-    const name = buf.toString("utf8", p + 46, p + 46 + nameLen);
-    entries.push({ name, method, compSize, uncompSize, localOffset });
-    p += 46 + nameLen + extraLen + commentLen;
-  }
-  return entries;
-}
-
-function readEntry(buf, e) {
-  if (buf.readUInt32LE(e.localOffset) !== 0x04034b50) throw new Error(`corrupt local header for ${e.name}`);
-  const nameLen = buf.readUInt16LE(e.localOffset + 26);
-  const extraLen = buf.readUInt16LE(e.localOffset + 28);
-  const start = e.localOffset + 30 + nameLen + extraLen;
-  const raw = buf.subarray(start, start + e.compSize);
-  if (e.method === 0) return Buffer.from(raw);
-  if (e.method === 8) return zlib.inflateRawSync(raw);
-  throw new Error(`unsupported compression method ${e.method} for ${e.name}`);
-}
+// The zip reader lives in test/zip-reader.mjs so scripts/verify-bundle-runtime.mjs
+// can extract a .mcpb with the same code, rather than growing a second copy or
+// shelling out to tar (which under Git Bash on Windows reads C:\... as a remote
+// host spec).
 
 // ------------------------------------------------------------------ fixture
 let BUNDLE = null, ENTRIES = null, BUF = null, EXTRACTED = null, MANIFEST = null;
@@ -99,12 +65,7 @@ before(() => {
   MANIFEST = JSON.parse(readEntry(BUF, ENTRIES.find((e) => e.name === "manifest.json")).toString("utf8"));
 
   EXTRACTED = fs.mkdtempSync(path.join(os.tmpdir(), "mcpb-verify-"));
-  for (const e of ENTRIES) {
-    if (e.name.endsWith("/")) continue;
-    const dest = path.join(EXTRACTED, e.name);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, readEntry(BUF, e));
-  }
+  extractZip(BUNDLE, EXTRACTED);
 });
 
 const skip = () => (BUNDLE ? false : "no .mcpb built (set REQUIRE_BUNDLE=1 to make this a failure)");

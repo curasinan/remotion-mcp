@@ -3,3 +3,9 @@ dist
 *.log
 build
 *.mcpb
+
+# Where scripts/verify-bundle-runtime.mjs unpacks a .mcpb. A few thousand
+# extracted files, one of them a 4 MB native binary, and none of them source.
+/extracted/
+/tmp-verify/
+/tmp-broken/

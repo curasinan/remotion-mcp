@@ -23,7 +23,7 @@ npm install
 npm run build
 ```
 
-Node 18 or newer. `viz_render_html` needs a Chrome/Chromium/Edge/Brave already
+Node 22 or newer. `viz_render_html` needs a Chrome/Chromium/Edge/Brave already
 on the machine, or `PUPPETEER_EXECUTABLE_PATH` pointing at one; nothing is
 downloaded. Every other tool works without a browser.
 
@@ -37,6 +37,62 @@ node smoke-test.mjs # 32 assertions over real JSON-RPC
 
 CI runs the test suite plus type-check, `npm audit` and SBOM generation on
 Windows, macOS and Linux; see `.github/workflows/ci.yml`.
+
+## Verifying a release
+
+Each GitHub Release carries three files: the bundle `remotion-viz-<version>.mcpb`,
+a signature `remotion-viz-<version>.mcpb.sig`, and a certificate
+`remotion-viz-<version>.mcpb.pem`.
+
+The signature is [Sigstore](https://www.sigstore.dev/) keyless. There is no
+public key to obtain and no maintainer key to trust: the release workflow gets a
+short-lived certificate from Fulcio in exchange for a GitHub OIDC token, and the
+signature is recorded in the Rekor public transparency log. What you check is
+therefore not "who signed it" but *what* signed it — that these bytes were
+produced by `.github/workflows/release.yml` on `main` in this repository, and
+nowhere else. That holds without trusting this repository's own claims about
+itself.
+
+You need [cosign](https://github.com/sigstore/cosign) **2.x** — see the version
+note below. Download all three files from the release, then, from the directory
+containing them:
+
+```bash
+cosign verify-blob \
+  --certificate remotion-viz-1.2.0.mcpb.pem \
+  --signature remotion-viz-1.2.0.mcpb.sig \
+  --certificate-identity-regexp '^https://github\.com/curasinan/remotion-mcp/\.github/workflows/release\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  remotion-viz-1.2.0.mcpb
+```
+
+Substitute the version you downloaded in all three filenames. Success prints
+exactly:
+
+```
+Verified OK
+```
+
+Anything else — a non-zero exit, a certificate-identity mismatch, "no matching
+signatures" — means the file is not the artifact this repository published.
+Do not install it.
+
+Both `--certificate-identity-regexp` and `--certificate-oidc-issuer` are
+required and neither should be dropped or loosened. Without the identity you are
+only checking that *somebody* signed the file; without the issuer you are only
+checking that somebody whose identity happens to match that string did. The
+regexp above is anchored at both ends and is the same expression the workflow
+verifies against before it uploads the signature.
+
+**Version note — these are cosign 2.x detached artifacts.** `cosign install`
+today gives you cosign 3, and cosign 3 will not verify these files: its
+`verify-blob` has no `--certificate` or `--signature` flag, because cosign 3
+moved detached signing to a single `--bundle` file. If `cosign version` reports
+3.x, install a 2.x binary from
+[the cosign releases page](https://github.com/sigstore/cosign/releases) — the
+latest 2.x line — and run the command above with that. Nothing about the
+signature is weaker for being the older format; it is the same Fulcio
+certificate and the same Rekor entry.
 
 ## Connect it
 

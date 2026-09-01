@@ -38,6 +38,60 @@ To reverse that, uncomment the two musl entries in `NATIVE_TARGETS` in
 binaries or documented as glibc-only"* in `test/bundle.test.mjs` enforces that one of
 the two is always true.
 
+### Which of those six are actually loaded before release
+
+`test/bundle.test.mjs` asserts the six `.node` files are **present in the zip**.
+Presence is not loadability: a truncated, wrong-architecture or otherwise unusable
+binary passes that assertion and then fails on the user's machine with "Failed to
+load native binding", thrown by the addon loader before this server's code runs.
+
+That suite also *starts* the bundled server, so it does catch an unloadable binary —
+for the single platform it happens to run on. The gap is the other five, and it was
+measured rather than assumed. Rebuilding the `.mcpb` with one `.node` replaced by 27
+bytes of text, leaving a structurally valid zip:
+
+| Corrupted binary | `bundle.test.mjs` on Windows x64 |
+| --- | --- |
+| `win32-x64-msvc` (the host's own) | **9/10** — "the bundled server starts…" times out at `initialize` |
+| `darwin-arm64` (any non-host) | **10/10 green**, artifact unusable for every macOS ARM user |
+
+The `verify-bundle` job in `.github/workflows/ci.yml` closes that gap. It downloads
+the built `.mcpb`, extracts it on a runner per platform, starts `server/index.js` out
+of the extraction, and calls `viz_render_svg`. The static `import { Resvg }` in
+`services/raster.ts` is what forces the addon to *load* — at startup, which is why a
+bad binary shows up as a server that never answers `initialize`; the `viz_render_svg`
+call is what forces it to *run* and emit bytes. `scripts/verify-bundle-runtime.mjs`
+is that check; it runs on a checkout and a Node, with no `npm ci`, because the bundle
+brings its own `node_modules`.
+
+| Target | Loaded by | Runner |
+| --- | --- | --- |
+| `linux-x64-gnu` | `verify-bundle` | `ubuntu-latest` |
+| `linux-arm64-gnu` | `verify-bundle` | `ubuntu-24.04-arm` |
+| `win32-x64-msvc` | `verify-bundle` | `windows-latest` |
+| `win32-arm64-msvc` | `verify-bundle` | `windows-11-arm` |
+| `darwin-arm64` | `verify-bundle` | `macos-latest` |
+| `darwin-x64` | `verify-bundle` | `macos-15-intel` |
+| `linux-*-musl` | nothing — **not shipped**, see above | — |
+
+Before that job existed, exactly one of the six was ever loaded: `linux-x64-gnu`, and
+only incidentally, because the `bundle` job's `test:bundle` step happens to start the
+bundled server on an x64 Ubuntu runner. The other five shipped having never been
+executed anywhere. If a leg is dropped from that matrix, the binary it covered
+returns to that state, and this table should say so.
+
+Two limits on what a green `verify-bundle` means:
+
+- **Linkage, not fidelity.** The verifier checks that a PNG came back and that its
+  first eight bytes are the PNG signature. A binary that loads and rasterizes
+  *incorrectly* passes every leg.
+- **One runtime.** The job pins Node 24. A `.mcpb` runs under whatever Node the host
+  application ships, and nothing verifies the artifact against that.
+
+`macos-15-intel` is GitHub's last Intel macOS image, supported until August 2027.
+When it goes, `darwin-x64` loses its runner — the binary can keep shipping, but the
+row above has to change to say it is untested.
+
 ## Capabilities the running server exercises
 
 The bundle grants a Node process, and that process:

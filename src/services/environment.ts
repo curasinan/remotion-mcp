@@ -2,7 +2,7 @@
  * Environment detection.
  *
  * Most "Remotion just errors" reports trace back to one of four causes:
- * a Node version below 18, no local Remotion install, a missing Chrome
+ * a Node version below 22, no local Remotion install, a missing Chrome
  * Headless Shell, or an entry point that does not exist where the CLI looks.
  * This module checks all four and attaches a concrete remedy to each failure.
  */
@@ -95,15 +95,30 @@ function shallowFind(root: string, needle: string, depth: number): string | null
   return null;
 }
 
+/**
+ * The floor this package claims, in one place.
+ *
+ * It must equal package.json's `engines.node` and manifest.json's
+ * `compatibility.runtimes.node`; test/engines.test.mjs asserts those two agree
+ * with each other, and the tool description in src/tools/environment.ts states
+ * this number to the model. It read 18 while the package required 22 - a
+ * diagnostic that reports "meets the minimum" on a runtime the package does not
+ * support is worse than no diagnostic, because it sends the user looking
+ * elsewhere.
+ */
+const MIN_NODE_MAJOR = 22;
+
 async function checkNode(): Promise<ToolCheck> {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  const ok = major >= 18;
+  const ok = major >= MIN_NODE_MAJOR;
   return {
     name: "Node.js",
     found: ok,
     version: process.versions.node,
-    detail: ok ? "Meets the Remotion 4 minimum." : "Below the Remotion 4 minimum.",
-    ...(ok ? {} : { fix: "Install Node.js 18 or newer, then restart the MCP server." }),
+    detail: ok
+      ? `Meets this server's minimum of Node ${MIN_NODE_MAJOR}.`
+      : `Below this server's minimum of Node ${MIN_NODE_MAJOR}.`,
+    ...(ok ? {} : { fix: `Install Node.js ${MIN_NODE_MAJOR} or newer, then restart the MCP server.` }),
   };
 }
 
