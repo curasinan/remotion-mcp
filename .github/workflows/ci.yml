@@ -354,7 +354,7 @@ jobs:
         with:
           args: -color
 
-  # The one context branch protection requires. Requiring the seventeen
+  # The one context branch protection requires. Requiring the eighteen
   # matrix-shaped check names would tie the ruleset to the matrix's exact
   # spelling and silently drop coverage whenever a leg is renamed; this job
   # needs every other job and fails unless all of them succeeded, so the
