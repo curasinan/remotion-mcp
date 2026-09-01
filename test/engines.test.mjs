@@ -65,6 +65,28 @@ test("the bundle manifest claims the same Node floor as package.json", () => {
   );
 });
 
+test("the runtime diagnostic states the same Node floor as package.json", () => {
+  // The fourth statement of the floor, and the one that talks to users:
+  // remotion_check_environment tells whoever runs it whether their Node "meets
+  // this server's minimum". During the 2026-08 hardening this was the copy
+  // that silently stayed at an old floor while the other three moved - a
+  // diagnostic that blesses an unsupported runtime sends the user hunting
+  // everywhere else. Read from the source the same way the CI matrix is read
+  // from ci.yml: the constant is not exported, and importing the module just
+  // to read a number would pull its child-process helpers into every test run.
+  const source = fs.readFileSync(path.join(root, "src", "services", "environment.ts"), "utf8");
+  const match = /const MIN_NODE_MAJOR = (\d+);/.exec(source);
+  assert.ok(match,
+    "src/services/environment.ts has no `const MIN_NODE_MAJOR = <n>;` line to check. "
+    + "If the constant moved or was renamed, update this test - do not let the diagnostic drift.");
+  assert.equal(
+    Number(match[1]),
+    Number(pkg.engines.node.replace(">=", "")),
+    `environment.ts MIN_NODE_MAJOR is ${match[1]} but package.json engines says '${pkg.engines.node}'. `
+    + "The diagnostic would tell a user their runtime meets a minimum the package does not claim.",
+  );
+});
+
 test("no EOL Node major is tested or claimed", () => {
   // Node 20 EOL 2026-04, Node 18 EOL 2025-04. Verified against
   // https://nodejs.org/dist/index.json on 2026-08-31.
