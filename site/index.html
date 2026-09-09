@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>remotion-viz — local video &amp; visualization tools for Claude</title>
+<meta name="description" content="A local MCP server that gives Claude Desktop programmatic video rendering (Remotion) and SVG/HTML rasterization — stdio-only, sandboxed, audited, signed.">
+<style>
+  :root {
+    --bg: #f7f6f3; --fg: #1c1b19; --muted: #6b675f; --card: #ffffff;
+    --line: #e4e1da; --accent: #0d6e6e; --accent-fg: #ffffff; --code-bg: #edebe6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131313; --fg: #e8e6e1; --muted: #96917f; --card: #1c1c1c;
+      --line: #2b2b2b; --accent: #2fa8a0; --accent-fg: #0d1414; --code-bg: #202020;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 0 24px 96px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre {
+    font: 0.86em/1.55 ui-monospace, "Cascadia Code", Consolas, monospace;
+    background: var(--code-bg); border-radius: 6px;
+  }
+  code { padding: 1px 6px; }
+  pre { padding: 14px 16px; overflow-x: auto; }
+  pre code { padding: 0; background: none; }
+
+  header.hero { padding: 88px 0 40px; }
+  .kicker { color: var(--muted); font-size: 0.85rem; letter-spacing: 0.14em; text-transform: uppercase; margin: 0 0 14px; }
+  h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.12; margin: 0 0 18px; letter-spacing: -0.02em; }
+  .lede { font-size: 1.13rem; color: var(--muted); max-width: 40em; margin: 0 0 30px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block; padding: 10px 20px; border-radius: 8px;
+    border: 1px solid var(--line); font-weight: 600;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .btn.primary:hover { text-decoration: none; filter: brightness(1.08); }
+  .badge { height: 20px; vertical-align: middle; }
+
+  h2 { font-size: 1.5rem; margin: 72px 0 8px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 26px; max-width: 44em; }
+
+  .group { margin: 26px 0 6px; font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .tool { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .tool code { background: none; padding: 0; font-weight: 600; color: var(--accent); }
+  .tool p { margin: 6px 0 0; font-size: 0.92rem; color: var(--muted); }
+
+  ul.env { padding-left: 0; list-style: none; display: grid; gap: 10px; }
+  ul.env li { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+  ul.env b { font-weight: 650; }
+
+  .adr { border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; margin: 18px 0; }
+  .adr b { display: block; }
+  .adr span { color: var(--muted); font-size: 0.95rem; }
+
+  footer { margin-top: 88px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+  footer nav { display: flex; gap: 18px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="kicker">MCP server · runs on your machine</p>
+    <h1>Give Claude a video studio<br>and a rendering desk.</h1>
+    <p class="lede">
+      <strong>remotion-viz</strong> is a local MCP server for Claude Desktop:
+      programmatic video with <a href="https://www.remotion.dev">Remotion</a>,
+      plus SVG and HTML rasterization — using your own Chrome, fonts and files.
+      Nothing leaves your machine; there is no server to sign into, because
+      there is no server anywhere but yours.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/curasinan/remotion-mcp/releases/latest">Download the .mcpb</a>
+      <a class="btn" href="https://github.com/curasinan/remotion-mcp">Source on GitHub</a>
+      <img class="badge" src="https://github.com/curasinan/remotion-mcp/actions/workflows/ci.yml/badge.svg" alt="CI status">
+    </div>
+  </header>
+
+  <section>
+    <h2>What Claude can do with it</h2>
+    <p class="sub">Thirteen tools. Ask in plain language — “turn this data into an
+    animated chart video”, “rasterize this SVG”, “screenshot this HTML dashboard” —
+    and Claude drives these on your machine.</p>
+
+    <p class="group">Programmatic video (Remotion)</p>
+    <div class="tools">
+      <div class="tool"><code>remotion_init_project</code><p>Scaffold a minimal, working Remotion 4 project.</p></div>
+      <div class="tool"><code>remotion_list_compositions</code><p>List compositions in a project; doubles as a compile check.</p></div>
+      <div class="tool"><code>remotion_render_still</code><p>Render one frame to PNG and attach it to the response.</p></div>
+      <div class="tool"><code>remotion_render_video</code><p>Render a composition to video or audio.</p></div>
+      <div class="tool"><code>remotion_start_studio</code><p>Start the Remotion Studio dev server — a full visual editor on localhost.</p></div>
+      <div class="tool"><code>remotion_stop_studio</code><p>Stop a Studio this extension started — after asking the OS the PID is really ours.</p></div>
+    </div>
+
+    <p class="group">Static visuals</p>
+    <div class="tools">
+      <div class="tool"><code>viz_render_svg</code><p>Rasterize SVG to PNG with resvg — native, no browser needed.</p></div>
+      <div class="tool"><code>viz_render_html</code><p>Screenshot HTML to PNG with your local Chrome, under a deny-all network policy.</p></div>
+      <div class="tool"><code>viz_validate_svg</code><p>Lint SVG against the rules renderers actually enforce, with a fix per finding.</p></div>
+      <div class="tool"><code>viz_compare</code><p>Pixel-diff two PNGs — verify a fix instead of assuming it.</p></div>
+    </div>
+
+    <p class="group">Diagnostics</p>
+    <div class="tools">
+      <div class="tool"><code>remotion_check_environment</code><p>Diagnose why Remotion commands fail, with a specific fix per problem.</p></div>
+      <div class="tool"><code>remotion_ensure_browser</code><p>Pre-download the Chrome Headless Shell Remotion renders with.</p></div>
+      <div class="tool"><code>remotion_get_workspace_info</code><p>Report the workspace root that file paths resolve against.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The security envelope</h2>
+    <p class="sub">A server that spawns processes and writes files should be hard
+    to reach and easy to audit. That is most of the engineering here.</p>
+    <ul class="env">
+      <li><b>stdio only.</b> The HTTP transport was removed by decision, not omission —
+        the only thing that can reach this server is the client that launched it.</li>
+      <li><b>Deny-all network for rendered HTML.</b> Every request a page makes is
+        aborted before egress and recorded as a <code>network_block</code> audit event.</li>
+      <li><b>A pixel budget before allocation.</b> A 120-byte SVG declaring an absurd
+        viewBox once meant a 288&nbsp;GB allocation; now oversized renders are refused
+        up front, with the math shown.</li>
+      <li><b>Filesystem discipline.</b> Paths resolve inside a workspace you choose;
+        traversal attempts are refused and audited. SVG file references — a quiet
+        read primitive in most rasterizers — are rejected.</li>
+      <li><b>Honest process control.</b> Stopping a Studio verifies with the OS that
+        the PID still belongs to the Studio we started before any signal is sent.</li>
+      <li><b>An audit log you can read.</b> Every call, refusal and network block lands
+        in a rotated JSONL log; a bundled dashboard renders it as one self-contained
+        HTML file.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Provenance you can check</h2>
+    <p class="sub">Every release is built by CI from a locked dependency tree and
+    signed keylessly with Sigstore cosign. The bundle’s contents are
+    host-independent and gated: six platform binaries (win32, macOS and glibc
+    Linux, x64 and arm64 each), fetched against the committed lockfile’s hashes,
+    executed on all six platforms in CI before anything ships.</p>
+<pre><code>cosign verify-blob \
+  --certificate remotion-viz-&lt;version&gt;.mcpb.pem \
+  --signature   remotion-viz-&lt;version&gt;.mcpb.sig \
+  ...           # full recipe, including the exact identity to require,
+                # lives in the README: “Verifying a release”</code></pre>
+    <p class="sub">The recipe’s canonical copy — with the certificate identity the
+    workflow actually signs under — is in the
+    <a href="https://github.com/curasinan/remotion-mcp#readme">README</a>, kept in
+    lockstep with the release workflow on purpose.</p>
+  </section>
+
+  <section>
+    <h2>Why it is shaped this way</h2>
+    <p class="sub">Three architecture decision records carry the reasoning; the
+    short version:</p>
+    <div class="adr">
+      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0001-transport-stdio-only.md">ADR-1 — stdio only, no HTTP.</a></b>
+      <span>For a server that runs code, the transport question is whether the attack
+      surface stays behind one trusted client. It does.</span>
+    </div>
+    <div class="adr">
+      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0002-no-gateway.md">ADR-2 — no gateway.</a></b>
+      <span>With no network boundary there is nothing for a gateway to guard; rate
+      limiting and audit live in-process, where the context is.</span>
+    </div>
+    <div class="adr">
+      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0003-isolation-boundary.md">ADR-3 — validate first, isolate what’s left.</a></b>
+      <span>The only native code in-process is the rasterizer; its one known crash
+      path was closed by input validation, and the residual risk is stated, not hidden.</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <p class="sub">Requires Node 22+ on the host. Download
+    <a href="https://github.com/curasinan/remotion-mcp/releases/latest">the latest
+    <code>.mcpb</code></a> and open it with Claude Desktop — the manifest declares the
+    tools and the permission surface, and Claude Desktop does the rest. Running from
+    source (Claude Code, or any MCP stdio client) is covered in the
+    <a href="https://github.com/curasinan/remotion-mcp#readme">README</a>.</p>
+  </section>
+
+  <footer>
+    <nav>
+      <a href="https://github.com/curasinan/remotion-mcp">GitHub</a>
+      <a href="https://github.com/curasinan/remotion-mcp/releases">Releases</a>
+      <a href="https://github.com/curasinan/remotion-mcp/tree/main/docs/adr">ADRs</a>
+      <a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/BUNDLE.md">Bundle internals</a>
+      <a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/GATEWAY.md">Audit dashboard</a>
+    </nav>
+    <p>A local tool. No telemetry, no accounts, no server-side anything.</p>
+  </footer>
+</main>
+</body>
+</html>
