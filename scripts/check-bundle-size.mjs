@@ -1,25 +1,11 @@
-/**
- * Fail the build when the distributable grows unexpectedly.
- *
- * The number this protects is not aesthetic: NATIVE_TARGETS in build-bundle.mjs
- * fetches six platform binaries, and the two musl entries are commented out
- * behind a deliberate ~8 MB decision. A gate here means that decision gets made
- * again explicitly rather than discovered in a release.
- */
+// Fails when the .mcpb exceeds the size in scripts/bundle-size-baseline.json plus tolerance.
 import fs from "node:fs";
 import path from "node:path";
 
 const baselinePath = new URL("./bundle-size-baseline.json", import.meta.url);
 const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
 
-// Look for every .mcpb in cwd, not just the first. build-bundle.mjs names its
-// output deterministically from manifest.json (`${name}-${version}.mcpb`), so a
-// clean build only ever leaves one behind. But this script also runs by hand
-// against a working tree that isn't clean - a bundle from a version that was
-// since bumped, left over from an earlier local build, is exactly the kind of
-// file readdirSync().find() would silently pick if it happened to sort first.
-// That would measure the wrong file and pass or fail for the wrong reason, so
-// ambiguity is treated as a hard failure instead of a guess.
+// Fail rather than guess when the working directory holds more than one .mcpb.
 const candidates = fs
   .readdirSync(process.cwd(), { withFileTypes: true })
   .filter((e) => e.isFile() && e.name.endsWith(".mcpb"))

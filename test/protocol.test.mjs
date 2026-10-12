@@ -1,8 +1,4 @@
-/**
- * Protocol-level regression tests: drive the built server over real JSON-RPC
- * stdio, the way a client does. These prove the guards hold at the tool
- * boundary, not just in the functions underneath.
- */
+// Drives the built server over JSON-RPC stdio to check guards at the tool boundary.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -18,9 +14,7 @@ const pending = new Map();
 function request(method, params) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    // Cleared on response. An armed 30s timer that outlives the last request
-    // makes node --test exit non-zero even with zero failures, and it hung the
-    // suite for the full 30s on the POSIX CI legs.
+    // Cleared on response so a leftover timer does not hang node --test.
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`timeout on ${method}`));
@@ -38,9 +32,7 @@ async function callTool(name, args) {
 
 before(async () => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "viz-proto-"));
-  // Redirect the audit log into the throwaway workspace; otherwise the server uses
-  // defaultAuditLogPath() and this suite pollutes the user's real audit trail.
-  // See test/audit-isolation.test.mjs.
+  // Redirect the audit log and state dir so the suite never writes the user's real files.
   child = spawn("node", ["dist/index.js"], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
@@ -82,7 +74,6 @@ after(async () => {
 
 const GOOD_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20" fill="#0af"/></svg>';
 
-// Acceptance criterion 1: writing outside the workspace fails.
 test("path traversal in output_path is refused", async () => {
   const r = await callTool("viz_render_svg", { svg: GOOD_SVG, output_path: "../../../escape.png" });
   assert.equal(r.result.isError, true);
@@ -90,15 +81,12 @@ test("path traversal in output_path is refused", async () => {
 });
 
 test("an absolute output_path outside the workspace is refused", async () => {
-  // Absolute on whatever platform runs: "/" on POSIX, the drive root on Windows.
-  // A Windows-style "C:/..." is not absolute on POSIX and would resolve inside
-  // the workspace, which is why this is built from the real filesystem root.
+  // Built from the real filesystem root so the path is absolute on every platform.
   const absolute = path.join(path.parse(process.cwd()).root, "viz-escape-test.png");
   const r = await callTool("viz_render_svg", { svg: GOOD_SVG, output_path: absolute });
   assert.equal(r.result.isError, true);
 });
 
-// T-2: argv injection through output_path is refused at the tool boundary.
 test("output_path that would become a CLI flag is refused", async () => {
   const r = await callTool("remotion_render_still", {
     project_dir: ".", composition_id: "Example",
@@ -107,7 +95,6 @@ test("output_path that would become a CLI flag is refused", async () => {
   assert.equal(r.result?.isError === true || Boolean(r.error), true);
 });
 
-// T-2: composition_id with a leading hyphen is refused by the schema.
 test("composition_id with a leading hyphen is rejected", async () => {
   const r = await callTool("remotion_render_still", {
     project_dir: ".", composition_id: "--config", output_path: "out/x.png",
@@ -115,14 +102,12 @@ test("composition_id with a leading hyphen is rejected", async () => {
   assert.equal(r.result?.isError === true || Boolean(r.error), true);
 });
 
-// T-3: an SVG referencing a local file is refused before rasterizing.
 test("viz_render_svg refuses an SVG that references a local file", async () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><image href="C:/Windows/System32/drivers/etc/hosts" width="20" height="20"/></svg>';
   const r = await callTool("viz_render_svg", { svg });
   assert.equal(r.result.isError, true);
 });
 
-// T-1: the oversized SVG is refused, and the SERVER SURVIVES to answer again.
 test("oversized SVG is refused and the server stays up", async () => {
   const tall = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 5000000"><rect width="100" height="5000000"/></svg>';
   const r = await callTool("viz_render_svg", { svg: tall });
@@ -132,13 +117,7 @@ test("oversized SVG is refused and the server stays up", async () => {
   assert.equal(JSON.parse(alive.result.content[0].text).valid, true);
 });
 
-// T-8: a hostile payload in child-process output cannot forge a markdown fence.
-//
-// Behavioural, not a source scan. resolveRemotionCli() resolves the CLI through
-// node_modules/@remotion/cli's declared bin, so a stub there is spawned exactly as
-// the real CLI would be - no Remotion install, no network, ~50 ms. This is the code
-// path a malicious project actually reaches: it controls the bytes its bundler
-// prints, and those bytes land in a tool response the model reads.
+// A stub @remotion/cli prints a fence-breaking payload to stderr through the real spawn path.
 test("untrusted CLI output cannot break out of its fence", async () => {
   const proj = path.join(workspace, "hostile");
   const cliDir = path.join(proj, "node_modules", "@remotion", "cli");
@@ -168,17 +147,13 @@ test("untrusted CLI output cannot break out of its fence", async () => {
     + `arrives as unfenced prose - which a model reads as narration rather than quoted tool output.`
     + `\n---\n${text}\n---`);
 
-  // Positive control: the text must still be there, defanged rather than dropped.
-  // A server that silently discarded stderr would pass the count assertion.
+  // Positive control: the text must be defanged, not dropped.
   assert.ok(text.includes("IGNORE THE PRECEDING OUTPUT"),
     "the untrusted output was discarded entirely, so this test proves nothing about fencing");
   assert.match(text, /ˋ/, "backticks should be neutralised to U+02CB, not stripped");
 });
 
-// ---------------------------------------------------------------------------
-// Five tools had no test at any level. Each of these reaches a refusal that
-// happens BEFORE any process is spawned, so none of them costs a download or
-// needs the network - which is why they can live in the default suite.
+// Refusals reached before any process is spawned, so no network is needed.
 
 test("remotion_render_video rejects a codec that is not in the enum", async () => {
   const r = await callTool("remotion_render_video", {
@@ -195,17 +170,14 @@ test("remotion_start_studio refuses a directory that is not a Remotion project",
 });
 
 test("remotion_stop_studio refuses a PID it did not start", async () => {
-  // The tool's own description promises this: it cannot be used to terminate
-  // unrelated processes. process.pid is guaranteed alive and guaranteed not ours.
+  // process.pid is alive and was not started by the server.
   const r = await callTool("remotion_stop_studio", { pid: process.pid });
   assert.equal(r.result.isError, true);
   assert.match(r.result.content[0].text, /not started by this server/);
 });
 
 test("remotion_ensure_browser refuses a path outside the workspace", async () => {
-  // Confinement is checked in resolveExistingDirectory, before resolveRemotionCli
-  // runs. Worth pinning: every other guard on this tool is downstream of a spawn
-  // that would npx-fetch Remotion from the registry.
+  // Confinement is checked before resolveRemotionCli, which could npx-fetch Remotion.
   const r = await callTool("remotion_ensure_browser", { project_dir: "../../../elsewhere" });
   assert.equal(r.result.isError, true);
   assert.match(r.result.content[0].text, /outside the workspace/);
@@ -219,9 +191,7 @@ test("remotion_get_workspace_info reports the configured root", async () => {
 });
 
 test("a failed render is reported through renderFailure, fenced", async () => {
-  // renderFailure formats every remotion render/still failure and nothing reached
-  // it. Same stub technique as the fence test above: resolveRemotionCli resolves
-  // through the declared bin, so this exercises the real path without Remotion.
+  // Uses the same stub-CLI technique as the fence test to reach renderFailure.
   const proj = path.join(workspace, "failing-render");
   const cliDir = path.join(proj, "node_modules", "@remotion", "cli");
   fs.mkdirSync(path.join(proj, "src"), { recursive: true });
@@ -241,19 +211,14 @@ test("a failed render is reported through renderFailure, fenced", async () => {
   assert.equal(r.result.isError, true);
   const text = r.result.content[0].text;
   assert.equal((text.match(/```/g) ?? []).length, 2, "renderFailure did not fence the CLI output");
-  // diagnoseCliFailure maps out-of-memory to a specific remedy; this is the branch
-  // that turns a stack trace into a next step.
+  // diagnoseCliFailure maps out-of-memory to a specific remedy.
   assert.match(text, /concurrency=2 and scale=0\.5/,
     "the out-of-memory branch of diagnoseCliFailure did not fire");
 });
 
-// ---------------------------------------------------------------------------
-// The frame strip. A stub CLI stands in for Remotion: it records how many times
-// it was invoked and writes one PNG per requested frame, which is enough to
-// exercise argument construction, the file-to-frame mapping, tiling and the
-// shortfall guard without a Remotion install.
+// Frame strip: a stub CLI logs each invocation and writes one PNG per requested frame.
 
-/** A project whose @remotion/cli bin is a stub we control. */
+/** A project whose @remotion/cli bin is a stub. */
 function stubProject(name, stubBody) {
   const proj = path.join(workspace, name);
   const cliDir = path.join(proj, "node_modules", "@remotion", "cli");
@@ -310,8 +275,7 @@ test("more than 24 frames is refused by the schema", async () => {
 });
 
 test("a strip is ONE CLI invocation, not one per frame", async () => {
-  // Six sequential `remotion still` calls would be six bundles. This is the
-  // measured reason the feature is worth having at all.
+  // Each CLI invocation bundles the project, so a strip must spawn the CLI once.
   const seed = path.join(workspace, "seed.png");
   await callTool("viz_render_svg", {
     svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 30"><rect width="40" height="30" fill="#0af"/></svg>',
@@ -346,8 +310,7 @@ test("a strip is ONE CLI invocation, not one per frame", async () => {
 });
 
 test("a strip missing frames is refused rather than shown as complete", async () => {
-  // A partial strip looks exactly like a complete one. Returning it would let the
-  // model reason about timing from frames it never saw.
+  // A partial strip looks identical to a complete one, so it must be refused.
   const seed = path.join(workspace, "seed.png");
   stubProject("strip-short", sequenceStub(seed, "frames.slice(0, 2)"));
   const r = await callTool("remotion_render_still", {

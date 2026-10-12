@@ -1,19 +1,6 @@
 name: pages
 
-# Publishes site/ - a single hand-written HTML file, no build step, no
-# dependencies - to GitHub Pages via the official artifact flow.
-#
-# On id-token: write, deliberately the second workflow to hold it (release.yml
-# is the first, and its isolation argument still stands): deploy-pages
-# exchanges the OIDC token for a deployment token scoped to Pages only. This
-# workflow holds no contents: write, runs only on pushes to main - which the
-# protect-main ruleset gates behind a PR and ci-ok - and on manual dispatch,
-# and the content it publishes is the repository's own site/ directory. A
-# workflow that can publish a website is not a workflow that can sign a
-# release or push code.
-#
-# Every action is SHA-pinned with the readable version alongside, per the
-# policy note at the top of ci.yml.
+# Publishes site/ to GitHub Pages.
 
 on:
   push:
@@ -28,9 +15,7 @@ permissions:
   pages: write
   id-token: write
 
-# Only the newest site matters: a superseded deploy of an older commit is
-# waste, not loss - unlike release.yml, where cancel-in-progress would risk a
-# half-finished release.
+# Only the newest deploy matters.
 concurrency:
   group: pages
   cancel-in-progress: true

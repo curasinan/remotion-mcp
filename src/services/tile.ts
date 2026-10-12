@@ -1,18 +1,4 @@
-/**
- * Tile rendered frames into one labelled image.
- *
- * A still cannot show timing, and timing is where compositions actually break: an
- * interpolation with the wrong input range looks perfect at frame 0 and wrong at
- * frame 30. A strip puts several frames side by side so the shape of the motion is
- * visible in one response.
- *
- * The composite is built as an SVG of <image> elements carrying data: URIs and
- * handed to the existing rasterizeSvg. That means no new dependency, and - the
- * part that matters - it goes THROUGH the reference check rather than around it.
- * findFilesystemReferences permits data: and refuses everything else, and the
- * temptation to bypass it "because we generated this SVG ourselves" is exactly how
- * that control would stop being one.
- */
+/** Tiles rendered frames into one labelled image via an SVG of data: URI images. */
 
 import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from "../constants.js";
 import { readPngSize } from "./png.js";
@@ -21,7 +7,7 @@ import { ToolInputError } from "../types.js";
 
 /** Height of the caption strip under each row, in tile pixels. */
 const LABEL_BAND = 34;
-/** Widest single row before wrapping. Past this each panel is too small to read. */
+/** Widest single row before wrapping. */
 const MAX_COLUMNS = 6;
 
 export interface Panel {
@@ -48,15 +34,7 @@ export interface TileLayout {
   rows: number;
 }
 
-/**
- * Exported so the reference invariant can be asserted directly.
- *
- * rasterizeSvg refuses any href that is not a data: URI, which is what stops an
- * SVG from being a file-read primitive. This composite is machine-generated, and
- * "we wrote it ourselves" is precisely the argument that would justify skipping
- * that check one day - so a test asserts the generated document carries nothing
- * but data: URIs, rather than relying on the sink to catch it.
- */
+/** Builds the tile SVG; exported so tests can assert it contains only data: URIs. */
 export function buildTileSvg(panels: Panel[]): TileLayout {
   if (panels.length === 0) {
     throw new ToolInputError("No frames were rendered.", "Pass at least two frames.", "tile");
@@ -81,8 +59,7 @@ export function buildTileSvg(panels: Panel[]): TileLayout {
   const width = cellWidth * columns;
   const height = (cellHeight + LABEL_BAND) * rows;
 
-  // Caught here rather than inside resvg so the message names the strip and the
-  // knob that fixes it, instead of talking about a viewBox the caller never wrote.
+  // Checked here so the error names the strip size and the scale fix.
   if (width > MAX_RASTER_DIMENSION || height > MAX_RASTER_DIMENSION || width * height > MAX_RASTER_PIXELS) {
     throw new ToolInputError(
       `A ${columns}x${rows} strip of ${cellWidth}x${cellHeight} frames would be ${width}x${height}, `
@@ -107,8 +84,7 @@ export function buildTileSvg(panels: Panel[]): TileLayout {
     parts.push(
       `<image x="${x}" y="${y}" width="${cellWidth}" height="${cellHeight}" `
       + `href="data:image/png;base64,${panel.png.toString("base64")}"/>`,
-      // Labels are what make two identical-looking panels legible as "the
-      // composition is holding still" rather than "the tool repeated a frame".
+      // Frame label under each panel.
       `<text x="${x + cellWidth / 2}" y="${y + cellHeight + LABEL_BAND - 11}" `
       + `font-family="sans-serif" font-size="20" fill="#9aa4b2" text-anchor="middle">`
       + `${escapeXml(panel.label)}</text>`,
@@ -120,9 +96,7 @@ export function buildTileSvg(panels: Panel[]): TileLayout {
 
 export function tilePanels(panels: Panel[]): TileResult {
   const layout = buildTileSvg(panels);
-  // Through rasterizeSvg, never around it: that is where findFilesystemReferences
-  // runs, and routing the generated document through the same sink as any
-  // caller-supplied one is the point.
+  // Goes through rasterizeSvg so the filesystem reference check still applies.
   const raster = rasterizeSvg(layout.svg, layout.width);
   return {
     png: raster.png,

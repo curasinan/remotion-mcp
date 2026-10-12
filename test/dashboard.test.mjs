@@ -22,9 +22,7 @@ test("the generator builds a self-contained dashboard from the audit log", () =>
   });
 
   const html = fs.readFileSync(out, "utf8");
-  // Self-contained: no external resource LOADS. Inert URL strings inside the
-  // embedded audit JSON are fine — only <script>/<img>/<link>/... src|href to
-  // http(s), @import, and CSS url(http...) are forbidden.
+  // No external loads via src/href, @import or CSS url(); inert URL strings in the JSON are fine.
   const externalRefs = [
     /<(?:script|img|source|iframe|link|use|image)\b[^>]*\b(?:src|href)\s*=\s*["']https?:/i,
     /@import[^;]*https?:/i,
@@ -41,10 +39,7 @@ test("the generator does not corrupt embedded JSON when detail contains $-patter
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-"));
   const logPath = path.join(dir, "audit.jsonl");
   const out = path.join(dir, "gateway.html");
-  // String.prototype.replace with a STRING replacement interprets $$, $&, $`,
-  // and $' in the replacement text. Attacker-influenceable content (paths,
-  // refusal messages) flows into `detail`, so a message containing these
-  // sequences must not corrupt the embedded JSON.
+  // A string replacement in replace() expands $-patterns; detail text must survive unchanged.
   const trickyMessage = "weird $` and $' and $& and $$ value";
   const events = [
     {

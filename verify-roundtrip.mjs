@@ -1,18 +1,4 @@
-/**
- * Round-trip check — HISTORICAL, no longer expected to pass.
- *
- * This proved that the reconstructed source rebuilt byte-for-byte to the JS in
- * the originally installed 1.0.0 bundle. The hardening work has since changed
- * the source deliberately, so it no longer matches that old install and is not
- * meant to. The source tree is now the source of truth; the bundle is rebuilt
- * from it (see docs/BUNDLE.md), not the other way round.
- *
- * Kept for reference and for the case where you want to diff a freshly built
- * dist/ against a specific installed server via REMOTION_MCP_INSTALL_DIR. For
- * ordinary verification use `npm test`.
- *
- * Usage:  npx tsc ; node verify-roundtrip.mjs
- */
+// Diffs built dist/ against an installed server (REMOTION_MCP_INSTALL_DIR). Run after npx tsc.
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";

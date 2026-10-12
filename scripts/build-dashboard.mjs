@@ -1,13 +1,4 @@
-/**
- * Build a self-contained gateway dashboard from the audit log.
- *
- * Reads the same REMOTION_MCP_AUDIT_LOG the server writes, computes summaries,
- * and injects them into dashboard/template.html as embedded JSON. Output is one
- * standalone .html with no external requests, openable from disk or publishable
- * as an artifact.
- *
- * Usage: node scripts/build-dashboard.mjs [--out gateway.html]
- */
+// Renders the REMOTION_MCP_AUDIT_LOG events as standalone HTML. Args: [--out gateway.html]
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,12 +33,9 @@ const data = {
 };
 
 const template = fs.readFileSync(templatePath, "utf8");
-// JSON is safe inside a <script type="application/json"> block, but escape the
-// closing-tag sequence so a string value cannot break out of it.
+// Escape "<" so a string value cannot close the embedding <script> block.
 const json = JSON.stringify(data).replace(/</g, "\\u003c");
-// Use a function replacer: a string replacement would interpret $-patterns
-// ($$, $&, $`, $') that can appear in attacker-influenceable content (file
-// paths, refusal messages) flowing into `detail`, corrupting the embedded JSON.
+// Function replacer so $-patterns in the JSON are inserted literally.
 const html = template.replace("__AUDIT_DATA__", () => json);
 
 const out = outPath();

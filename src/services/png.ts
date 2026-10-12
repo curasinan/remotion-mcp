@@ -1,15 +1,4 @@
-/**
- * PNG decoding and comparison.
- *
- * Exists so a fix can be verified instead of asserted. The render tools close the
- * loop by handing back an image; this closes it one step further by answering
- * "did the thing I changed actually change?" with a number rather than a claim.
- *
- * Pure JavaScript on purpose. pngjs and pixelmatch ship no native binding, so
- * scripts/build-bundle.mjs needs no per-platform handling for them - unlike
- * @resvg/resvg-js, whose six prebuilts are already 22.8 MiB of a 19.3 MiB bundle.
- * sharp would have been the obvious choice and would have roughly doubled it.
- */
+/** PNG decoding and pixel comparison using pure-JS pngjs and pixelmatch. */
 
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
@@ -23,14 +12,7 @@ export interface PngSize {
   height: number;
 }
 
-/**
- * Read dimensions out of the IHDR without decoding the image.
- *
- * The point is order: a pure-JS decoder will happily allocate 4 bytes per pixel
- * and exhaust the heap, which takes the whole server with it the same way an
- * oversized SVG used to. Reading 8 bytes of header lets the pixel budget be
- * enforced before anything is allocated.
- */
+/** Reads dimensions from the IHDR so the pixel budget is enforced before decoding. */
 export function readPngSize(buffer: Buffer, label: string): PngSize {
   if (buffer.byteLength < 24 || !buffer.subarray(0, 8).equals(PNG_MAGIC)) {
     throw new ToolInputError(
@@ -78,16 +60,7 @@ function decode(buffer: Buffer, label: string): PNG {
   }
 }
 
-/**
- * Compare two PNGs pixel for pixel.
- *
- * Two pixelmatch passes: one produces the image a human looks at (the original
- * dimmed, changes in red), the other a mask whose alpha is 0 or 255 and nothing
- * else, which is what the bounding box is derived from. The visual output cannot
- * be used for that - its unchanged pixels are also fully opaque, so there is no
- * threshold on it that separates the two. Measured at 36 ms for a 1200x675 pair,
- * against roughly 2 s of surrounding tool overhead.
- */
+/** Compares two PNGs: one pass for the visual diff, one diff mask for the changed bounding box. */
 export function comparePngs(
   beforeBuffer: Buffer,
   afterBuffer: Buffer,

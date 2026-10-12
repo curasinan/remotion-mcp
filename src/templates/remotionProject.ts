@@ -1,11 +1,4 @@
-/**
- * Template for a minimal, correct Remotion 4 project.
- *
- * Kept deliberately small. Every file here exists because omitting it causes a
- * concrete first-run failure: no registerRoot means the CLI finds no
- * compositions, no remotion.config.ts means overrides silently do nothing, and
- * a mismatched React version pair breaks the renderer at bundle time.
- */
+/** File contents for a minimal Remotion 4 project. */
 
 export function PROJECT_TEMPLATE(
   remotionVersion: string,

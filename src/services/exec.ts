@@ -1,10 +1,4 @@
-/**
- * Child process execution.
- *
- * Commands are always spawned with an explicit argv array and `shell: false`,
- * so user-supplied strings (composition IDs, props JSON, file names) can never
- * be interpreted as shell metacharacters.
- */
+/** Child process execution with explicit argv arrays and `shell: false`. */
 
 import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
@@ -22,19 +16,7 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/**
- * Kill a process and everything it started.
- *
- * child.kill() signals one pid. The Remotion CLI is a supervisor - it spawns a
- * bundler and a browser per render worker - so signalling it leaves the
- * expensive half running. Worse, an orphaned render keeps writing the output
- * file after the tool has already reported failure, so the model says the
- * render failed while the file on disk grows.
- *
- * POSIX gets a process group, which is why spawn passes detached:true; the
- * negative pid signals the whole group. Windows has no process groups worth
- * using here, so taskkill /T walks the tree instead.
- */
+/** Kills a process tree: the process group on POSIX, taskkill /T on Windows. */
 export function killTree(pid: number, signal: NodeJS.Signals): void {
   if (process.platform === "win32") {
     try {
@@ -79,24 +61,20 @@ async function runCommandUnlimited(
   const startedAt = Date.now();
 
   return new Promise<CommandResult>((resolve) => {
-    // Narrowed to match the stdio configuration below, so stdout/stderr are
-    // known non-null.
+    // Typed to match the stdio config below, so stdout/stderr are non-null.
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       child = spawn(file, args, {
         cwd,
         shell: false,
         windowsHide: true,
-        // Makes the child a process-group leader on POSIX so the whole group
-        // can be signalled on timeout. Windows uses taskkill /T instead.
+        // Process-group leader on POSIX so the whole group can be signalled.
         detached: process.platform !== "win32",
         env: { ...process.env, CI: "1", ...env },
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
-      // spawn can fail synchronously rather than emitting 'error'. EINVAL on a
-      // Windows .cmd shim is the case that matters, and letting it reject the
-      // promise turned a precise platform fault into a generic tool failure.
+      // spawn can throw synchronously, e.g. EINVAL for a Windows .cmd shim.
       const err = error as NodeJS.ErrnoException;
       resolve({
         command: [file, ...args].join(" "),
@@ -134,8 +112,7 @@ async function runCommandUnlimited(
       timedOut = true;
       const pid = child.pid;
       if (pid === undefined) return;
-      // Ask first, then insist. A render that is mid-encode can close its
-      // output file cleanly given a moment.
+      // SIGTERM first so a render can close its output, then SIGKILL.
       killTree(pid, "SIGTERM");
       escalation = setTimeout(() => killTree(pid, "SIGKILL"), 5_000);
       escalation.unref();
@@ -207,13 +184,7 @@ export interface ResolvedCli {
   source: "local" | "npx";
 }
 
-/**
- * Read a package's declared bin script, resolved to a real .js path.
- *
- * `bin` is either a string or a name-to-path map, so both shapes are handled.
- * Returns null rather than throwing: an unreadable or absent package simply
- * means this candidate is not the one, and the caller moves on.
- */
+/** Resolves a package's declared bin script to a path, or null if unavailable. */
 function readPackageBin(packageDir: string, binName: string): string | null {
   const manifestPath = path.join(packageDir, "package.json");
   if (!fs.existsSync(manifestPath)) return null;
@@ -233,10 +204,7 @@ function readPackageBin(packageDir: string, binName: string): string | null {
   return fs.existsSync(resolved) ? resolved : null;
 }
 
-/**
- * npm ships its own CLIs as plain scripts next to the node binary. Using those
- * directly avoids the .cmd shims for the same reason resolveRemotionCli does.
- */
+/** Path to an npm CLI script bundled with Node, avoiding .cmd shims. */
 function nodeBundledCli(name: "npm-cli.js" | "npx-cli.js"): string | null {
   const candidate = path.join(
     path.dirname(process.execPath),
@@ -255,21 +223,7 @@ export function resolveNpmCli(): { file: string; prefixArgs: string[] } {
   return { file: process.platform === "win32" ? "npm.cmd" : "npm", prefixArgs: [] };
 }
 
-/**
- * Locate the Remotion CLI for a project, as something spawnable without a shell.
- *
- * Prefers the project's own install so its Remotion version is the one that
- * runs, and only falls back to npx.
- *
- * Both paths deliberately end at `node <script>.js` rather than at a bin shim.
- * Since Node 20.12, spawning a .cmd file with shell:false throws EINVAL, and it
- * throws SYNCHRONOUSLY - not as an 'error' event - so on Windows every Remotion
- * tool failed before the child existed. The obvious repair, shell:true, would
- * hand every argument to cmd.exe and turn the argument-injection surface that
- * assertSafePositional guards into shell command injection. Resolving to the
- * underlying .js keeps shell:false and fixes the platform difference at its
- * source.
- */
+/** Locates the Remotion CLI as `node <script>.js`, preferring the local install over npx. */
 export function resolveRemotionCli(projectDir: string): ResolvedCli {
   const modules = path.join(projectDir, "node_modules");
 
@@ -280,8 +234,7 @@ export function resolveRemotionCli(projectDir: string): ResolvedCli {
     }
   }
 
-  // A local install whose manifest could not be read still works on platforms
-  // where the bin is a shebang script rather than a .cmd shim.
+  // Off Windows, the .bin shim is a runnable shebang script.
   if (process.platform !== "win32") {
     const shim = path.join(modules, ".bin", "remotion");
     if (fs.existsSync(shim)) {
@@ -300,11 +253,7 @@ export function resolveRemotionCli(projectDir: string): ResolvedCli {
   };
 }
 
-/**
- * Map raw Remotion CLI failure output to the one next step that actually
- * unblocks it. Shared by every tool that shells out, so the same symptom never
- * produces two different pieces of advice.
- */
+/** Maps Remotion CLI failure output to a single next step. */
 export function diagnoseCliFailure(
   output: string,
   cliSource: "local" | "npx",
@@ -351,36 +300,13 @@ export function tailOutput(input: string, maxChars = 2_500): string {
   return `... (${trimmed.length - maxChars} earlier characters omitted)\n${trimmed.slice(-maxChars)}`;
 }
 
-/**
- * Render untrusted CLI output as a fenced block the content cannot break out of.
- *
- * That output is a project's own bundler messages, which an attacker controls
- * by shipping a file that throws a chosen string. Wrapping it in a plain triple
- * backtick fence let a literal triple backtick in that string close the fence
- * early, so the text after it arrived as unfenced prose - which a model reads
- * as narration rather than as quoted tool output. Backticks in the untrusted
- * span are replaced with a modifier-letter grave accent (U+02CB), which looks
- * the same and cannot form a fence, so the fence this returns is the only one.
- *
- * Defence in depth, not the control: a model can still act on unfenced prose.
- * The controls are the capability limits in the other commits. This removes the
- * easy forgery and bounds how much untrusted text arrives.
- */
+/** Fences untrusted output, replacing backticks with U+02CB so it cannot close the fence. */
 export function fenceUntrusted(raw: string, maxChars = 2_500): string {
   const neutralised = tailOutput(raw, maxChars).replace(/`/g, "ˋ");
   return "```text\n" + neutralised + "\n```";
 }
 
-/**
- * Last check before a string becomes a positional argv element.
- *
- * shell:false stops a value from being reparsed by a shell, but it does not
- * stop the program itself from reading it as an option. The Remotion CLI parses
- * with minimist, so any token beginning with "-" is an option no matter how it
- * got there. The tokens reaching the CLI are derived rather than raw - an entry
- * point returned verbatim, an output path put through path.relative() - so the
- * derived form is what has to be asserted.
- */
+/** Rejects a positional argv token that starts with "-", which the CLI would parse as an option. */
 export function assertSafePositional(token: string, label: string): void {
   if (token.startsWith("-")) {
     throw new ToolInputError(

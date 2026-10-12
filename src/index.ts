@@ -1,22 +1,5 @@
 #!/usr/bin/env node
-/**
- * remotion-viz-mcp-server
- *
- * Tools for rendering Remotion compositions and for validating and
- * rasterizing SVG/HTML visualizations, with diagnostics that name the fix for
- * the failures these two workflows actually hit.
- *
- * Transport: stdio only.
- *
- * This server spawns child processes, compiles and runs code out of the
- * workspace, and writes files to paths given as tool arguments. Over stdio the
- * only thing that can reach it is the process that launched it. Exposing that
- * capability over a network would put a bearer token between the internet and
- * a code execution surface, so no network transport is offered. See
- * docs/adr/0001-transport-stdio-only.md.
- *
- * Set REMOTION_MCP_WORKSPACE to the directory that file paths resolve against.
- */
+/** MCP server entry point for Remotion rendering and SVG/HTML visualization tools (stdio only). */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -89,8 +72,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Fail fast: a bad workspace, allowlist or browser path stops the server here
-  // with a specific message rather than surfacing later as a tool failure.
+  // Fail fast on invalid configuration.
   try {
     loadConfig();
   } catch (error) {
