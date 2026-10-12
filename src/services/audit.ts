@@ -1,15 +1,4 @@
-/**
- * Durable, size-bounded audit log.
- *
- * The stderr logging in log.ts is captured by the client and not visible to the
- * operator. This persists the same events to a JSONL file the operator (or a
- * dashboard generator) can read back. Two-segment size rotation keeps the total
- * bounded without an O(file) rewrite on every append.
- *
- * The `decision` field is always "observe" today; it is the seam where a future
- * enforcement layer would record "allow"/"block". Free detail lives in `detail`
- * so a future redaction pass (for a hosted deployment) has one place to rewrite.
- */
+/** Durable JSONL audit log with two-segment size rotation. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -61,8 +50,7 @@ export function recordAuditEvent(
       try {
         fs.renameSync(current, previous);
       } catch {
-        // First rotation ever (current does not exist yet), or the target is
-        // locked. Either way, fall through and append to a fresh current.
+        // No current segment yet, or target locked; append to current anyway.
       }
     }
     fs.appendFileSync(current, line, "utf8");

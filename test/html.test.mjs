@@ -1,37 +1,18 @@
-/**
- * viz_render_html's actual behaviour, on whatever platform this runs.
- *
- * Before this file the entire HTML path - rasterizeHtml, locateBrowser, request
- * interception, the pageerror handling, the browser-kill backstop - was exercised
- * by exactly one test file whose every test was `{ skip: !isWindows }`. On the
- * ubuntu and macos CI legs that is zero coverage of the tool that launches a
- * browser and enforces the network policy.
- *
- * decideRequest is well unit-tested in isolation, but nothing anywhere proved it
- * was wired to page.on("request"). A refactor that dropped setRequestInterception
- * would have passed every test in the repository while silently restoring the
- * egress channel network.ts's comment says a live probe confirmed reachable.
- *
- * No test here needs the network. Interception aborts before egress, so a request
- * to a public host is attempted and refused without a packet leaving the machine.
- */
+// rasterizeHtml end to end on any platform: output size, page errors and request interception.
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 
 import { rasterizeHtml } from "../dist/services/raster.js";
 import { locateBrowser } from "../dist/services/browser.js";
 
-// Resolved at module scope so the skip reason is known when the tests are
-// registered, not after. A before() hook runs too late for `{ skip: ... }` and the
-// result is a file that silently skips everything.
+// Resolved at module scope because a before() hook runs too late to set `skip`.
 const location = await locateBrowser();
 const noBrowser = location.source === "none"
   ? `no browser on this machine: ${location.detail}`
   : false;
 
 before(() => {
-  // Visible either way. A silent skip and a pass look identical in CI output, and
-  // that is the failure mode this file exists to close.
+  // Print the browser or skip reason so a silent skip is visible in CI output.
   process.stdout.write(noBrowser
     ? `\n  [html.test] SKIPPING - ${noBrowser}\n`
     : `\n  [html.test] browser: ${location.source} (${location.executablePath ?? "managed by puppeteer"})\n`);
@@ -54,15 +35,13 @@ test("renders HTML to a real PNG at the requested size", { skip: noBrowser }, as
 });
 
 test("device_scale_factor actually multiplies the output", { skip: noBrowser }, async () => {
-  // Control on the test above: identical dimensions at every scale would mean the
-  // parameters are not reaching the browser at all.
+  // Control: proves the scale parameter reaches the browser.
   const r = await rasterizeHtml(BOX, 200, 100, false, 2);
   assert.deepEqual(pngSize(r.png), { width: 400, height: 200 });
 });
 
 test("a page whose script throws is refused, not screenshotted blank", { skip: noBrowser }, async () => {
-  // The silent failure this tool exists to prevent: a throwing page screenshots to
-  // an empty frame, and without this the model is handed a blank image as success.
+  // A throwing page would otherwise screenshot to a blank frame reported as success.
   await assert.rejects(
     () => rasterizeHtml('<script>throw new Error("boom-marker")</script>', 200, 100, false, 1),
     (error) => {
@@ -74,8 +53,7 @@ test("a page whose script throws is refused, not screenshotted blank", { skip: n
 });
 
 test("an external request is refused and named in blocked_requests", { skip: noBrowser }, async () => {
-  // Proves decideRequest is wired to page.on("request"). The request is attempted
-  // and aborted by the interceptor, so nothing leaves the machine.
+  // Proves decideRequest is wired to page.on("request"); the interceptor aborts before egress.
   const r = await rasterizeHtml(
     `<img src="https://example.com/tracker.png" alt=""><p>text</p>`, 300, 120, false, 1);
   assert.ok(Array.isArray(r.blockedRequests));
@@ -89,18 +67,14 @@ test("an external request is refused and named in blocked_requests", { skip: noB
 });
 
 test("a data: URI is not blocked", { skip: noBrowser }, async () => {
-  // Control: the policy must discriminate. If everything were blocked, the test
-  // above would pass while the tool was simply broken.
+  // Control: the policy must discriminate rather than block everything.
   const r = await rasterizeHtml(`<img src="${DATA_PNG}" alt="">`, 120, 60, false, 1);
   assert.deepEqual(r.blockedRequests, [],
     `a self-contained data: URI was refused: ${JSON.stringify(r.blockedRequests)}`);
 });
 
 test("an allowlisted loopback host is still blocked", { skip: noBrowser }, async () => {
-  // Two things at once, neither needing the network: the policy argument is really
-  // consulted, and the always-blocked rule outranks the allowlist. Loopback is the
-  // case that matters - it reaches other services on the machine, including a
-  // Remotion Studio this server may have started.
+  // The always-blocked rule for loopback must outrank an explicit allowlist entry.
   const r = await rasterizeHtml(
     '<img src="http://127.0.0.1:9/x.png" alt="">', 120, 60, false, 1,
     undefined, { allowedHosts: ["127.0.0.1"] });
@@ -119,12 +93,7 @@ test("full_page captures beyond the viewport", { skip: noBrowser }, async () => 
   assert.ok(pngSize(full.png).height > 100,
     `full_page produced ${pngSize(full.png).height}px, same as the viewport - the flag is not reaching screenshot()`);
 
-  // Documenting a real mismatch rather than leaving it to surprise someone: the
-  // returned width/height are the requested VIEWPORT, not the image. With
-  // full_page the PNG is 600px tall while the result still reports 100. Nothing
-  // user-facing is wrong - viz_render_html reports these as viewport_width /
-  // viewport_height, which is what they are - but RasterResult's field names
-  // invite the wrong reading.
+  // RasterResult width/height report the viewport, not the captured image size.
   assert.equal(full.height, 100, "if this changes, RasterResult now reports image size; update viz_render_html's response");
   assert.notEqual(full.height, pngSize(full.png).height);
 });

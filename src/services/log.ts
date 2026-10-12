@@ -1,15 +1,4 @@
-/**
- * Structured logging and a tool-call audit trail.
- *
- * Everything goes to stderr as one JSON object per line. stdout carries the
- * JSON-RPC stream and must stay clean, and one-object-per-line is what log
- * collectors expect. There was no audit trail before: nothing recorded which
- * tool ran, with what, or how it ended, so an incident had nothing to read.
- *
- * Arguments are summarised, not dumped. props_json and svg/html source can be
- * large and can carry content the operator has no reason to keep verbatim in a
- * log; recording their size is enough to reconstruct what happened.
- */
+/** Structured JSON-lines logging to stderr, since stdout carries the JSON-RPC stream. */
 
 interface LogFields {
   [key: string]: unknown;
@@ -31,12 +20,7 @@ export const log = {
   error: (event: string, fields: LogFields = {}): void => emit("error", event, fields),
 };
 
-/**
- * Reduce a tool's arguments to something safe and small to log.
- *
- * Scalars are kept; long strings become a length so their content never lands
- * in the log; objects and arrays are noted by shape.
- */
+/** Reduces tool arguments to a small, content-free summary for logging. */
 export function summariseArguments(input: unknown): LogFields {
   if (input === null || typeof input !== "object") return { value: describe(input) };
   const summary: LogFields = {};

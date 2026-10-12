@@ -1,14 +1,4 @@
-/**
- * Assertions about the distributable .mcpb.
- *
- * Not wired into `npm test` — these need an artifact that takes minutes to build.
- * Run with `npm run bundle && npm run test:bundle`.
- *
- * Set REQUIRE_BUNDLE=1 (CI does) to turn a missing artifact from a skip into a
- * failure. Without it a broken build step leaves every assertion skipped and the
- * job green, which is the same failure shape as the Windows-only process-leak
- * tests: a suite that cannot distinguish "passed" from "never ran".
- */
+// Assertions on the built .mcpb artifact; REQUIRE_BUNDLE=1 makes a missing artifact a failure.
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -20,13 +10,7 @@ import { extractZip, readEntry, readZipEntries } from "./zip-reader.mjs";
 const REPO = path.join(import.meta.dirname, "..");
 const REQUIRE_BUNDLE = process.env.REQUIRE_BUNDLE === "1";
 
-/**
- * Platforms that must have a native binary in the bundle.
- *
- * Deliberately duplicated from NATIVE_TARGETS in scripts/build-bundle.mjs rather
- * than imported. If the two drift, that is a change to which machines the bundle
- * works on, and it should fail here rather than be absorbed by a shared constant.
- */
+// Platforms that must ship a native binary; copied from NATIVE_TARGETS so drift fails here.
 const REQUIRED_NATIVE = [
   "@resvg/resvg-js-win32-x64-msvc",
   "@resvg/resvg-js-win32-arm64-msvc",
@@ -44,20 +28,14 @@ const PLATFORM_BINARIES = {
     "@resvg/resvg-js-linux-x64-musl", "@resvg/resvg-js-linux-arm64-musl"],
 };
 
-// The zip reader lives in test/zip-reader.mjs so scripts/verify-bundle-runtime.mjs
-// can extract a .mcpb with the same code, rather than growing a second copy or
-// shelling out to tar (which under Git Bash on Windows reads C:\... as a remote
-// host spec).
+// The zip reader is shared with scripts/verify-bundle-runtime.mjs.
 
 // ------------------------------------------------------------------ fixture
 let BUNDLE = null, ENTRIES = null, BUF = null, EXTRACTED = null, MANIFEST = null;
 
 before(() => {
   const candidates = fs.readdirSync(REPO).filter((f) => f.endsWith(".mcpb")).sort();
-  // Deliberately no assertion here. A throw from a before() hook is printed but
-  // leaves every test marked "skipped", and the runner then exits 0 because nothing
-  // actually failed — a green job on a broken build, which is the exact shape
-  // REQUIRE_BUNDLE exists to prevent. The gate is a real test instead; see below.
+  // No assertion here: a before() throw skips every test and exits 0; the gate test fails instead.
   if (candidates.length === 0) return;
   BUNDLE = path.join(REPO, candidates[candidates.length - 1]);
   BUF = fs.readFileSync(BUNDLE);
@@ -73,9 +51,7 @@ const has = (prefix) => ENTRIES.some((e) => e.name.startsWith(prefix));
 
 // ------------------------------------------------------------------ assertions
 
-// The gate. Never skipped, so it is the one test that can carry a non-zero exit
-// code when the build produced nothing. Everything below it skips without an
-// artifact; this does not.
+// The gate: never skipped, so it fails when the build produced no artifact.
 test("an artifact exists to verify", () => {
   if (BUNDLE) return;
   assert.equal(REQUIRE_BUNDLE, false,
@@ -92,8 +68,7 @@ test("every declared platform ships a native binary", { skip: skip() }, () => {
     + `"Failed to load native binding": ${missing.join(", ")}. `
     + `npm ci installs only the build host's platform; scripts/build-bundle.mjs must fetch the rest.`);
 
-  // Positive control. Without this, the assertion above also passes if the lookup
-  // is broken and reports everything as present.
+  // Positive control: a broken lookup reporting everything present would pass the check above.
   assert.equal(
     ENTRIES.some((e) => e.name.startsWith("node_modules/@resvg/resvg-js-nonexistent-platform/")),
     false,
@@ -113,14 +88,7 @@ test("manifest platform claims are backed by binaries", { skip: skip() }, () => 
 });
 
 test("the bundle ships exactly the intended resvg packages — no host-dependent extras", { skip: skip() }, () => {
-  // npm ci resolves @resvg/resvg-js's platform packages from optionalDependencies
-  // by the BUILD HOST's os/cpu, and the resvg packages declare no libc field - so
-  // an ubuntu builder installs linux-x64-musl alongside linux-x64-gnu, while a
-  // Windows builder installs neither. That is how v1.2.1 shipped a seventh,
-  // undecided binary and grew 2 MB past the baseline recorded on a different
-  // host. scripts/build-bundle.mjs now prunes to NATIVE_TARGETS after install;
-  // this asserts set equality so the bundle's contents stop depending on where
-  // it was built, in either direction.
+  // npm installs resvg platform packages per build host, so assert the exact intended set.
   const present = new Set();
   for (const e of ENTRIES) {
     const m = /^node_modules\/(@resvg\/[^/]+)\//.exec(e.name);
@@ -140,19 +108,7 @@ test("the bundle ships exactly the intended resvg packages — no host-dependent
 });
 
 test("no Bare-runtime packages ship", { skip: skip() }, () => {
-  // bare-fs, bare-url and friends are file-system/URL implementations for the
-  // Bare runtime, reachable only through the "bare" condition in tar-fs's and
-  // tar-stream's imports maps - a condition Node never activates. They cannot be
-  // dropped at install time (bare-fs is a *hard* dependency of tar-stream, so
-  // --omit=optional does not touch it) and cost ~2 MB compressed in every
-  // bundle, so scripts/build-bundle.mjs prunes them after npm ci.
-  //
-  // The scan matches bare-* under ANY node_modules level, not just the top:
-  // the bare graph has multiple dependents with independent ranges (tar-stream
-  // needs bare-fs ^4.5.5, tar-fs ^4.0.1; bare-events is wanted at ^2.5.4 and
-  // ^2.7.0), so a future major divergence makes npm nest a copy - e.g.
-  // node_modules/tar-stream/node_modules/bare-fs - and a top-anchored scan
-  // would stay green while the dead weight returned.
+  // Bare-runtime packages never load under Node; scan every node_modules level, including nested.
   const bare = new Set();
   for (const e of ENTRIES) {
     const m = /(?:^|\/)node_modules\/(bare-[^/]+)\//.exec(e.name);
@@ -163,10 +119,7 @@ test("no Bare-runtime packages ship", { skip: skip() }, () => {
     + "under Node - they resolve only behind the \"bare\" imports-map condition - so they are "
     + "dead weight. scripts/build-bundle.mjs prunes them after npm ci; check that step.");
 
-  // Positive control, run against the ARTIFACT rather than a string this test
-  // supplies: the same component-scan shape must find tar-fs, which ships as a
-  // hard dependency of @puppeteer/browsers. If it stops matching real entry
-  // names, the empty bare result above is silence, not evidence.
+  // Positive control: the same scan shape must find tar-fs in the artifact.
   const control = new Set();
   for (const e of ENTRIES) {
     const m = /(?:^|\/)node_modules\/(tar-[^/]+)\//.exec(e.name);
@@ -184,26 +137,13 @@ test("the linux claim is either backed by musl binaries or documented as glibc-o
     .filter((t) => has(`node_modules/${t}/`));
   if (musl.length === 2) return;                     // claim is backed by the pair; nothing to document
 
-  // One musl binary without its sibling is not "backed" - it is the build host's
-  // npm leaking through: v1.2.1 shipped linux-x64-musl alone (installed because
-  // resvg's packages declare no libc field, so an ubuntu npm cannot exclude it)
-  // while an arm64-musl user still crashed. The old early return here accepted
-  // that state as a deliberate decision.
+  // A single musl binary without its sibling comes from the build host, not a decision.
   assert.deepEqual(musl, [],
     `a partial musl set shipped: ${musl.join(", ")}. Either both musl binaries are in `
     + "NATIVE_TARGETS (a decision) or neither is (the current decision) - one alone is "
     + "an accident of the build host.");
 
-  // Decision: ship glibc only. A .mcpb runs inside Claude Desktop, which is not
-  // distributed for Alpine/musl, so the two musl binaries would add ~4 MB
-  // compressed (~8 MB unpacked) for a platform that cannot run the host
-  // application. The claim is narrowed in documentation instead of being backed
-  // in bytes.
-  //
-  // This test is the guard on that decision: if the documentation disappears, the
-  // bundle is back to claiming "linux" with nothing behind it. To reverse the
-  // decision, enable the two musl entries in NATIVE_TARGETS and this passes by the
-  // early return above.
+  // Only glibc ships because the host app has no musl build, so the docs must state it.
   const doc = fs.readFileSync(path.join(REPO, "docs", "BUNDLE.md"), "utf8");
   assert.match(doc, /glibc/i,
     'The bundle ships only glibc binaries but manifest.json claims "linux" unqualified, and '
@@ -222,9 +162,7 @@ test("manifest version matches the compiled server version", { skip: skip() }, (
 });
 
 test("the bundled server starts and its tools match the manifest", { skip: skip() }, async () => {
-  // The real guard against a packaging gap: a runtime dependency left in
-  // devDependencies, or a file the include list missed, resolves fine from a
-  // checkout and fails only here — where the user would have hit it.
+  // Catches packaging gaps such as a runtime dependency left in devDependencies.
   const entry = path.join(EXTRACTED, "server", "index.js");
   assert.equal(fs.existsSync(entry), true, "server/index.js is missing from the bundle");
 
@@ -279,15 +217,7 @@ test("the bundled server starts and its tools match the manifest", { skip: skip(
 });
 
 test("no declared devDependency ships in the bundle", { skip: skip() }, () => {
-  // Derived from package.json and the lockfile, not a hand-written list, so a newly
-  // added devDependency cannot quietly escape this check.
-  //
-  // The test is "purely build-time packages must not ship", not "no name that appears
-  // under devDependencies may appear". npm marks a lock entry dev:true only when it is
-  // reachable *solely* from devDependencies. @types/node is dev:false here because
-  // @types/yauzl needs it and puppeteer-core needs that — so it ships, correctly.
-  // Banning it by name would assert a falsehood about how npm resolves and would fail
-  // forever for no defect.
+  // Checks devDependencies the lockfile marks dev:true, i.e. reachable only at build time.
   const declared = Object.keys(JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).devDependencies ?? {});
   const lock = JSON.parse(fs.readFileSync(path.join(REPO, "package-lock.json"), "utf8"));
   const buildTimeOnly = declared.filter((d) => lock.packages?.[`node_modules/${d}`]?.dev === true);
@@ -304,10 +234,7 @@ test("no declared devDependency ships in the bundle", { skip: skip() }, () => {
 });
 
 test("the server ships no HTTP transport", { skip: skip() }, () => {
-  // ADR-1 removed the HTTP transport. The invariant is about THIS SERVER'S code,
-  // not about node_modules: hono, express and cors are hard dependencies of
-  // @modelcontextprotocol/sdk and ship transitively no matter what ADR-1 says.
-  // Asserting their absence would fail forever while proving nothing.
+  // Checks server code only; the MCP SDK ships HTTP frameworks transitively.
   const serverFiles = ENTRIES.filter((e) => e.name.startsWith("server/") && e.name.endsWith(".js"));
   assert.notEqual(serverFiles.length, 0, "no server/*.js in the bundle");
 

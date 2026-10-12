@@ -1,26 +1,5 @@
 #!/usr/bin/env node
-/**
- * Build the distributable .mcpb bundle, reproducibly.
- *
- * This is the step that produced remotion-viz-1.0.0.mcpb, written down. It was a
- * manual sequence living in one person's shell history: stage a directory, fetch
- * every platform's @resvg/resvg-js prebuilt, then `mcpb pack`. Nothing in version
- * control produced it, so nothing verified it either — the shipped 1.0.0 bundle
- * still carries @hono/node-server, a dependency ADR-1 removed.
- *
- * Why the packer and not `zip`: the mcpb CLI validates manifest.json against the
- * bundle spec. A hand-rolled zip would produce an artifact that looks right and
- * fails at install time on a user's machine. If the packer is unavailable this
- * script fails; it never falls back.
- *
- * Why every platform's native binary: @resvg/resvg-js resolves its .node addon
- * through optionalDependencies, so `npm ci` on the build host installs exactly
- * ONE platform. A bundle built that way loads only on machines matching the
- * builder. The six below are what manifest.json's compatibility.platforms claims.
- *
- * Usage:
- *   node scripts/build-bundle.mjs [--allow-version-drift] [--out <file>]
- */
+// Builds the .mcpb bundle. Usage: build-bundle.mjs [--allow-version-drift] [--out <file>]
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -29,15 +8,7 @@ import zlib from "node:zlib";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-/**
- * Extract an npm tarball, stripping its leading `package/`.
- *
- * Done in-process rather than by shelling out to tar. GNU tar as shipped with Git
- * Bash reads an absolute Windows path as a remote host spec and fails with
- * "Cannot connect to C: resolve failed"; bsdtar wants different flags again. A
- * 40-line ustar reader has no platform variance at all, and this script has to
- * produce identical output on the three platforms the bundle targets.
- */
+// Extracts an npm tarball in-process (no tar binary), stripping its leading `package/`.
 function extractNpmTarball(tgzPath, destDir) {
   const buf = zlib.gunzipSync(fs.readFileSync(tgzPath));
   const written = [];
@@ -81,17 +52,7 @@ function extractNpmTarball(tgzPath, destDir) {
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE = path.join(REPO, "build");
 
-/**
- * Every platform whose prebuilt must be in the bundle.
- *
- * Deliberately duplicated in test/bundle.test.mjs rather than shared: if these two
- * lists drift, that is a change to what ships on which machines, and it should
- * fail a test rather than be absorbed silently by a common import.
- *
- * Enforced as an ALLOWLIST, not just a fetch list: step 3b below deletes any
- * @resvg package npm installed that this list does not name, so what ships is
- * this decision rather than the build host's npm resolution.
- */
+// Allowlist of resvg native prebuilts that ship; test/bundle.test.mjs keeps its own copy.
 const NATIVE_TARGETS = [
   "@resvg/resvg-js-win32-x64-msvc",
   "@resvg/resvg-js-win32-arm64-msvc",
@@ -99,9 +60,7 @@ const NATIVE_TARGETS = [
   "@resvg/resvg-js-darwin-arm64",
   "@resvg/resvg-js-linux-x64-gnu",
   "@resvg/resvg-js-linux-arm64-gnu",
-  // Alpine/musl. manifest.json claims "linux" unqualified, which these two would
-  // make true. Enabling them adds ~8 MB. See test "linux claim does not silently
-  // exclude musl" — either turn these on or narrow the manifest's claim.
+  // Alpine/musl targets, disabled (~8 MB); see the musl test in test/bundle.test.mjs.
   // "@resvg/resvg-js-linux-x64-musl",
   // "@resvg/resvg-js-linux-arm64-musl",
 ];
@@ -116,12 +75,7 @@ function die(message, remedy) {
   process.exit(1);
 }
 
-/**
- * npm ships its CLI as a plain script next to the node binary. Spawning that
- * directly keeps shell:false working on Windows, where spawning npm.cmd without a
- * shell throws EINVAL synchronously — the same reason services/exec.ts resolves
- * the Remotion CLI to a .js rather than a bin shim.
- */
+// Runs npm's bundled CLI script through node so shell:false works on Windows.
 function npmCli() {
   const bundled = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
   if (fs.existsSync(bundled)) return { file: process.execPath, prefix: [bundled] };
@@ -184,10 +138,7 @@ for (const f of ["manifest.json", "icon.png", "README.md"]) {
   fs.copyFileSync(path.join(REPO, f), path.join(STAGE, f));
 }
 
-// Install production dependencies against the real lockfile, then replace the
-// staged package.json with a production-only one. Installing first keeps `npm ci`
-// happy (it demands package.json and the lockfile agree) while what ships carries
-// no devDependencies.
+// Install prod deps against the real lockfile, then swap in a production-only package.json.
 fs.copyFileSync(path.join(REPO, "package.json"), path.join(STAGE, "package.json"));
 fs.copyFileSync(path.join(REPO, "package-lock.json"), path.join(STAGE, "package-lock.json"));
 
@@ -196,17 +147,6 @@ log("  installing production dependencies");
 run(npm.file, [...npm.prefix, "ci", "--omit=dev", "--ignore-scripts"], STAGE, "npm ci --omit=dev");
 
 // ------------------------------------------- 3b. prune host-dependent installs
-//
-// npm ci resolves optionalDependencies by the BUILD HOST's os/cpu, and the
-// @resvg/resvg-js platform packages declare no libc field — so an ubuntu host
-// installs linux-x64-musl next to linux-x64-gnu while a Windows host installs
-// neither, and the staged tree depends on where it was built. v1.2.1 shipped a
-// seventh, undecided resvg binary exactly this way, 2 MB past a baseline that
-// had been recorded on a different host. NATIVE_TARGETS is the decision about
-// what ships; everything else under @resvg/ goes, on every host, so the
-// shipped package SET stops varying by builder. (The bytes of the staged
-// node_modules/.package-lock.json still do — see the note below.)
-// test/bundle.test.mjs asserts set equality.
 const resvgScope = path.join(STAGE, "node_modules", "@resvg");
 if (fs.existsSync(resvgScope)) {
   for (const entry of fs.readdirSync(resvgScope)) {
@@ -217,28 +157,7 @@ if (fs.existsSync(resvgScope)) {
   }
 }
 
-// Bare-runtime implementations of fs/path/url, reachable only through the
-// "bare" condition in tar-fs's and tar-stream's imports maps — a condition Node
-// never activates, so nothing in this bundle can load them. They cannot be
-// omitted at install time: bare-fs is a HARD dependency of tar-stream, so
-// --omit=optional does not remove it. ~2 MB compressed of dead weight in every
-// bundle.
-//
-// Walks every node_modules level rather than deleting five known names at the
-// top: the bare graph has multiple dependents with independent ranges
-// (tar-stream wants bare-fs ^4.5.5, tar-fs ^4.0.1; bare-events is wanted at
-// ^2.5.4 and ^2.7.0), so a future major divergence makes npm nest a copy —
-// node_modules/tar-stream/node_modules/bare-fs — that a flat delete would
-// miss. The bare- prefix is the Bare runtime's package namespace; the guard
-// test in test/bundle.test.mjs matches the same shape, so the two cannot
-// disagree about what counts.
-//
-// Known cosmetic inconsistency, stated rather than hidden: the staged
-// node_modules/.package-lock.json (which ships, for offline advisory audits)
-// was written by npm before this prune, so it still lists the pruned bare-*
-// packages — and, on any host, only the resvg platform package npm itself
-// installed there. The shipped package SET is deterministic; that one
-// metadata file's bytes are not.
+// Removes Bare-runtime packages (bare-*) at every nesting level; Node never loads them.
 function pruneBareRuntime(nodeModulesDir) {
   if (!fs.existsSync(nodeModulesDir)) return;
   for (const entry of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
@@ -276,23 +195,10 @@ if (!fs.existsSync(resvgPkgPath)) {
 const resvgVersion = JSON.parse(fs.readFileSync(resvgPkgPath, "utf8")).version;
 log(`  fetching ${NATIVE_TARGETS.length} native prebuilts for @resvg/resvg-js@${resvgVersion}`);
 
-// Every fetched tarball is verified against the COMMITTED lockfile before a
-// byte of it is staged. The previous form - `npm pack ${target}@${version}` -
-// trusted whatever the registry served at release time: the packument and the
-// tarball come from the same server, so its self-consistency check proves
-// nothing against a compromised or poisoned registry, and the cosign signature
-// then attests which workflow built the file, not that the vendored binaries
-// are the ones the repository decided on. package-lock.json already records a
-// sha512 for every one of these packages (they are optionalDependencies of
-// @resvg/resvg-js), so the release only ships bytes some commit locked.
-//
-// The "already present" targets are the ones npm ci itself installed, and npm
-// verifies those against the same lockfile hashes during install.
+// Each fetched tarball is verified against the committed lockfile's sha512 before staging.
 const rootLock = JSON.parse(fs.readFileSync(path.join(REPO, "package-lock.json"), "utf8"));
 
-// Validate every lockfile entry before fetching anything: a lockfile problem
-// on the sixth target should fail the build before the first five tarballs
-// were pulled over the network for nothing.
+// Validate every lockfile entry before fetching anything.
 const lockedTargets = new Map();
 for (const target of NATIVE_TARGETS) {
   const entry = rootLock.packages[`node_modules/${target}`];
@@ -318,11 +224,7 @@ for (const target of NATIVE_TARGETS) {
   if (fs.existsSync(path.join(dest, "package.json"))) { log(`    ${target} (already present, verified by npm ci)`); continue; }
   const { resolved, integrity } = lockedTargets.get(target);
 
-  // Node's global fetch, not npm - so .npmrc proxy/CA/auth settings do not
-  // apply here. GitHub-hosted runners reach the registry directly; behind a
-  // corporate proxy, export NODE_USE_ENV_PROXY=1 (Node 24+) so fetch honors
-  // HTTPS_PROXY. Fail-closed either way: a fetch that cannot happen is a
-  // build that does not happen.
+  // Node's fetch ignores .npmrc proxy settings; behind a proxy set NODE_USE_ENV_PROXY=1.
   let tarball;
   try {
     const res = await fetch(resolved);
@@ -342,8 +244,7 @@ for (const target of NATIVE_TARGETS) {
       + "serving something other than what this repository locked.");
   }
 
-  // Written to a temp dir outside STAGE, so a mid-loop failure cannot leave a
-  // stray tarball where it would be staged and shipped.
+  // Temp dir outside STAGE so a failure cannot leave a tarball in the shipped tree.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcpb-natives-"));
   try {
     const tgzPath = path.join(tmp, `${target.replace(/[@/]/g, "_")}.tgz`);
@@ -352,8 +253,7 @@ for (const target of NATIVE_TARGETS) {
     try {
       extractNpmTarball(tgzPath, dest);
     } catch (error) {
-      // die() exits the process, which skips the finally below - clean the
-      // temp dir here or the tarball leaks into os.tmpdir() on this path.
+      // die() exits and skips the finally, so clean up the temp dir here.
       fs.rmSync(tmp, { recursive: true, force: true });
       die(`could not extract ${target}@${resvgVersion}: ${error.message}`, "Re-run. If it persists, the published tarball changed shape.");
     }

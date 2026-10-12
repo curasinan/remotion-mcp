@@ -1,11 +1,4 @@
-/**
- * Environment detection.
- *
- * Most "Remotion just errors" reports trace back to one of four causes:
- * a Node version below 22, no local Remotion install, a missing Chrome
- * Headless Shell, or an entry point that does not exist where the CLI looks.
- * This module checks all four and attaches a concrete remedy to each failure.
- */
+/** Environment checks for Node, the Remotion install, the browser and the entry point. */
 
 import fs from "node:fs";
 import os from "node:os";
@@ -95,17 +88,7 @@ function shallowFind(root: string, needle: string, depth: number): string | null
   return null;
 }
 
-/**
- * The floor this package claims, in one place.
- *
- * It must equal package.json's `engines.node` and manifest.json's
- * `compatibility.runtimes.node`; test/engines.test.mjs asserts those two agree
- * with each other, and the tool description in src/tools/environment.ts states
- * this number to the model. It read 18 while the package required 22 - a
- * diagnostic that reports "meets the minimum" on a runtime the package does not
- * support is worse than no diagnostic, because it sends the user looking
- * elsewhere.
- */
+/** Minimum Node major; must match package.json `engines.node` and manifest.json. */
 const MIN_NODE_MAJOR = 22;
 
 async function checkNode(): Promise<ToolCheck> {

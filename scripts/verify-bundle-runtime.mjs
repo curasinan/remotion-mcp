@@ -1,36 +1,8 @@
-/**
- * Extract a .mcpb and drive the server inside it over stdio.
- *
- * Everything else in CI tests the source tree. This tests the artifact: the
- * manifest's entry point, the vendored node_modules, and - the part nothing
- * else covers - whether the platform's own @resvg/resvg-js binary actually
- * LOADS from inside the bundle. test/bundle.test.mjs asserts those six binaries
- * are present in the zip; presence is not loadability. The two failures are
- * indistinguishable to that test and very distinguishable to a user, who gets
- * "Failed to load native binding" before any of this server's diagnostics run.
- *
- * Deliberately depends on nothing but Node's standard library and
- * test/zip-reader.mjs, so the verify job needs a checkout and a Node - no
- * `npm ci` on six runners to test an artifact that ships its own node_modules.
- *
- * Usage: node scripts/verify-bundle-runtime.mjs <bundle.mcpb|dir> <extract-dir>
- *
- * The first argument may be a directory holding exactly one .mcpb, so the CI
- * step can name the download-artifact folder and stay one plain `node` command
- * with no shell globbing - `ls *.mcpb | head -1` would pin the job to bash,
- * which is not the default shell on the Windows runners.
- *
- * Exit code 0 on success, 1 on any failure. Failure prints the server's stderr,
- * because that is where a native-binding error appears.
- */
+// Extracts a .mcpb and drives its server over stdio to check the native resvg binary loads.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-// Reuse the pure-Node zip reader written for test/bundle.test.mjs rather than
-// shelling out to tar: GNU tar under Git Bash reads C:\... as a remote host
-// spec, which is why that reader exists in the first place. Imported statically
-// by relative specifier - a dynamic import() of a resolved Windows path fails
-// with ERR_UNSUPPORTED_ESM_URL_SCHEME because "C:" is read as a URL scheme.
+// Static relative import: a dynamic import() of a resolved Windows path fails on the "C:" scheme.
 import { extractZip } from "../test/zip-reader.mjs";
 
 const [, , bundleArg, extractDir] = process.argv;
@@ -50,9 +22,7 @@ if (!fs.existsSync(bundleArg)) {
 let bundlePath = bundleArg;
 if (fs.statSync(bundleArg).isDirectory()) {
   const found = fs.readdirSync(bundleArg).filter((f) => f.endsWith(".mcpb"));
-  // Not "pick the first": two bundles in the download folder means the job is
-  // about to verify an arbitrary one of them and report a platform verdict for
-  // whichever it happened to sort first.
+  // Require exactly one bundle rather than verifying an arbitrary one.
   if (found.length !== 1) {
     console.error(`Expected exactly one .mcpb in ${bundleArg}, found ${found.length}: ${found.join(", ") || "(none)"}`);
     process.exit(1);
@@ -60,28 +30,9 @@ if (fs.statSync(bundleArg).isDirectory()) {
   bundlePath = path.join(bundleArg, found[0]);
 }
 
-// Empty the destination first. extractZip only overwrites the names it is
-// carrying, so verifying bundle B into a directory still holding bundle A can
-// pass on A's leftovers - a green verdict about an artifact that was never
-// tested. That is the same mistake that made the original plan for this
-// script's negative test incoherent, and it costs one rmSync to close.
-//
-// What may be deleted is decided by OWNERSHIP, never by what the directory
-// looks like. This recursively deletes a path taken from argv, so the only
-// directories it will touch are ones it created and marked itself.
-//
-// The earlier version of this guard inferred ownership from contents: any
-// directory holding manifest.json and server/ was treated as a previous
-// extraction. That is precisely the shape of this repo's own build/ staging
-// tree - scripts/build-bundle.mjs stages manifest.json, server/, node_modules/,
-// package.json, README.md and icon.png there before zipping - so
-// `verify-bundle-runtime.mjs bundle.mcpb build` deleted an npm-ci'd staging
-// tree and printed "Bundle runtime OK". A signature is not a claim of
-// ownership; a sentinel this script wrote is.
+// The extraction dir is cleared first, but only if it carries a sentinel this script wrote.
 const SENTINEL = ".verify-bundle-extraction";
-// The first line is the claim of ownership, and it is checked. Keeping it
-// separate from the rest of the prose means the explanatory text below can be
-// reworded without stranding extraction directories a previous run left behind.
+// Only this first line is checked for ownership, so the rest of the text can change.
 const SENTINEL_MAGIC = "Written by scripts/verify-bundle-runtime.mjs.";
 const SENTINEL_BODY = [
   SENTINEL_MAGIC,
@@ -93,21 +44,7 @@ const SENTINEL_BODY = [
   "",
 ].join("\n");
 
-/**
- * Whether the sentinel in `dir` is one THIS script wrote.
- *
- * A name is not a claim. `readdirSync(dir).includes(SENTINEL)` was true for a
- * directory that merely contained something called .verify-bundle-extraction -
- * including a *directory* by that name, or a symlink, neither of which this
- * script can ever produce - and the next line then recursively force-deleted a
- * path taken from argv. Anyone who could create one empty directory inside a
- * tree could get the rest of that tree removed.
- *
- * So: it must be a regular file (lstat, so a symlink to a genuine sentinel
- * elsewhere does not qualify either), and its contents must be what this script
- * writes. Both checks fail closed - any error reading it means "not ours",
- * which costs a refusal and never costs data.
- */
+// True only if the sentinel is a regular file (not a symlink) with this script's magic line.
 function ownsExtractionDir(dir) {
   const marker = path.join(dir, SENTINEL);
   try {
@@ -121,8 +58,7 @@ function ownsExtractionDir(dir) {
 if (fs.existsSync(extractDir)) {
   const existing = fs.readdirSync(extractDir);
   if (existing.length > 0 && !ownsExtractionDir(extractDir)) {
-    // Say which of the two it is: an impostor entry is a different problem from
-    // no sentinel at all, and the reader needs to know one is sitting there.
+    // Distinguish an impostor sentinel entry from a missing one.
     const impostor = existing.includes(SENTINEL)
       ? `\nThere IS an entry named ${SENTINEL} here, but it is not a regular file `
         + `written by this script, so it does not establish ownership.`
@@ -140,8 +76,7 @@ if (fs.existsSync(extractDir)) {
   fs.rmSync(extractDir, { recursive: true, force: true });
 }
 fs.mkdirSync(extractDir, { recursive: true });
-// Written before extraction, so an interrupted run still leaves the directory
-// claimed and the next run can clear it instead of refusing.
+// Written before extraction so an interrupted run still leaves the directory claimed.
 fs.writeFileSync(path.join(extractDir, SENTINEL), SENTINEL_BODY);
 
 const files = extractZip(bundlePath, extractDir);
@@ -153,9 +88,7 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
-// The server exits with a ConfigError before serving if REMOTION_MCP_WORKSPACE
-// does not name an existing directory. State and audit paths are pinned inside
-// the same directory so a CI run leaves nothing in the runner's home.
+// The workspace must exist; state and audit paths stay inside it.
 const workspace = fs.mkdtempSync(path.join(path.resolve(extractDir), "ws-"));
 const probeName = "probe.png";
 const probePath = path.join(workspace, probeName);
@@ -176,8 +109,7 @@ let pending = "";
 const responses = new Map();
 child.stderr.on("data", (d) => { stderr += d.toString(); });
 
-// One line-buffered parser. A JSON-RPC frame can straddle two chunks, so the
-// tail is carried forward rather than re-parsed from the top on every chunk.
+// Line-buffered parser; a JSON-RPC frame can straddle two chunks.
 child.stdout.on("data", (chunk) => {
   pending += chunk.toString();
   let i;
@@ -193,13 +125,7 @@ child.stdout.on("data", (chunk) => {
   if (responses.has(1) && responses.has(2) && responses.has(3)) finish();
 });
 
-// A bundle whose native addon will not load dies at import time - @resvg's
-// js-binding.js throws "Failed to load native binding" before this server's
-// code runs - so the process exits without ever answering initialize. Without
-// this handler that case burns the full timeout and reports "timed out",
-// hiding the one line that says what actually happened. On "close" rather than
-// "exit" so the server's stderr has finished flushing before it is printed -
-// with "exit" the native-binding stack trace is routinely still in the pipe.
+// Report an early exit (e.g. native binding failure); "close" waits for stderr to flush.
 child.on("close", (code, signal) => {
   if (finished) return;
   fail([
@@ -221,8 +147,7 @@ send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
   clientInfo: { name: "bundle-verify", version: "1" } } });
 send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
 send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-// The one call that forces the native addon to load. A 2x2 square is enough:
-// this is a linkage test, not a rendering test.
+// Forces the native addon to load; a 2x2 square is enough.
 send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: {
   name: "viz_render_svg",
   arguments: {
@@ -231,10 +156,7 @@ send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: {
   } } });
 
 const deadline = setTimeout(() => {
-  // Which ids came back is the whole diagnosis, so report them the way the
-  // close handler does: none means the server never got as far as answering,
-  // [1] means tools/list hung, [1, 2] means the render did - and the render is
-  // the only one of the three that can hang inside the native addon.
+  // The answered ids show which request hung.
   fail([
     `timed out after ${TIMEOUT_MS} ms waiting for initialize, tools/list and viz_render_svg. `
     + `Answered ids: [${[...responses.keys()].join(", ") || "none"}]`,
@@ -262,9 +184,7 @@ function finish() {
   if (!init?.result?.serverInfo?.name) problems.push("initialize returned no serverInfo");
 
   const tools = responses.get(2)?.result?.tools;
-  // Hardcoded at 13 deliberately, matching the conformance step in ci.yml:
-  // adding a tool forces someone to touch this line rather than the check
-  // silently widening to whatever shipped.
+  // Hardcoded to match the conformance step in ci.yml.
   if (!Array.isArray(tools)) problems.push("tools/list returned no array");
   else if (tools.length !== 13) {
     problems.push(`expected 13 tools, got ${tools.length}: ${tools.map((t) => t.name).join(", ")}`);
@@ -275,9 +195,7 @@ function finish() {
   else if (render?.result?.isError) {
     problems.push(`viz_render_svg refused: ${JSON.stringify(render.result.content).slice(0, 300)}`);
   } else {
-    // A success message is not a rendered image. Check the bytes: resvg only
-    // produced these if the native addon ran, so this is the assertion the
-    // whole job exists for.
+    // Check the PNG bytes, which exist only if the native addon ran.
     if (!fs.existsSync(probePath)) {
       problems.push(`viz_render_svg reported success but wrote no PNG at ${probeName}`);
     } else {

@@ -1,14 +1,4 @@
-/**
- * viz_compare.
- *
- * The render tools let the model look at its output. This one lets it check that
- * a change did what it intended, instead of rendering twice and asserting the
- * difference from memory.
- *
- * Note what it does NOT do: it reads two files that are already inside the
- * workspace and returns a number. No spawn, no browser, no network, no new
- * format. It is the only tool here whose world is genuinely closed.
- */
+/** viz_compare: pixel-diffs two PNGs inside the workspace. */
 
 import fs from "node:fs";
 import { z } from "zod";
@@ -21,7 +11,7 @@ import { ToolInputError } from "../types.js";
 
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
 
-/** A path that is READ rather than written. New input class for this server. */
+/** An input path that is read rather than written. */
 function inputPathField(description: string) {
   return z
     .string()
@@ -105,8 +95,7 @@ Error Handling:
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
-        // Reads two files inside the workspace, runs no subprocess and touches no
-        // network. The second closed-world tool in this server; keep it that way.
+        // Reads workspace files only: no subprocess, no network.
         openWorldHint: false,
       },
     },
@@ -163,9 +152,7 @@ Error Handling:
         diff_size_bytes: result.diffPng.byteLength,
       };
 
-      // Composed before buildResponse rather than appended to content[0] after:
-      // content is a union of text and image blocks, so indexing into it to mutate
-      // .text is only correct by accident of ordering.
+      // Compose the full text before buildResponse instead of mutating content[0].
       const body = input.return_image && !attached
         ? `${markdown}\n\nDiff image not attached: ${formatBytes(result.diffPng.byteLength)} exceeds the `
           + `${formatBytes(MAX_INLINE_IMAGE_BYTES)} inline cap. Pass output_path to write it to a file.`

@@ -1,23 +1,4 @@
-/**
- * One place that reads and validates the server's own configuration.
- *
- * Every REMOTION_MCP_* knob and the browser-path variables are defined here,
- * with a default, a parser, and a check. loadConfig runs at startup and throws
- * on anything invalid, so a misconfiguration stops the server with a clear
- * message instead of surfacing later as a confusing tool failure.
- *
- * There is deliberately no config-file layer. This ships as an .mcpb bundle and
- * as a Claude Desktop / Claude Code stdio server, and both configure it through
- * environment variables - the manifest maps user_config to env, and the desktop
- * config sets env directly. A file layer would be a parser and a merge order
- * for a source nothing in the deployment uses. Precedence is therefore just
- * default < environment, with tool arguments overriding per call where a tool
- * exposes one.
- *
- * Defaults are the most restrictive that still work: no network, sandbox on,
- * workspace confined to one directory. Loosening any of them is an explicit
- * environment variable, never the out-of-the-box state.
- */
+/** Reads and validates the server's environment configuration at startup. */
 
 import fs from "node:fs";
 import os from "node:os";
@@ -60,8 +41,7 @@ function parseAllowedHosts(raw: string | undefined): string[] {
     .filter((entry) => entry !== "");
 
   for (const host of hosts) {
-    // A value with a scheme or path is a sign the operator meant a URL; reject
-    // it rather than silently never matching.
+    // Reject URLs; only bare hostnames can match.
     if (/[/:]/.test(host)) {
       throw new ConfigError(
         `REMOTION_MCP_ALLOWED_HOSTS entry '${host}' looks like a URL. List bare hostnames, comma-separated, for example "fonts.googleapis.com,fonts.gstatic.com".`,
@@ -99,9 +79,7 @@ function parsePageLoadTimeout(raw: string | undefined): number {
       `REMOTION_MCP_PAGE_TIMEOUT_MS must be a positive whole number of milliseconds, got '${raw}'.`,
     );
   }
-  // Above the backstop the two swap roles: protocolTimeout starts refusing work
-  // before this deadline can fire, which is the exact bug the two constants were
-  // split to prevent. Refusing here keeps it from being rebuilt in config.
+  // The page deadline must stay below the CDP backstop or it never fires.
   if (parsed >= TIMEOUT_CDP_PROTOCOL_MS) {
     throw new ConfigError(
       `REMOTION_MCP_PAGE_TIMEOUT_MS is ${parsed} ms, which is not below the ${TIMEOUT_CDP_PROTOCOL_MS} ms CDP backstop. ` +
@@ -122,22 +100,9 @@ function parseBrowserExecutable(env: NodeJS.ProcessEnv): string | null {
   return explicit;
 }
 
-/**
- * Per-user directory for state this server owns: the audit log, and the registry
- * of Studio processes it has started.
- *
- * Per-user is the point. The Studio registry lived in os.tmpdir(), which on POSIX
- * is shared across every account on the machine - and that registry is the
- * authorization list remotion_stop_studio consults before signalling a process.
- * Nothing here is reachable through a tool argument either: every path a tool
- * accepts goes through resolveInWorkspace and is confined to the workspace, which
- * this deliberately sits outside.
- */
+/** Per-user, out-of-workspace directory for the audit log and the Studio registry. */
 export function stateDirectory(): string {
-  // Explicit override, for the same reason REMOTION_MCP_AUDIT_LOG exists: a test
-  // that spawns this server must not read, write or delete the real user's state.
-  // The Studio registry migration UNLINKS a file on load, so a suite without this
-  // would destroy state on the developer's machine just by running.
+  // Override so tests never touch the real user's state.
   const override = process.env.REMOTION_MCP_STATE_DIR;
   if (override && override.trim() !== "") return path.resolve(override);
 

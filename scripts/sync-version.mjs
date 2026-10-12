@@ -1,17 +1,4 @@
-/**
- * Write one version into every file that must state it.
- *
- * package.json, manifest.json, src/constants.ts SERVER_VERSION and
- * package-lock.json are four statements of one fact. test/unit.test.mjs fails
- * on drift between the first three and scripts/build-bundle.mjs refuses to
- * build on it, so a release tool that updates only some of them produces an
- * unbuildable tag. The lockfile has no guard of its own - which is exactly how
- * every released tag through v1.2.1 carried a lockfile one version behind the
- * package it locks - so it is synced here and required to exist.
- *
- * Validates everything before writing anything: a half-applied version bump is
- * worse than a refused one.
- */
+// Writes one version to package.json, manifest.json, package-lock.json and src/constants.ts.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -50,11 +37,7 @@ const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
 
-// npm 7+ states the root version twice: at the top and in packages[""]. A
-// packages map without a root entry means something mangled the file, and
-// moving only the top-level version would be a silent partial sync - refused
-// here like every other malformed input, before anything is written. (A v1
-// lockfile has no packages map; its top-level version alone is complete.)
+// npm 7+ also stores the root version in packages[""]; refuse a packages map without it.
 if (lock.packages && !lock.packages[""]) {
   console.error(
     `${lockPath} has a packages map but no packages[""] root entry.\n` +

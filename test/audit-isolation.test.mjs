@@ -1,21 +1,4 @@
-/**
- * The test suite must never write to the user's production audit log.
- *
- * It did. `smoke-test.mjs` and `test/protocol.test.mjs` spawned the server with only
- * REMOTION_MCP_WORKSPACE set, so parseAuditLogPath fell through to
- * defaultAuditLogPath() and every run appended to
- * %LOCALAPPDATA%\remotion-viz\audit.jsonl (or the macOS/XDG equivalent). Measured on
- * a real install: 418 of 420 recorded events — 99.5% — were test fixtures, including
- * a 48% "security refusal" rate that is entirely `../../../escape.png` and friends.
- *
- * That log is not scratch data. `npm run gateway` and "show me the gateway" render it
- * as a usage dashboard, and it is size-capped with rotation, so at volume test runs
- * evict the real usage they are drowning.
- *
- * These tests never touch the real default path. They redirect the platform base
- * directories (LOCALAPPDATA / XDG_STATE_HOME / HOME) into a temp dir, so the
- * "default" location under test is a fake one.
- */
+// Test harnesses must never write to the user's real audit log or state; base dirs are redirected.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -88,7 +71,7 @@ function callOnce(env) {
         arguments: { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"/>' },
       });
       clearTimeout(timer);
-      // Give recordAuditEvent's synchronous append time to land before we look.
+      // Give recordAuditEvent's synchronous append time to land before reading.
       await new Promise((r) => setTimeout(r, 300));
       child.kill();
       resolve();
@@ -96,8 +79,7 @@ function callOnce(env) {
   });
 }
 
-// Positive control. Without this, "the file was not written" proves nothing — it
-// would also pass if the audit trail were broken outright.
+// Positive control: proves the audit trail works, so the negative test below is meaningful.
 test("a server spawned with no audit override DOES write to the default path", async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "audit-iso-pos-"));
   const expected = defaultAuditPathFor(base);
@@ -122,19 +104,9 @@ test("a server spawned WITH an audit override leaves the default path untouched"
     `the default audit log at ${defaultPath} must not be created when an override is set`);
 });
 
-// The regression guard. The two tests above verify the mechanism; this one verifies
-// that every harness in the repo actually uses it. A future test file that spawns the
-// server and forgets the override reintroduces the exact bug this file exists for.
-//
-// Deliberately coarse: it asks whether a file that mentions dist/index.js also
-// mentions REMOTION_MCP_AUDIT_LOG, not whether the two are wired together. A file
-// could satisfy it with the name in a comment while still polluting. That is
-// accepted — the behavioural tests above cover the mechanism, and this only has to
-// catch the plain omission, which is how the bug actually happened.
+// Text scan: every .mjs that spawns the server must also name the audit and state overrides.
 test("every harness that spawns the server redirects ALL of its persistent state", () => {
-  // Two kinds now. The audit log is appended to; the Studio registry is worse -
-  // loading it UNLINKS the pre-1.2.0 file as a migration step, so a suite that
-  // missed this would delete real state on a developer's machine just by running.
+  // Covers the audit log and the Studio registry, whose load unlinks a legacy file.
   const roots = [REPO, path.join(REPO, "test"), path.join(REPO, "scripts")];
   const offenders = [];
   for (const dir of roots) {
@@ -144,15 +116,10 @@ test("every harness that spawns the server redirects ALL of its persistent state
       if (!e.isFile() || !e.name.endsWith(".mjs")) continue;
       const full = path.join(dir, e.name);
       const src = fs.readFileSync(full, "utf8");
-      // Spawns either the source build or a bundled copy, AND drives it over
-      // JSON-RPC. The second half matters: scripts/build-bundle.mjs names
-      // server/index.js to check it exists and never runs it.
+      // Must name the server AND drive it over JSON-RPC; merely naming the bundle is not a spawn.
       const namesServer = src.includes("dist/index.js") || src.includes('"server", "index.js"');
       if (!namesServer || !src.includes('"initialize"')) continue;
-      // Two valid isolations. REMOTION_MCP_STATE_DIR redirects the state dir and
-      // switches off the legacy migration. Redirecting the platform sources plus
-      // os.tmpdir() isolates everything including that migration, which is what a
-      // test of the migration itself needs.
+      // Isolated either by the state-dir override or by redirecting platform dirs plus tmpdir.
       const byOverride = src.includes("REMOTION_MCP_STATE_DIR");
       const byRedirect = /LOCALAPPDATA|XDG_STATE_HOME/.test(src) && /TMPDIR|TEMP:/.test(src);
       const missing = [];

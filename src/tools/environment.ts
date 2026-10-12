@@ -1,6 +1,4 @@
-/**
- * Diagnostic tools. Run these first when anything Remotion-related fails.
- */
+/** Diagnostic tools for the Remotion environment and workspace. */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -67,8 +65,7 @@ Error Handling:
   - Returns an error if project_dir does not exist or escapes the workspace root
   - Never throws for a missing tool; a missing tool is reported as found=false with a fix`,
       inputSchema: CheckEnvironmentShape,
-      // Reports rather than changes, but it probes by running the Remotion CLI,
-      // and with no local install that means npx fetching it from the registry.
+      // Probes by running the Remotion CLI, which npx may fetch from the registry.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
