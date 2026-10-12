@@ -1,10 +1,4 @@
-/**
- * Remotion Studio process management.
- *
- * The Studio is a long-lived dev server, so it is spawned detached and tracked
- * in an in-memory registry. Only PIDs this server started can be stopped
- * through it, which keeps the stop tool from becoming a general process killer.
- */
+/** Remotion Studio start/stop tools; only Studios this server started can be stopped. */
 
 import fs from "node:fs";
 import os from "node:os";
@@ -29,25 +23,7 @@ interface StudioProcess {
   startedAt: number;
 }
 
-/**
- * Where the registry lives between sessions.
- *
- * Studios are spawned detached so they survive this process, which means an
- * in-memory registry loses them at exactly the moment they most need stopping:
- * after a restart, remotion_stop_studio - the only tool that exists to clean
- * them up - refused every pid it had itself created, leaving a dev server
- * publishing the user's source on :3000 with no way to stop it through the
- * server that started it.
- *
- * It used to live in os.tmpdir(). That is per-user on Windows but shared on
- * POSIX, and this file is not a cache: it is the list remotion_stop_studio
- * consults to decide whether it may signal a process. A file any account on the
- * machine can create is a poor place to keep an authorization decision, and
- * saveRegistry swallows write failures, so whoever created it first would have
- * kept ownership silently. It now sits beside the audit log, in the per-user
- * state directory, which no tool argument can reach - every path a tool accepts
- * goes through resolveInWorkspace and is confined to the workspace.
- */
+/** Persisted, per-user registry of started Studios, so they can be stopped after a restart. */
 const REGISTRY_FILE = path.join(stateDirectory(), "studios.json");
 
 /** Pre-1.2.0 location. Read once on upgrade, then removed. */
@@ -66,24 +42,9 @@ function readRegistryFile(file: string): Map<number, StudioProcess> {
   }
 }
 
-/**
- * Carry entries written before the move, once.
- *
- * Without this an upgrade orphans every running Studio: the tool that exists to
- * stop them stops recognising them, which is the precise failure the persisted
- * registry was added to prevent. The old file is unlinked afterwards so the
- * shared-directory exposure does not outlive the upgrade. Remove one minor
- * release after 1.2.0.
- */
+/** Merges the legacy registry into the current one once, then removes the legacy file. */
 function mergeLegacyRegistry(registry: Map<number, StudioProcess>): boolean {
-  // Only when running against the real, default state location. The legacy path is
-  // os.tmpdir(), which REMOTION_MCP_STATE_DIR does not redirect - so without this
-  // guard an isolated server would reach out of its sandbox, absorb the machine's
-  // shared registry, and UNLINK it. That is not hypothetical: it deleted the real
-  // file on this machine during the run that added this code.
-  //
-  // An explicit override means "this is not the user's state", and migrating into
-  // it would be wrong even if it were not destructive.
+  // Skip when the state dir is overridden, since the legacy path is not redirected.
   if (process.env.REMOTION_MCP_STATE_DIR) return false;
   if (!fs.existsSync(LEGACY_REGISTRY_FILE)) return false;
   let merged = false;
@@ -96,8 +57,7 @@ function mergeLegacyRegistry(registry: Map<number, StudioProcess>): boolean {
   try {
     fs.unlinkSync(LEGACY_REGISTRY_FILE);
   } catch {
-    // Another account owns it - which is the exposure this move closes. It is
-    // simply never read again.
+    // Owned by another account; it is never read again.
   }
   return merged;
 }
@@ -113,15 +73,11 @@ function saveRegistry(registry: Map<number, StudioProcess>): void {
     fs.mkdirSync(path.dirname(REGISTRY_FILE), { recursive: true });
     fs.writeFileSync(REGISTRY_FILE, JSON.stringify([...registry.values()], null, 2), "utf8");
   } catch {
-    // Losing persistence degrades stop_studio to its previous behaviour rather
-    // than failing the start that just succeeded.
+    // Persistence is best-effort; do not fail a successful start.
   }
 }
 
-/**
- * The Studio is a dev server: it holds a bundler and a browser of its own, so
- * signalling only its own pid leaves the port occupied.
- */
+/** Kills the whole Studio process tree so its port is released. */
 function killStudioTree(pid: number): boolean {
   try {
     killTree(pid, "SIGTERM");
@@ -212,9 +168,7 @@ Error Handling:
 
       const entry = requireEntryPoint(dir, input.entry_point);
       const cli = resolveRemotionCli(dir);
-      // Beside the registry rather than in os.tmpdir(): it carries the Studio's
-      // own output, including workspace paths, and there is no reason for it to
-      // be world-readable on POSIX.
+      // Keep the log in the per-user state dir, not the shared temp dir.
       fs.mkdirSync(stateDirectory(), { recursive: true });
       const logFile = path.join(stateDirectory(), `studio-${input.port}.log`);
       fs.writeFileSync(logFile, `# Remotion Studio started ${new Date().toISOString()}\n`);
@@ -234,8 +188,7 @@ Error Handling:
       }
 
       const registry = loadRegistry();
-      // Drop entries whose process is gone so a recycled pid cannot inherit an
-      // older record's identity.
+      // Drop dead entries so a recycled pid cannot inherit an old record.
       for (const [knownPid] of registry) {
         if (!isAlive(knownPid)) registry.delete(knownPid);
       }
@@ -319,10 +272,7 @@ Error Handling:
         );
       }
 
-      // The registry outlives the process, so a pid in it may since have been
-      // recycled by an unrelated program - and isAlive() is just as true for the
-      // new occupant. Being in the registry is therefore necessary but not
-      // sufficient; ask the OS what the process actually is before signalling.
+      // The pid may have been recycled, so verify the process identity before signalling.
       let stopped = false;
       let identity: ProcessIdentity = { verdict: "unknown", commandLine: null };
 

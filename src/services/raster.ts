@@ -1,13 +1,4 @@
-/**
- * Rasterization.
- *
- * SVG goes through resvg: no browser, deterministic output, native prebuilt
- * binaries for every platform we ship.
- *
- * HTML goes through puppeteer-core driving a browser that already exists on
- * the machine (see services/browser.ts). Bundling Chrome would add ~150 MB to
- * a distributable extension for a capability most users get for free.
- */
+/** Rasterizes SVG with resvg and HTML with puppeteer driving an installed browser. */
 
 import { Resvg } from "@resvg/resvg-js";
 import {
@@ -30,16 +21,7 @@ export interface RasterResult {
   blockedRequests?: string[];
 }
 
-/**
- * Reject an output size before anything tries to allocate it.
- *
- * resvg is a native addon running in this process, and an allocation it cannot
- * satisfy aborts the whole server rather than throwing: the Rust allocator
- * fast-fails, so there is no JavaScript exception for safeHandler to catch and
- * every concurrent tool call dies with it. A 120-byte SVG declaring
- * viewBox="0 0 100 5000000" reaches 288 GB at the default width of 1200, which
- * is why this check runs on intrinsic dimensions before render() is called.
- */
+/** Rejects oversized output before resvg allocates it; a failed native allocation aborts the process. */
 function assertRasterBudget(
   intrinsicWidth: number,
   intrinsicHeight: number,
@@ -86,9 +68,7 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
     );
   }
 
-  // Enforced here rather than only in validateSvg because this is the sink.
-  // validateSvg is also exposed as its own advisory tool, and an advisory check
-  // is not a security control: rasterizeSvg is where the file would be opened.
+  // Enforced at the sink, since validateSvg is only advisory.
   const references = findFilesystemReferences(source);
   if (references.length > 0) {
     const shown = references.slice(0, 3).map((r) => `'${r.slice(0, 80)}'`).join(", ");
@@ -114,8 +94,7 @@ export function rasterizeSvg(source: string, targetWidth: number): RasterResult 
     );
   }
 
-  // Intrinsic size is readable before render() and covers sources that carry no
-  // viewBox at all, where there is nothing for a source-level parse to measure.
+  // Intrinsic size is known before render() and covers sources without a viewBox.
   assertRasterBudget(resvg.width, resvg.height, targetWidth);
 
   let rendered: ReturnType<Resvg["render"]>;
@@ -162,9 +141,7 @@ interface PuppeteerLike {
 }
 
 async function loadPuppeteer(): Promise<{ lib: PuppeteerLike; full: boolean }> {
-  // Prefer the full package when present: it manages its own Chrome. It is
-  // optional and usually absent, so this is a runtime probe through an indirect
-  // specifier rather than a static import the compiler would try to resolve.
+  // Optional full puppeteer, imported via a variable so the compiler does not resolve it.
   const optionalPuppeteer = "puppeteer";
   try {
     const mod = (await import(optionalPuppeteer)) as unknown as { default?: PuppeteerLike };
@@ -198,20 +175,10 @@ export async function rasterizeHtml(
   );
 }
 
-/**
- * How far the CDP backstop must sit above the page deadline.
- *
- * The backstop exists to catch a command that never returns at all. It must
- * never be the thing that fires first for work that is merely slow, or it
- * overrides the deadline and refuses legitimate renders - which is exactly the
- * CI failure that produced this split.
- */
+/** Keeps the CDP protocol timeout above the page deadline so slow work hits the deadline first. */
 const CDP_BACKSTOP_MARGIN_MS = 30_000;
 
-/**
- * Puppeteer launch options, extracted so the timeout relationship is testable
- * without launching a browser. Exported for test/timeouts.test.mjs.
- */
+/** Builds puppeteer launch options; exported so the timeout relationship is testable. */
 export function buildLaunchOptions(input: {
   args: string[];
   pageLoadTimeoutMs: number;
@@ -219,8 +186,7 @@ export function buildLaunchOptions(input: {
   return {
     headless: true,
     args: input.args,
-    // Structurally above the page deadline, not merely above it by convention,
-    // so raising REMOTION_MCP_PAGE_TIMEOUT_MS cannot invert the relationship.
+    // Always above the page deadline, whatever REMOTION_MCP_PAGE_TIMEOUT_MS is.
     protocolTimeout: Math.max(
       TIMEOUT_CDP_PROTOCOL_MS,
       input.pageLoadTimeoutMs + CDP_BACKSTOP_MARGIN_MS,
@@ -228,20 +194,10 @@ export function buildLaunchOptions(input: {
   };
 }
 
-/**
- * Bound `work` by a wall clock the caller controls.
- *
- * setContent's own `timeout` option cannot do this job alone: it governs the
- * lifecycle watcher, which is built AFTER the document write, so a script that
- * blocks the renderer thread is never seen by it. And screenshot has no
- * deadline of its own at all. One deadline over both, enforced here, bounds
- * every way the page phase can fail to return - and the caller's `finally`
- * still tears the browser down, which is what actually frees the slot.
- */
+/** Rejects if `work` does not settle within `ms`. */
 async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // The loser of the race keeps running until teardown kills the browser. Its
-  // rejection is expected and must not surface as an unhandled rejection.
+  // Suppress the losing promise's rejection so it is not reported as unhandled.
   work.catch(() => {});
   try {
     return await Promise.race([
@@ -276,11 +232,7 @@ async function rasterizeHtmlUnlimited(
 
   const args = ["--disable-dev-shm-usage", "--font-render-hinting=none"];
 
-  // The renderer sandbox is the boundary between attacker-supplied markup and
-  // this machine, and it was switched off. Verified working when left on, so it
-  // stays on. The escape hatch exists for environments that genuinely cannot
-  // provide it - an unprivileged container without user namespaces - and it is
-  // named so that turning it on reads like the weakening it is.
+  // Sandbox stays on unless explicitly disabled for environments that cannot provide it.
   if (loadConfig().disableBrowserSandbox) {
     args.push("--no-sandbox");
   }
@@ -305,19 +257,13 @@ async function rasterizeHtmlUnlimited(
     const page = await browser.newPage();
     await page.setViewport({ width, height, deviceScaleFactor });
 
-    // The gate goes on before any content exists, so nothing can slip out
-    // between page creation and setContent.
+    // Interception is enabled before any content loads.
     const blocked = new Map<string, string>();
     await page.setRequestInterception(true);
     page.on("request", (request: InterceptedRequest) => {
       const url = request.url();
       const decision = decideRequest(url, policy);
-      // .catch on both: continue()/abort() reject if the request was already
-      // handled - a navigation that raced this handler, or a page torn down
-      // mid-flight. `void` discards the promise but not the rejection, so an
-      // unhandled rejection could take the process down for an event that is
-      // routine and already decided. Nothing here can recover from it either
-      // way: the request is gone.
+      // continue()/abort() reject if the request was already handled; ignore that.
       if (decision.allowed) {
         void request.continue().catch(() => {});
         return;
@@ -336,29 +282,10 @@ async function rasterizeHtmlUnlimited(
       ? html
       : `<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;}</style></head><body>${html}</body></html>`;
 
-    // One deadline over both commands, not one each: a caller cares that the
-    // render returns, not which half of it was slow.
+    // One deadline covers both setContent and screenshot.
     const shot = await withDeadline(
       (async () => {
-        // "load", not "networkidle0". networkidle0 does not mean puppeteer counts
-        // requests - it waits for Blink to emit Page.lifecycleEvent{networkIdle},
-        // and on the macOS CI runner Blink sometimes never emits it. That produced
-        // a bimodal hang: 8.5-11.5 s or past the deadline, never in between, on
-        // byte-identical trees eight minutes apart. Because the failure time tracked
-        // whatever the deadline was (30 s budget -> 38.7 s, 90 s -> 98.3 s), no
-        // timeout value could ever have fixed it.
-        //
-        // Dropping it is right on the merits, not just to make CI green: this page
-        // is caller-supplied markup rendered under a deny-all network policy, so
-        // every http(s) request is aborted before egress. Waiting for the network
-        // to go quiet is waiting for a condition the policy already guarantees,
-        // and it stacks a second renderer-side liveness requirement on top of
-        // "load" - the one that hangs. Measured locally: load at 486 ms against
-        // networkIdle at 1455 ms, so it is also about a second faster per render.
-        //
-        // If a future tool ever needs post-load work to settle, add an explicit
-        // wait for that specific thing (document.fonts.ready, a selector). Do not
-        // reach back for networkidle0.
+        // "load", not "networkidle0", which can hang and adds nothing under deny-all.
         await page.setContent(document, {
           waitUntil: "load",
           timeout: pageLoadTimeoutMs,
@@ -371,8 +298,7 @@ async function rasterizeHtmlUnlimited(
     const blockedRequests = [...blocked.entries()].map(([url, reason]) => `${url} (${reason})`);
 
     if (consoleErrors.length > 0) {
-      // A blocked fetch surfaces as "Failed to fetch", which reads like a bug in
-      // the markup. Say which policy decision caused it instead.
+      // Attribute "Failed to fetch" errors to the network policy when requests were blocked.
       const cause = blockedRequests.length > 0
         ? ` ${blockedRequests.length} network request(s) were refused by policy, which is the usual cause: ${blockedRequests.slice(0, 3).join("; ")}`
         : "";
@@ -386,10 +312,7 @@ async function rasterizeHtmlUnlimited(
 
     return { png: Buffer.from(shot), width, height, blockedRequests };
   } finally {
-    // close() waits on a renderer that may be wedged, and a browser that
-    // outlives this process leaves orphaned chrome processes behind: they
-    // detach from the job object, so nothing reclaims them. Bound the graceful
-    // path, then kill what is left.
+    // Bound the graceful close, then SIGKILL so no orphaned browser processes remain.
     const child = browser.process();
     try {
       await Promise.race([

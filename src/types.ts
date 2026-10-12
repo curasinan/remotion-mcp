@@ -1,6 +1,4 @@
-/**
- * Shared type definitions.
- */
+/** Shared type definitions. */
 
 export enum ResponseFormat {
   MARKDOWN = "markdown",

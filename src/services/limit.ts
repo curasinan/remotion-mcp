@@ -1,17 +1,4 @@
-/**
- * Concurrency limits for the expensive paths.
- *
- * MCP clients batch tool calls, and nothing serialised them: the stdio
- * transport dispatches each incoming request without awaiting the last, so five
- * concurrent viz_render_html calls launched five browsers. Measured, that was
- * 50 extra chrome processes and 34 s of wall clock for work that takes about
- * two seconds serially.
- *
- * Requests wait for a slot rather than failing immediately, because a model
- * batching three renders wants three images, not two errors. The queue is
- * bounded, though: past that depth the honest answer is that the server is
- * saturated, and saying so beats holding a request until the client gives up.
- */
+/** Bounded-queue concurrency limits for browser and Remotion CLI work. */
 
 import { ToolInputError } from "../types.js";
 
@@ -58,21 +45,14 @@ export class Limiter {
   }
 }
 
-/**
- * One browser at a time. Chrome sizes itself to the machine, so a second
- * concurrent instance competes with the first rather than adding throughput.
- */
+/** One browser at a time; a second Chrome instance competes rather than adds throughput. */
 export const browserLimiter = new Limiter({
   concurrency: 1,
   queueDepth: 4,
   label: "HTML screenshot",
 });
 
-/**
- * Remotion renders are already internally parallel - the CLI takes its own
- * --concurrency and spawns a browser per worker - so this bounds how many of
- * those fleets exist, not how many cores are used.
- */
+/** Bounds concurrent Remotion CLI runs, each of which is already internally parallel. */
 export const cliLimiter = new Limiter({
   concurrency: 2,
   queueDepth: 6,

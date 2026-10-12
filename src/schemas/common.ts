@@ -1,25 +1,9 @@
-/**
- * Zod fragments reused across tool input schemas.
- */
+/** Zod fragments reused across tool input schemas. */
 
 import { z } from "zod";
 import { ResponseFormat } from "../types.js";
 
-/**
- * Reject a path whose first character, or any segment's, is a hyphen.
- *
- * These strings end up as positional argv elements for the Remotion CLI, which
- * parses with minimist: a token beginning with "-" is read as an option rather
- * than a path. output_path="--config=C:/Users/me/Downloads/evil.js" cleared
- * resolveInWorkspace, because path.resolve does not treat an embedded absolute
- * path as an escape, and then reached the CLI as --config naming a module
- * outside the workspace, which the CLI loads and evaluates.
- *
- * A "--" end-of-options separator would be the usual answer and is the wrong
- * one here: minimist collects everything after it into argv["--"] rather than
- * argv._, so Remotion would lose its positionals entirely. Validation is the
- * fix, not a sentinel.
- */
+/** Rejects paths with a segment starting with "-", which the Remotion CLI would parse as an option. */
 export function hasNoFlagLikeSegment(value: string): boolean {
   return !value.split(/[/]/).some((segment) => segment.startsWith("-"));
 }
@@ -78,12 +62,7 @@ export const propsJsonField = z
     'Input props as a serialized JSON object, e.g. \'{"team":"home","speed":2}\'. Must parse as JSON.',
   );
 
-/**
- * An output file path, relative to the workspace root.
- *
- * Shared so the argv-safety rule cannot be applied in one tool and forgotten in
- * another; every one of these becomes a positional argument or a write target.
- */
+/** An output file path relative to the workspace root, with the argv-safety check applied. */
 export function outputPathField(description: string) {
   return z
     .string()

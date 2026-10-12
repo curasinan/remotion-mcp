@@ -1,18 +1,6 @@
 import { loadConfig } from "../config.js";
 
-/**
- * Network policy for rendered content.
- *
- * viz_render_html runs attacker-shaped markup in a real browser. Left open, any
- * <img src>, fetch, @font-face or CSS url() is an egress channel: a probe
- * confirmed both an image request and a fetch() reaching a listener, query
- * string intact. The screenshot then returns to the model, so the same channel
- * reads as well as writes.
- *
- * The default is deny. Rendering self-contained markup - which is what this
- * tool is for - needs no network at all, so an allowlist is opt-in and starts
- * empty.
- */
+/** Network policy for rendered content: deny by default, with an opt-in host allowlist. */
 
 /** What the renderer may load, in order of increasing trust required. */
 export interface NetworkPolicy {
@@ -28,15 +16,7 @@ export interface RequestDecision {
   reason?: string;
 }
 
-/**
- * Addresses that stay blocked even when a host is allowlisted.
- *
- * Loopback and link-local are the interesting ones: 169.254.169.254 is the
- * cloud instance metadata endpoint, and loopback reaches other services on the
- * machine, including a Remotion Studio this server may have started. An
- * allowlist is a statement about a public host, never a licence to reach the
- * local network.
- */
+/** Loopback, private, link-local and metadata addresses, blocked even when allowlisted. */
 function isAlwaysBlockedHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
 
@@ -62,14 +42,7 @@ function isAlwaysBlockedHost(hostname: string): boolean {
   return false;
 }
 
-/**
- * Decide one request.
- *
- * Note what this cannot do: the check is on the URL, before Chrome resolves it.
- * An allowlisted hostname that resolves to a private address still connects.
- * With the default empty allowlist there is nothing to rebind, which is the
- * reason the default matters more than the mechanism.
- */
+/** Decides one request by URL; DNS resolution of allowlisted hosts is not checked. */
 export function decideRequest(url: string, policy: NetworkPolicy): RequestDecision {
   let parsed: URL;
   try {
@@ -121,14 +94,8 @@ export function decideRequest(url: string, policy: NetworkPolicy): RequestDecisi
   };
 }
 
-/**
- * Read the allowlist from the environment.
- *
- * Comma-separated hostnames, for example "fonts.googleapis.com,fonts.gstatic.com".
- * Unset means deny everything, which is the intended out-of-the-box state.
- */
+/** Reads the comma-separated host allowlist from config; unset means deny all. */
 export function networkPolicyFromEnvironment(): NetworkPolicy {
-  // Parsing and validation live in the config module; a malformed value has
-  // already stopped the server at startup by the time this runs.
+  // Validated by the config module at startup.
   return { allowedHosts: loadConfig().allowedHosts };
 }

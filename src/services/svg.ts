@@ -1,11 +1,4 @@
-/**
- * SVG validation.
- *
- * Inline SVG renderers fail for a small, predictable set of reasons: XML that
- * is not well formed, a missing viewBox, features the renderer sandbox strips
- * (script, external references, foreignObject), or a payload large enough to
- * be rejected. Each rule below maps to one of those and carries its own fix.
- */
+/** SVG validation rules for common rendering failures, each with its own fix. */
 
 import { XMLValidator } from "fast-xml-parser";
 import type { SvgIssue, SvgValidationReport } from "../types.js";
@@ -13,38 +6,14 @@ import type { SvgIssue, SvgValidationReport } from "../types.js";
 const HTML_ONLY_ENTITIES =
   /&(nbsp|copy|reg|trade|hellip|mdash|ndash|rsquo|lsquo|rdquo|ldquo|bull|dagger|permil|eacute|uuml|deg);/g;
 
-/**
- * Read a quoted attribute off a tag.
- *
- * XML allows either quote style, so matching only double quotes made a
- * single-quoted document look like the attribute was absent entirely — a
- * viewBox='0 0 W H' was reported as missing. The leading guard keeps `width`
- * from matching inside `stroke-width` and `height` inside `font-height`.
- */
+/** Reads a single- or double-quoted attribute, not matching inside names like `stroke-width`. */
 function readAttribute(tag: string, name: string): string | null {
   const match = new RegExp(`(?<![-\\w:])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(tag);
   if (!match) return null;
   return match[1] ?? match[2] ?? null;
 }
 
-/**
- * Every href/src/xlink:href in the document that points outside the document.
- *
- * resvg resolves a bare path such as href="C:/Users/me/Pictures/x.png" against
- * the filesystem and composites the decoded pixels into the output, so an SVG
- * body is a read primitive. That path never passes through resolveInWorkspace,
- * which only ever sees output_path and project_dir.
- *
- * Two forms are safe and both are load-bearing in ordinary SVG, so they are
- * allowed: "#id" fragment references, which <use> and paint servers depend on,
- * and inline data: URIs, which carry their own bytes.
- *
- * Measured against resvg 2.6.2: href, xlink:href on <image>, and href on
- * <feImage> and on <image> inside <pattern> all read the file. CSS url() and
- * the file:// scheme do not resolve, so no rule is written for them - a rule
- * that forbids something the renderer already refuses only produces false
- * positives on documents that would have rendered safely.
- */
+/** Every href/src/xlink:href value other than "#id" fragments and data: URIs. */
 export function findFilesystemReferences(source: string): string[] {
   const pattern = /(?<![-\w:])(?:xlink:href|href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
   const offenders: string[] = [];
@@ -74,8 +43,7 @@ export function validateSvg(source: string): SvgValidationReport {
     });
   }
 
-  // Well-formedness. HTML-only entities are undefined in XML, so neutralise
-  // them before validating and report them as their own issue.
+  // HTML-only entities are undefined in XML; report them and neutralise before validating.
   const entityMatches = [...source.matchAll(HTML_ONLY_ENTITIES)];
   if (entityMatches.length > 0) {
     const names = [...new Set(entityMatches.map((m) => m[0]))].join(", ");

@@ -1,18 +1,4 @@
-/**
- * Chrome discovery.
- *
- * Bundling a browser would add ~150 MB to a distributable extension, so
- * instead we find one that already exists. Resolution order, most explicit
- * first:
- *
- *   1. PUPPETEER_EXECUTABLE_PATH or CHROME_PATH, set by the user
- *   2. A full `puppeteer` install, which manages its own Chrome
- *   3. Chrome, Chromium, Brave or Edge installed system-wide
- *   4. The Chrome Headless Shell that Remotion already downloaded
- *
- * Step 4 matters: if Remotion works on this machine, a browser is present, so
- * HTML screenshots should work too without a second download.
- */
+/** Chrome discovery: env var, full puppeteer, system browser, then Remotion's cached browser. */
 
 import fs from "node:fs";
 import os from "node:os";
@@ -115,10 +101,7 @@ function remotionCachedBrowser(projectDir?: string): string | null {
 /** Whether a full `puppeteer` install (which manages its own Chrome) is present. */
 export async function hasBundledPuppeteer(): Promise<boolean> {
   try {
-    // The full puppeteer package is optional and usually absent - only
-    // puppeteer-core is a dependency - so this is a runtime probe, not a static
-    // import. The indirection keeps the compiler from trying to resolve a module
-    // that is not installed while leaving the runtime behaviour identical.
+    // Runtime probe for an optional package the compiler should not resolve.
     await import(OPTIONAL_PUPPETEER);
     return true;
   } catch {

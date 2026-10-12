@@ -1,10 +1,4 @@
-/**
- * Unit regression tests for the hardening findings, run against compiled dist/.
- *
- * Each block ties back to a Phase 1 vector and proves the hole is closed. Two
- * blocks at the end guard findings that were refuted, so a future change cannot
- * silently reopen them.
- */
+// Unit tests for network policy, SVG scanning, raster budgets, config, PNG compare and fencing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -13,7 +7,7 @@ import { findFilesystemReferences, validateSvg } from "../dist/services/svg.js";
 import { rasterizeSvg } from "../dist/services/raster.js";
 import { loadConfig, ConfigError } from "../dist/config.js";
 
-// T-4 / SSRF: network policy.
+// SSRF: network policy.
 test("network policy denies all hosts by default", () => {
   assert.equal(decideRequest("https://example.com/x", { allowedHosts: [] }).allowed, false);
 });
@@ -38,7 +32,7 @@ test("network policy refuses file://", () => {
   assert.equal(decideRequest("file:///C:/secret.txt", { allowedHosts: [] }).allowed, false);
 });
 
-// T-3 / local file read: SVG reference scanner.
+// Local file read: SVG reference scanner.
 test("SVG scanner flags absolute, relative and remote references", () => {
   for (const href of ["C:/Users/me/x.png", "../../x.png", "https://evil/x.png", "/etc/x.png"]) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><image href="${href}"/></svg>`;
@@ -57,7 +51,7 @@ test("rasterizeSvg refuses an SVG that references a local file", () => {
   assert.throws(() => rasterizeSvg(svg, 100), /outside the document/);
 });
 
-// T-1 / resource exhaustion: raster pixel budget.
+// Resource exhaustion: raster pixel budget.
 test("rasterizeSvg rejects an oversized derived height instead of aborting", () => {
   const tall = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 5000000"><rect width="100" height="5000000"/></svg>';
   assert.throws(() => rasterizeSvg(tall, 1200), /limit|height/i);
@@ -73,7 +67,7 @@ test("rasterizeSvg still renders an ordinary aspect ratio", () => {
   assert.equal(r.height, 675);
 });
 
-// C14 / config: fail-fast validation.
+// Config: fail-fast validation.
 test("config rejects an allowlist entry that is a URL", () => {
   assert.throws(() => loadConfig({ REMOTION_MCP_ALLOWED_HOSTS: "https://x/y" }), ConfigError);
 });
@@ -87,7 +81,7 @@ test("config defaults are restrictive", () => {
   assert.equal(c.browserExecutable, null);
 });
 
-// Refuted findings kept as guards: these must NOT become true.
+// GUARD tests: invariants that must not regress.
 test("GUARD: frames regex stays anchored (no newline bypass)", async () => {
   // The regex lives on the Zod field; assert the pattern directly.
   const re = /^\d+(-\d*)?$/;
@@ -95,8 +89,7 @@ test("GUARD: frames regex stays anchored (no newline bypass)", async () => {
   assert.equal(re.test("0-9\n--evil"), false);
   assert.equal(re.test("30\n"), false);
 });
-// viz_compare's guards, at the service level. The protocol-level behaviour is in
-// smoke-test.mjs; these are the two that must fire before anything is allocated.
+// viz_compare guards at the service level; both must fire before anything is allocated.
 import { comparePngs, readPngSize } from "../dist/services/png.js";
 import { MAX_RASTER_PIXELS } from "../dist/constants.js";
 
@@ -122,9 +115,7 @@ test("readPngSize names a file that is not a PNG", () => {
 });
 
 test("comparePngs refuses an oversized pair BEFORE allocating", () => {
-  // 9000x9000 is 81M pixels against a 64M cap. The buffers here are 24 bytes: if
-  // the budget check ran after decoding, this would fail on a decode error rather
-  // than the budget, and the real path would have allocated 324 MB per image first.
+  // 81M pixels exceeds the 64M cap; header-only buffers prove the check runs before decoding.
   const big = fakePngHeader(9_000, 9_000);
   assert.ok(9_000 * 9_000 > MAX_RASTER_PIXELS);
   assert.throws(() => comparePngs(big, big, 0.1, "a.png", "b.png"), (e) => {
@@ -147,8 +138,7 @@ test("comparePngs refuses mismatched dimensions, naming both", () => {
   );
 });
 
-// The frame strip. Its geometry, and the invariant that decides whether it is a
-// safe feature: the SVG it generates must carry nothing but data: URIs.
+// Frame strip: layout geometry, and the generated SVG must contain only data: URIs.
 import { buildTileSvg, tilePanels } from "../dist/services/tile.js";
 import { PNG } from "pngjs";
 
@@ -175,9 +165,7 @@ test("the strip wraps past six panels", () => {
 });
 
 test("GUARD: the generated strip SVG references nothing but data: URIs", () => {
-  // rasterizeSvg refuses any href that is not a data: URI, which is what stops an
-  // SVG being a file-read primitive. This document is machine-generated, and
-  // "we wrote it ourselves" is exactly the argument for skipping that check.
+  // Generated SVG must still pass the data:-only reference check.
   const { svg } = buildTileSvg(panels(4));
   assert.deepEqual(findFilesystemReferences(svg), [],
     "the strip would read a file off disk and composite it into the returned image");
@@ -205,9 +193,7 @@ test("the strip refuses frames of differing sizes", () => {
 });
 
 test("the strip refuses a layout beyond the raster budget, before encoding anything", () => {
-  // 24-byte headers claiming 4000x4000. If the budget check ran after the panels
-  // were base64-encoded this would need 96 MB of real pixels to reach; that it
-  // throws on headers alone is the proof the ordering is right.
+  // Header-only PNGs trip the budget, proving it is checked before base64 encoding.
   const huge = Array.from({ length: 6 }, (_, i) => ({ png: fakePngHeader(4_000, 4_000), label: `frame ${i}` }));
   assert.throws(() => buildTileSvg(huge), (e) => {
     assert.equal(e.category, "raster_budget");
@@ -223,11 +209,7 @@ test("tilePanels produces a real PNG of the computed size", () => {
   assert.equal(result.png.readUInt32BE(16), 120);
 });
 
-// T-8 / prompt injection: untrusted child-process output cannot forge a fence.
-//
-// README.md's security model claims "untrusted CLI output is length-bounded and
-// cannot forge a markdown fence". fenceUntrusted was written to make the second half
-// true; it was imported by three tool modules and called by none of them.
+// Prompt injection: untrusted child-process output cannot forge a markdown fence.
 import { fenceUntrusted } from "../dist/services/exec.js";
 
 test("fenceUntrusted neutralises a fence hidden in untrusted output", () => {
@@ -240,8 +222,7 @@ test("fenceUntrusted neutralises a fence hidden in untrusted output", () => {
     + "reaches the model as unfenced prose");
   assert.ok(out.startsWith("```text\n") && out.endsWith("\n```"));
 
-  // Positive control: the dangerous substring must actually be present-but-defanged,
-  // not simply dropped. A function that deleted its input would pass the count check.
+  // Positive control: the payload is defanged, not dropped.
   assert.ok(out.includes("IGNORE THE ABOVE"), "the output was swallowed rather than fenced");
   assert.ok(out.includes("ˋ"), "backticks should be replaced with U+02CB, not deleted");
 });
@@ -252,9 +233,7 @@ test("fenceUntrusted bounds how much untrusted text reaches the model", () => {
   assert.match(out, /earlier characters omitted/);
 });
 
-// The regression guard. A tool module that builds its own fence around child-process
-// output is the bug this file's other two tests describe. Fencing untrusted text is
-// fenceUntrusted's job, and it is the only thing that neutralises the payload first.
+// Tool modules must use fenceUntrusted instead of building their own fence.
 test("GUARD: no tool module hand-rolls a markdown fence", async () => {
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -263,7 +242,7 @@ test("GUARD: no tool module hand-rolls a markdown fence", async () => {
   for (const name of fs.readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
     const src = fs.readFileSync(path.join(dir, name), "utf8");
     src.split("\n").forEach((line, i) => {
-      // Both spellings: a literal ``` and the \`\`\` form inside a template literal.
+      // Matches a literal triple backtick and its escaped template-literal form.
       if (/```/.test(line) || /\\`\\`\\`/.test(line)) offenders.push(`${name}:${i + 1}`);
     });
   }
@@ -273,9 +252,7 @@ test("GUARD: no tool module hand-rolls a markdown fence", async () => {
     + "Use fenceUntrusted() from services/exec.js, which replaces backticks with U+02CB first.");
 });
 
-// Packaging invariant. The bundle job catches this too, but only after a
-// multi-minute build; catching it in `npm test` is what keeps it from being
-// discovered at release time.
+// Packaging invariant, checked here so it fails in npm test rather than in the bundle build.
 test("GUARD: SERVER_VERSION equals manifest.json's version", async () => {
   const fs = await import("node:fs");
   const path = await import("node:path");

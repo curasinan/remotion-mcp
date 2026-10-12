@@ -1,10 +1,4 @@
-/**
- * Path resolution confined to the configured workspace root.
- *
- * Every filesystem argument that reaches a tool handler passes through here.
- * This is the single choke point that prevents an argument like
- * "../../../etc/passwd" from escaping the directory the user opted into.
- */
+/** Path resolution confined to the configured workspace root. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -23,11 +17,7 @@ export function getWorkspaceRoot(): string {
   return REAL_WORKSPACE_ROOT;
 }
 
-/**
- * Resolve `candidate` against the workspace root and assert it stays inside.
- * Symlinks are resolved for path components that already exist, so a symlink
- * pointing outside the workspace is rejected rather than silently followed.
- */
+/** Resolves `candidate` in the workspace, following existing symlinks, and rejects escapes. */
 export function resolveInWorkspace(candidate: string): string {
   if (typeof candidate !== "string" || candidate.trim() === "") {
     throw new ToolInputError(
@@ -101,20 +91,7 @@ export function resolveExistingDirectory(candidate: string): string {
   return resolved;
 }
 
-/**
- * Create the parent directory of an output file, then re-assert confinement.
- *
- * resolveInWorkspace canonicalises the longest prefix that exists at the time
- * it is called and re-appends the rest verbatim, so a component created between
- * the check and the write is never resolved. Re-checking the parent once it
- * definitely exists closes that gap for the ordinary case, and costs one
- * realpath.
- *
- * This is not a defence against a determined race - a component swapped in the
- * instant between this call and the write would still be followed - but that
- * needs an attacker already able to create symlinks inside the workspace, which
- * on Windows needs administrator or Developer Mode.
- */
+/** Creates an output file's parent directory, then re-checks it is inside the workspace. */
 export function ensureParentDirectory(filePath: string): void {
   const parent = path.dirname(filePath);
   fs.mkdirSync(parent, { recursive: true });

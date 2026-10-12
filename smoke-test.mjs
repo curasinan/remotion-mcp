@@ -1,7 +1,4 @@
-/**
- * Drives the built server over stdio with real JSON-RPC frames.
- * Run: node smoke-test.mjs
- */
+// Drives the built server over stdio with real JSON-RPC frames. Run: node smoke-test.mjs
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,10 +6,7 @@ import path from "node:path";
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "viz-mcp-"));
 
-// The audit log is redirected into the throwaway workspace. Without this the
-// server falls back to defaultAuditLogPath() and every run of this file appends to
-// the user's real audit trail — the one `npm run gateway` renders as a usage
-// dashboard. See test/audit-isolation.test.mjs.
+// Keep the audit log and state inside the throwaway workspace, away from the user's real ones.
 const child = spawn("node", ["dist/index.js"], {
   stdio: ["pipe", "pipe", "pipe"],
   env: {
@@ -92,35 +86,17 @@ async function main() {
   check("tools/list returns 13 tools", tools.length === 13, `got ${tools.length}: ${names.join(", ")}`);
   check("every tool has a description", tools.every((t) => (t.description ?? "").length > 100));
 
-  // Context budget. Every tool definition is sent on every conversation, so this
-  // payload is a standing cost paid before any work happens.
-  //
-  // History, because the number is a decision and not a fact: 34,547 before the
-  // Args: blocks were removed, 30,257 after, 33,393 once viz_compare landed. The
-  // ceiling was 30,500 - deliberately just above what twelve tools needed, so a
-  // thirteenth had to be argued for rather than absorbed. It was, and the ceiling
-  // was raised to 35,000 by decision.
-  //
-  // Note what that costs: 35,000 is ABOVE the 34,547 this started at, so this
-  // assertion no longer catches a drift back to the pre-compression size. It bounds
-  // growth; it no longer ratchets. Lowering it to ~33,500 would restore the ratchet
-  // at the price of re-deciding on the next tool.
+  // Caps the tools/list payload, which is sent with every conversation.
   const listBytes = JSON.stringify(tools).length;
   check("tools/list stays inside the context budget", listBytes <= 35_000,
     `${listBytes} chars (~${Math.round(listBytes / 3.7)} tokens), ceiling 35000`);
 
-  // Args: restated inputSchema, which the client already sends to the model with
-  // each field's .describe() text attached. Verified in this client: an MCP tool's
-  // per-field descriptions arrive intact, so the prose copy was pure duplication.
+  // inputSchema already carries per-field descriptions, so descriptions must not restate them.
   check("no description restates its own parameter list",
     tools.every((t) => !/^Args:/m.test(t.description ?? "")),
     tools.filter((t) => /^Args:/m.test(t.description ?? "")).map((t) => t.name).join(", "));
 
-  // Compression must not eat the two properties that make a description useful:
-  // what to do when it fails, and when to reach for something else instead.
-  // A substantive Error Handling bullet, or an explicit statement that the tool
-  // cannot fail — remotion_get_workspace_info reads a variable and returns it, and
-  // padding that to 40 characters would be worse writing, not better documentation.
+  // Each description must document its failure modes (or say it cannot fail) and when not to use it.
   const documentsFailure = (t) => {
     const d = t.description ?? "";
     return /Error Handling:\s*\n\s*-\s*.{40,}/.test(d) || /Error Handling:\s*\n\s*-\s*Cannot fail/.test(d);
@@ -180,8 +156,7 @@ async function main() {
   check("refusal explains the fix", /Fix:/.test(r2.result.content[0].text));
 
   // ---- viz_compare ----------------------------------------------------------
-  // 100x100 white, and the same with one 10x10 black square: a known, countable
-  // delta of exactly 100 pixels.
+  // 100x100 white, and the same with a 10x10 black square: a known 100-pixel delta.
   const BASE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="#ffffff"/></svg>`;
   const DELTA = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="#ffffff"/><rect x="10" y="10" width="10" height="10" fill="#000000"/></svg>`;
   for (const [svg, out] of [[BASE, "cmp/base.png"], [DELTA, "cmp/delta.png"], [BASE, "cmp/base2.png"]]) {
@@ -256,9 +231,7 @@ async function main() {
     notPng.result.isError === true && /not a PNG/i.test(notPng.result.content[0].text),
     notPng.result.content[0].text.slice(0, 90));
 
-  // identical=true is the single most dangerous result to phrase badly: read as a
-  // pass, it tells the model its edit worked when the likeliest cause is that the
-  // edit never reached the rendered output.
+  // An identical result must read as "nothing changed", not as confirmation the edit worked.
   const sameMd = await request("tools/call", {
     name: "viz_compare",
     arguments: { before: "cmp/base.png", after: "cmp/base2.png" },

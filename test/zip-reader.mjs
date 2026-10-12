@@ -1,28 +1,10 @@
-/**
- * A pure-Node zip reader, shared by test/bundle.test.mjs and
- * scripts/verify-bundle-runtime.mjs.
- *
- * Pure Node rather than shelling out, for two reasons that both bite in CI:
- *   - unzip/bsdtar are not present, or not the same program, on all three
- *     runner images;
- *   - GNU tar under Git Bash on Windows reads an argument like C:\path as a
- *     remote host spec ("Cannot connect to C: resolve failed"), so the obvious
- *     `tar -xf` line fails on exactly the platform this repo is developed on.
- *
- * Scope is deliberately narrow: stored (method 0) and deflate (method 8), no
- * zip64, no encryption. That is what scripts/build-bundle.mjs produces via the
- * mcpb packer. Anything else throws rather than silently returning nothing.
- */
+// Pure-Node zip reader (stored and deflate only, no zip64) shared by the bundle tests and scripts.
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 
 /**
  * Parse the central directory.
- *
- * Accepts the zip's bytes, or a path to read them from, so a caller that
- * already holds the buffer (bundle.test.mjs reads it once and asserts against
- * both entries and file size) does not read the file twice.
  *
  * @param {Buffer|string} source zip bytes, or a path to the zip
  * @returns {{name: string, method: number, compSize: number, uncompSize: number, localOffset: number}[]}
@@ -72,11 +54,7 @@ export function readEntry(buf, e) {
 }
 
 /**
- * Extract every file in the zip into destDir, creating it if needed.
- *
- * Entry names are rejected if they escape destDir. A .mcpb we built ourselves
- * will never contain one, but this function extracts whatever it is handed and
- * a zip-slip check costs one path comparison.
+ * Extract every file into destDir, rejecting entries that escape it.
  *
  * @param {string} zipPath
  * @param {string} destDir

@@ -1,6 +1,4 @@
-/**
- * Project lifecycle tools: scaffold a project, list what it can render.
- */
+/** Project lifecycle tools: scaffold a project, list what it can render. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -73,11 +71,7 @@ export function requireEntryPoint(projectDir: string, explicit?: string): string
   return detected;
 }
 
-/**
- * Parse the table that `remotion compositions` prints. The column layout is
- * not a stable contract, so ids are extracted leniently and numeric metadata
- * is attached only when the row clearly carries it.
- */
+/** Leniently parses the `remotion compositions` table, whose layout is not a stable contract. */
 export function parseCompositionsOutput(stdout: string): CompositionSummary[] {
   const results: CompositionSummary[] = [];
   for (const rawLine of stdout.split("\n")) {
@@ -147,9 +141,7 @@ Error Handling:
       if (fs.existsSync(target)) {
         const entries = fs.readdirSync(target);
         if (entries.length > 0) {
-          // Real on-disk names, so an attacker can name files to read as
-          // instructions. Neutralise backticks and cap each so the list cannot
-          // forge a fence or run long.
+          // Neutralise backticks and cap length in untrusted file names.
           const shown = entries
             .slice(0, 8)
             .map((name) => name.replace(/`/g, "ˋ").slice(0, 60))
@@ -258,9 +250,7 @@ Error Handling:
   - Returns the bundler's compile error verbatim when the project does not build
   - Returns an error if no entry point can be found, listing the paths that were tried`,
       inputSchema: ListCompositionsShape,
-      // Not read-only: listing compositions bundles the project, which executes
-      // its code and writes a build cache. Not a closed world either - bundling
-      // resolves imports, and with no local install the CLI is fetched by npx.
+      // Bundling runs project code, writes a cache, and may fetch the CLI via npx.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

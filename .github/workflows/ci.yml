@@ -5,23 +5,9 @@ on:
     branches: [main, master]
   pull_request:
 
-# Every action below - first-party included - is pinned to a commit SHA with
-# the readable version in a trailing comment. A tag is mutable by whoever
-# controls the upstream repository; a SHA is immutable by construction. That
-# argument was first written down here for the third-party actions (see the
-# anchore/sbom-action note below and the cosign-installer note in release.yml);
-# it applies unchanged to actions/*, which run in the same jobs. The @v4 line
-# of checkout/setup-node/upload-artifact also targeted the deprecated Node 20
-# action runtime - the same EOL runtime this repo's own test matrix dropped.
-# Bump a pin by editing the SHA and its comment together.
+# Actions are pinned to commit SHAs; bump the SHA and its version comment together.
 
-# Least privilege, stated rather than inherited. The repository default is
-# currently read-only, so this changes nothing today - which is the point of
-# writing it down now. Every job below runs third-party actions, and without this
-# block the permissions they hold are whatever the repository setting happens to
-# be; one toggle in Settings would silently hand them contents: write. Nothing in
-# this workflow writes to the repository. release.yml holds the write scopes, and
-# holds them alone.
+# Read-only token; only release.yml gets write scopes.
 permissions:
   contents: read
 
@@ -41,9 +27,6 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      # puppeteer-core needs no browser download; the tests that need one are
-      # Windows-only and skip elsewhere. resvg's platform binary comes from its
-      # own optional dependency, so a plain install is enough.
       - run: npm ci
 
       - name: Type-check
@@ -52,12 +35,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      # test/html.test.mjs and the blocking-render timeout test gate themselves on
-      # locateBrowser(), so without a browser they SKIP rather than fail - and a
-      # skipped suite is indistinguishable from a passing one in the summary. All
-      # three runner images ship Chrome; this asserts that rather than assuming it,
-      # so an image change surfaces as a red build instead of silently dropping the
-      # only coverage the HTML path has.
+      # Browser tests skip without Chrome, so fail early if the runner has none.
       - name: Assert a browser is available
         run: >
           node -e "import('./dist/services/browser.js').then(async m => {
@@ -68,47 +46,22 @@ jobs:
           console.error('Install one in this job (ubuntu: sudo apt-get install -y google-chrome-stable) or set PUPPETEER_EXECUTABLE_PATH.');
           process.exit(1); } })"
 
-      # `test:coverage` runs a byte-identical file list to `test`, so on the one leg
-      # that collects coverage the two steps were the same suite twice: ~4 minutes
-      # of duplication per run, and two goes at the browser tests on the leg most
-      # likely to flake. Coverage replaces the plain run there rather than following
-      # it - the other eight legs still run `npm test`, so nothing loses coverage of
-      # the suite itself.
+      # The coverage leg runs the suite once via test:coverage instead.
       - name: Test
-        # Quoted because a bare `!` starts a YAML tag; the expression itself is
-        # the exact negation of the coverage step's condition below.
+        # Quoted because a leading `!` is a YAML tag.
         if: "!(matrix.os == 'ubuntu-latest' && matrix.node == 24)"
         run: npm test
         env:
-          # Shared runners are contended and Chrome starts cold, so the default
-          # 45 s page deadline is tight here in a way it is not on a workstation.
-          # Three legs failed on 2026-08-30 for exactly this reason. Raised
-          # explicitly rather than by loosening the shipped default, so CI states
-          # its own conditions instead of pretending the runners are fast.
+          # Shared runners are slow to start Chrome; raise the 45 s page deadline.
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
 
-      # The same suite as the step above, with coverage instrumentation. Mutually
-      # exclusive with it by construction: the two `if:` conditions are exact
-      # negations, so every leg runs the tests exactly once.
       - name: Test (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run test:coverage
         env:
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
 
-      # test/protocol.test.mjs handshakes the server with our own client code, so a
-      # bug shared by both sides of that harness would pass silently. MCP Inspector
-      # is an independent implementation of the protocol; querying tools/list through
-      # it catches a divergence our own client would agree with itself about. Single
-      # leg because the tool list doesn't vary by OS or Node version. The count is
-      # hardcoded at 13 deliberately, so adding a tool forces someone to touch this
-      # line rather than the check silently widening.
-      #
-      # Version-pinned because this gate BLOCKS: `npx -y` with a floating specifier
-      # resolves whatever npm published most recently and runs it, so an upstream
-      # release could fail this job on a commit that changed nothing here - or,
-      # worse, execute newly published code in CI. 2.4.0 is the version this check
-      # was written and measured against. Bump it deliberately.
+      # Check tools/list with an independent client (pinned); update the count when adding a tool.
       - name: MCP conformance (independent client)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: |
@@ -133,27 +86,14 @@ jobs:
         env:
           REMOTION_MCP_WORKSPACE: ${{ github.workspace }}
 
-      # Blocking since the count reached zero (it landed advisory while the
-      # tree carried real findings, per the Task 3 plan). Runs on a single leg
-      # because the findings don't vary by OS or Node version. Proven live in
-      # both directions before the flip: zero findings exits 0, one planted
-      # unused binding exits 1.
       - name: Lint
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run lint
 
-      # Gate: fail the build only on a critical advisory. The three high and one
-      # moderate advisories currently reported are all in code paths this server
-      # never executes (extract-zip via @puppeteer/browsers on the
-      # browser-download path; fast-xml-parser's XMLBuilder, while only
-      # XMLValidator is called). Documented as unreachable in docs/BUNDLE.md
-      # rather than force-upgraded through a breaking change.
+      # Fail only on critical advisories; known unreachable ones are listed in docs/BUNDLE.md.
       - name: Audit (gate on critical)
         run: npm audit --omit=dev --audit-level=critical
 
-      # Informational: the full report, so a newly introduced high is visible in
-      # the log for a human to look at, without breaking the build on the known
-      # unreachable ones.
       - name: Audit (full report, informational)
         run: npm audit --omit=dev || true
 
@@ -173,32 +113,17 @@ jobs:
           name: sbom
           path: sbom.cyclonedx.json
 
-      # Advisory only, matching the npm audit gate in build-and-test: flags
-      # CRITICAL/HIGH filesystem findings (deps, configs, IaC) without failing
-      # the build. Raising this to blocking is a separate decision with a
-      # separate argument.
+      # Advisory scan; reports CRITICAL/HIGH findings without failing the build.
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH
-          exit-code: '0'          # advisory, matching the npm audit gate's posture
+          exit-code: '0'          # advisory
           format: table
 
-      # SPDX joins the CycloneDX SBOM above because downstream consumers differ
-      # on which format they accept. anchore/sbom-action uploads the workflow
-      # artifact itself (named from artifact-name) rather than just writing a
-      # file, so no separate upload-artifact step follows it here - and that
-      # name must differ from "sbom" above or actions/upload-artifact rejects
-      # the duplicate.
-      #
-      # SHA-pinned. `@v0` is a mutable floating major: the tag is moved onto each
-      # new release, so `@v0` runs whatever code anchore published last, and a
-      # compromised or simply broken release lands in this workflow with no
-      # change here. A commit SHA is the only immutable reference GitHub Actions
-      # accepts. The trailing comment carries the human-readable version so the
-      # pin can be read and bumped without an API call.
+      # SPDX SBOM; the action uploads its own artifact, so the name must differ from "sbom".
       - name: SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -206,10 +131,7 @@ jobs:
           format: spdx-json
           artifact-name: sbom.spdx.json
 
-  # Builds the distributable .mcpb and asserts what it contains. Ubuntu only: the
-  # bundle carries every platform's native binary by construction, so building it
-  # three times proves nothing. Runs after the matrix so a broken commit fails on
-  # the cheap job first.
+  # Build the .mcpb once (it carries every platform's binary) and check its contents.
   bundle:
     needs: build-and-test
     runs-on: ubuntu-latest
@@ -223,85 +145,34 @@ jobs:
       - run: npm run build
       - run: npm run bundle
 
-      # The six @resvg/resvg-js native binaries dominate this bundle's weight, and
-      # nothing else notices if it grows. Compares against the measured baseline in
-      # scripts/bundle-size-baseline.json so an unexpected jump fails here instead
-      # of shipping.
+      # Compare against scripts/bundle-size-baseline.json.
       - name: Bundle size gate
         run: node scripts/check-bundle-size.mjs
 
       - name: Verify the bundle
         run: npm run test:bundle
         env:
-          # Turns a missing artifact from a skip into a failure. Without it a broken
-          # build step leaves every assertion skipped and the job green - the same
-          # shape as the Windows-only process-leak tests.
+          # Fail instead of skipping when the bundle is missing.
           REQUIRE_BUNDLE: '1'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        # Gated to main so pull requests do not each retain a ~20 MB artifact.
+        # Keep the long-lived copy for main only.
         if: github.ref == 'refs/heads/main'
         with:
           name: mcpb-bundle
           path: '*.mcpb'
           retention-days: 30
 
-      # The same bytes again, ungated and short-lived. The upload above is the
-      # keepsake copy and is deliberately main-only, but verify-bundle has to run
-      # on pull requests too - that is where a packaging regression should be
-      # caught - and it cannot download an artifact that was never uploaded.
-      # One day of retention because nothing reads this after the run that
-      # produced it.
+      # Short-lived copy for verify-bundle, uploaded on every run including PRs.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mcpb-runtime
           path: '*.mcpb'
           retention-days: 1
 
-  # Runs the artifact a user actually installs, on every platform it claims.
-  # test/bundle.test.mjs asserts the six @resvg/resvg-js binaries are present in
-  # the zip, and presence is not loadability: a truncated or wrong-arch .node
-  # satisfies that assertion and then fails on the user's machine with "Failed to
-  # load native binding", thrown from the addon loader before any of this
-  # server's own diagnostics can run.
-  #
-  # That test does start the bundled server, so it would catch a broken binary -
-  # for the one platform it runs on. Measured, not assumed: corrupt the .node for
-  # the build platform and it fails 1 of 10; corrupt darwin-arm64 - a non-host
-  # platform - and it passes 10 of 10 while the artifact is unusable for everyone
-  # on that platform. One non-host binary was measured, not all five; the other
-  # four are the same code path and are expected to behave identically, but say
-  # what was measured. docs/BUNDLE.md states it the same way.
-  # Closing that is what this job is for.
-  #
-  # Coverage, stated rather than left implicit. The bundle ships six native
-  # binaries; this matrix loads all six, one per leg, and no leg covers more than
-  # its own. Before this job exactly one of them was ever loaded - linux-x64-gnu,
-  # and only incidentally, because the bundle job's test:bundle step starts the
-  # bundled server on ubuntu. That step does catch a broken linux-x64 binary, so
-  # it is not the gap; the gap is the other five, where corrupting the binary
-  # leaves all ten of its assertions green and the artifact broken for everyone
-  # on that platform. If a leg is ever removed, the binary it covered goes back
-  # to that state - say so here rather than letting the job keep reading as if it
-  # proved six.
-  #
-  # Three things this job does NOT cover, so it is not read as proving them:
-  #   - the musl targets, which are neither covered nor shipped — and since the
-  #     v1.2.1 accident, actively pruned when the build host's npm installs one
-  #     (docs/BUNDLE.md, "Platform support");
-  #   - fidelity. The verifier checks that a PNG came back with a PNG signature,
-  #     which is linkage, not correctness: a binary that loads and rasterizes
-  #     wrongly passes every leg;
-  #   - runtimes other than Node 24. A .mcpb runs under whatever Node the host
-  #     application supplies, and nothing here verifies the artifact against it.
-  #
-  # No `npm ci`: the bundle carries its own node_modules, and the verifier uses
-  # only Node's standard library plus test/zip-reader.mjs. The checkout is for
-  # the script, not for dependencies.
+  # Load the shipped bundle on each platform it supports; one native binary per leg.
   verify-bundle:
     needs: bundle
     strategy:
-      # One platform's linkage failure must not cancel the other five - which one
-      # of the six is broken is the entire finding.
       fail-fast: false
       matrix:
         include:
@@ -315,9 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # 24 rather than the matrix floor of 22: this job asks whether the shipped
-      # artifact runs, and 24 is Active LTS - the version a user most likely has.
-      # The floor is covered by build-and-test against the source tree.
+      # Active LTS; the minimum version is covered by build-and-test.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -327,22 +196,11 @@ jobs:
           name: mcpb-runtime
           path: artifact
 
-      # A plain `node` line with no shell globbing, because bash is not the
-      # default shell on the two Windows legs and this step has to behave
-      # identically on all six. The script takes the download directory and
-      # fails if it does not hold exactly one .mcpb.
+      # Plain node call so it behaves the same on Windows shells.
       - name: Run the shipped artifact
         run: node scripts/verify-bundle-runtime.mjs ./artifact ./extracted
 
-  # Workflows are code that nothing else checks: an empty ${{ }} inside a run:
-  # block made release.yml uncompilable, survived a full task review, and
-  # produced a zero-job failure run - and release.yml only ever compiles on a
-  # push to main, so the error surfaced at release time. actionlint parses
-  # every workflow here on every pull request, including release.yml.
-  #
-  # The official rhysd/actionlint image, pinned by digest - the same
-  # immutability argument as the SHA-pinned actions, and no third-party
-  # wrapper action between this job and the tool.
+  # Lint every workflow with actionlint (image pinned by digest).
   lint-workflows:
     runs-on: ubuntu-latest
     steps:
@@ -352,18 +210,7 @@ jobs:
         with:
           args: -color
 
-  # The one context branch protection requires. Requiring the eighteen
-  # matrix-shaped check names would tie the ruleset to the matrix's exact
-  # spelling and silently drop coverage whenever a leg is renamed; this job
-  # needs every other job and fails unless all of them succeeded, so the
-  # ruleset requires exactly one stable name.
-  #
-  # if: always() because without it a failed dependency leaves this job
-  # "skipped", and a skipped check neither passes nor fails - it just never
-  # reports. The needs context reaches the check through an env var rather
-  # than an interpolation inside the script, for the same reason release.yml
-  # reads the identity from GITHUB_REPOSITORY: nothing outside this file
-  # should be spliced into an executable block.
+  # Single required status check; always runs and fails if any needed job did not succeed.
   ci-ok:
     needs: [build-and-test, sbom, bundle, verify-bundle, lint-workflows]
     if: always()

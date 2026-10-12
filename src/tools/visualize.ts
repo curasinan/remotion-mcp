@@ -1,11 +1,4 @@
-/**
- * Visualization tools.
- *
- * viz_validate_svg is the cheap pre-flight check: it names exactly which rule
- * an SVG breaks before anything tries to render it. viz_render_svg and
- * viz_render_html close the loop by producing a PNG that can actually be
- * looked at, instead of guessing whether the markup worked.
- */
+/** SVG validation and SVG/HTML rasterization tools. */
 
 import fs from "node:fs";
 import { z } from "zod";
@@ -240,9 +233,7 @@ Error Handling:
   - Parse failures return the resvg message plus a pointer to viz_validate_svg
   - Images over 1.5 MB are written but not attached; lower width to inspect inline`,
       inputSchema: RenderSvgShape,
-      // openWorldHint:false is only true because rasterizeSvg refuses every
-      // reference that is not a data: URI. Before that, this tool read arbitrary
-      // local files while advertising a closed world.
+      // Closed world because rasterizeSvg refuses every non-data: URI reference.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

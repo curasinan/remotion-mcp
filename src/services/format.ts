@@ -1,7 +1,4 @@
-/**
- * Shared response construction. Every tool returns through these helpers so
- * text content, structured content and error shape stay consistent.
- */
+/** Shared response construction for all tools. */
 
 import { CHARACTER_LIMIT } from "../constants.js";
 import { log, summariseArguments } from "./log.js";
@@ -54,19 +51,7 @@ export function buildResponse(
   };
 }
 
-/**
- * An error response, bounded like every other response.
- *
- * This was the one builder that skipped the character cap, and it is the path most
- * likely to carry unbounded text the server did not write: safeHandler's generic
- * catch interpolates `error.message` verbatim, and a native addon or a bundler can
- * produce a very long one.
- *
- * The message is truncated, never the hint. The hint is server-authored and is the
- * only actionable part; trimming the combined string from the end would keep 25,000
- * characters of somebody else's stack trace and drop the one sentence saying what to
- * do about it.
- */
+/** A size-bounded error response; the message is truncated, never the hint. */
 export function buildErrorResponse(message: string, hint?: string): ToolResponse {
   const suffix = hint ? `\n\nNext step: ${hint}` : "";
   const head = enforceCharacterLimit(
@@ -74,8 +59,7 @@ export function buildErrorResponse(message: string, hint?: string): ToolResponse
     "The omitted text is upstream output, not part of the fix below.",
     Math.max(200, CHARACTER_LIMIT - suffix.length),
   );
-  // Backstop for a pathologically long hint, which would otherwise blow the cap on
-  // its own. A no-op in every ordinary case.
+  // Backstop for a pathologically long hint.
   const text = enforceCharacterLimit(`${head}${suffix}`, "Narrow the request and call again.");
   return {
     isError: true,
@@ -83,10 +67,7 @@ export function buildErrorResponse(message: string, hint?: string): ToolResponse
   };
 }
 
-/**
- * Wrap a tool handler so no exception escapes as a protocol-level error.
- * Per the MCP spec, tool failures belong inside the result object.
- */
+/** Wraps a tool handler so failures return as error results, not protocol errors. */
 export function safeHandler<TInput>(
   toolName: string,
   handler: (input: TInput) => Promise<ToolResponse>,
@@ -105,8 +86,7 @@ export function safeHandler<TInput>(
     } catch (error) {
       const duration_ms = Date.now() - startedAt;
       if (error instanceof ToolInputError) {
-        // A rejected input is an expected outcome, logged as a refusal rather
-        // than a crash. The message can carry a path, so it is not logged.
+        // Expected refusal; the message may contain a path, so it is not logged.
         log.warn("tool_rejected", { tool: toolName, duration_ms });
         recordAuditEvent({
           event: "tool_rejected",

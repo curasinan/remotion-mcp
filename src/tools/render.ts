@@ -1,11 +1,4 @@
-/**
- * Rendering tools.
- *
- * The still renderer exists so a broken animation can be diagnosed in seconds
- * from a single frame instead of minutes from a full encode. Reach for
- * remotion_render_still first and remotion_render_video only once a frame
- * looks right.
- */
+/** Remotion still and video rendering tools. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -35,7 +28,7 @@ import { tilePanels } from "../services/tile.js";
 import { ToolInputError } from "../types.js";
 import { requireEntryPoint } from "./project.js";
 
-/** Largest file we will inline as a base64 image content block. */
+/** Largest file inlined as a base64 image content block. */
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
 
 const CODECS = [
@@ -57,9 +50,7 @@ const RenderStillShape = {
   output_path: outputPathField(
     "Output PNG path relative to the workspace root, e.g. 'tactics-video/out/frame.png'",
   ),
-  // Optional rather than .default(0) so that "frame was given" is distinguishable
-  // from "frame was omitted", which is what makes the conflict with `frames`
-  // detectable. Omitting it still renders frame 0.
+  // Optional, not .default(0), so a conflict with `frames` can be detected.
   frame: z
     .number()
     .int()
@@ -181,15 +172,12 @@ function renderFailure(
   result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean },
   outputPath?: string,
 ): ToolResponse {
-  // A render killed mid-encode leaves a truncated file. Reporting failure while
-  // leaving it on disk invites the next step to be taken against a broken
-  // artefact that looks like a finished one.
+  // Remove the truncated file a timed-out render leaves behind.
   if (result.timedOut && outputPath) {
     try {
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     } catch {
-      // Something that outlived the kill still holds it open; the error below
-      // already says the render did not finish.
+      // Still held open; the error below already reports the failure.
     }
   }
 
@@ -200,21 +188,7 @@ function renderFailure(
   );
 }
 
-/**
- * Render several frames and tile them into one labelled image.
- *
- * One CLI invocation, not one per frame. `remotion still` renders a single frame
- * and re-bundles the project each time, so six frames that way is six bundles;
- * `remotion render` takes a sparse comma-separated frame list and produces an
- * image sequence from one bundle. Measured on a real 1080x1920 project: six
- * sequential stills 23.3 s, sixteen frames in one pass 2.24 s - about 21 ms per
- * additional frame. The bundle is the cost; the frames are nearly free.
- *
- * Frame validation is left to Remotion. Duplicates, and frames past the
- * composition's duration, are rejected by its own validateSelectedFrames with its
- * own message; re-implementing those rules here would drift from the CLI as
- * versions change.
- */
+/** Renders several frames in one CLI pass (one bundle) and tiles them into a labelled image. */
 async function renderStrip(
   input: RenderStillInput,
   ctx: RenderContext,
@@ -222,8 +196,7 @@ async function renderStrip(
   props: string | null,
 ): Promise<ToolResponse> {
   const requested = input.frames ?? [];
-  // A sibling of the output, so it inherits the workspace confinement already
-  // asserted for it, and is removed either way.
+  // Temporary sibling of the output, so it stays inside the workspace.
   const seqDir = `${ctx.output}.frames`;
   const seqArg = path.relative(ctx.dir, seqDir);
   assertSafePositional(seqArg, "frame sequence directory");
@@ -248,9 +221,7 @@ async function renderStrip(
       return renderFailure("remotion render", cli.source, result, undefined);
     }
 
-    // Map files back to frames by the number in the name rather than by position:
-    // Remotion sorts the frame list ascending and pads the index, and depending on
-    // both would make this brittle across versions.
+    // Map files to frames by the number in the name, not by position.
     const produced = (fs.existsSync(seqDir) ? fs.readdirSync(seqDir) : [])
       .filter((name) => name.toLowerCase().endsWith(".png"))
       .map((name) => ({ name, frame: Number((/(\d+)/.exec(name) ?? [])[1] ?? NaN) }))
@@ -353,8 +324,7 @@ Error Handling:
   - Browser or Chrome errors mean the headless shell is missing; call remotion_ensure_browser
   - Returns an error if props_json is not a valid JSON object`,
       inputSchema: RenderStillShape,
-      // openWorld: rendering bundles and executes the project's own code, which
-      // decides for itself what it loads.
+      // openWorld: rendering runs the project's own code, which may load anything.
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
