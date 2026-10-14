@@ -1,6 +1,6 @@
 # remotion-viz-mcp-server
 
-An MCP server that gives Claude two things it does not have on its own: the ability to actually **run** Remotion, and the ability to **look at** what an SVG or HTML visualization renders to.
+An MCP server that gives any MCP-capable AI client two things it does not have on its own: the ability to actually **run** Remotion, and the ability to **look at** what an SVG or HTML visualization renders to. It runs locally over stdio, so it works with any client that can launch a local MCP server.
 
 ## Why this exists
 
@@ -96,6 +96,16 @@ certificate and the same Rekor entry.
 
 ## Connect it
 
+### Any MCP client
+
+The server speaks MCP over stdio. Any client that can launch a local MCP server can use it with three values:
+
+- **command:** `node`
+- **args:** the absolute path to `dist/index.js`
+- **env:** `REMOTION_MCP_WORKSPACE`, set to the directory your projects live in
+
+The client-specific examples below use exactly these values.
+
 ### Claude Desktop
 
 Edit `claude_desktop_config.json`
@@ -139,7 +149,7 @@ a specific message rather than failing later.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `REMOTION_MCP_WORKSPACE` | process cwd | Directory every file path resolves against and cannot escape. Set it explicitly; the cwd under Claude Desktop is not where you want it. |
+| `REMOTION_MCP_WORKSPACE` | process cwd | Directory every file path resolves against and cannot escape. Set it explicitly; the directory a client starts the server in is rarely where you want it. |
 | `REMOTION_MCP_STATE_DIR` | per-user state dir | Where server-owned state lives: the audit log and the Remotion Studio registry. Set it to isolate a test run from your real state. |
 | `REMOTION_MCP_ALLOWED_HOSTS` | empty (deny all) | Comma-separated hostnames `viz_render_html` may load from. Loopback, private and link-local stay blocked regardless. |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | auto-detect | Chrome binary for `viz_render_html`, if auto-detection fails. |
@@ -165,7 +175,7 @@ if a path is ever rejected.
 | --- | --- |
 | `remotion_init_project` | Scaffolds a minimal, correct Remotion 4 project. Refuses to overwrite a non-empty directory. |
 | `remotion_list_compositions` | Lists compositions with dimensions/fps/duration. Bundles the project, so it doubles as the cheapest compile check. |
-| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so Claude can see the result. Pass `frames` for several tiled into one labelled strip — a single frame cannot show timing, and the extra frames render in the same pass. |
+| `remotion_render_still` | Renders one frame to PNG **and attaches it to the response**, so the model can see the result. Pass `frames` for several tiled into one labelled strip — a single frame cannot show timing, and the extra frames render in the same pass. |
 | `remotion_render_video` | Renders to h264/h265/vp8/vp9/prores/gif/mp3/aac/wav, with frame ranges, scale and concurrency. |
 | `remotion_start_studio` / `remotion_stop_studio` | Runs the Studio dev server detached. Stop only accepts PIDs this server started. |
 
@@ -267,7 +277,7 @@ The architecture decisions behind this are recorded in `docs/adr/`, and the
 
 ## Auditing what the server does
 
-Every tool call to the server is logged locally — what ran, what it did, how long it took, and any security events that occurred. The audit log stays on your machine and is never sent anywhere. View it by asking Claude to "show me the gateway", or build a self-contained dashboard with `npm run gateway` and open it in your browser. See [`docs/GATEWAY.md`](docs/GATEWAY.md) for details on what is logged and the design behind the audit trail.
+Every tool call to the server is logged locally — what ran, what it did, how long it took, and any security events that occurred. The audit log stays on your machine and is never sent anywhere. View it by asking your AI client to "show me the gateway", or build a self-contained dashboard with `npm run gateway` and open it in your browser. See [`docs/GATEWAY.md`](docs/GATEWAY.md) for details on what is logged and the design behind the audit trail.
 
 ```bash
 npm run gateway
@@ -277,7 +287,7 @@ npm run gateway
 
 | Symptom | Do this |
 | --- | --- |
-| Server does not appear in Claude | Use an absolute path to `dist/index.js`. Run `node dist/index.js --help` manually first. |
+| Server does not appear in your client | Use an absolute path to `dist/index.js`. Run `node dist/index.js --help` manually first. |
 | "resolves outside the workspace root" | `remotion_get_workspace_info`, then set `REMOTION_MCP_WORKSPACE` to a directory containing your project. |
 | "could not determine executable to run" | No local Remotion install; the server fell back to npx. Run `npm install` in the project. |
 | Render hangs on first run | `remotion_ensure_browser`. It is downloading Chrome. |

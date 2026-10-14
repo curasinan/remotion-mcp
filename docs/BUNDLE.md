@@ -29,10 +29,10 @@ x64/arm64, and **linux x64/arm64 glibc**.
 **Linux means glibc.** There are no musl binaries, so the bundle will not load on
 Alpine or another musl distribution — `@resvg/resvg-js` fails with "Failed to load
 native binding", and none of this server's own diagnostics fire, because the failure
-happens before its code runs. This is deliberate: a `.mcpb` runs inside Claude
-Desktop, which is not distributed for musl, so the two extra binaries would add
-~4 MB compressed (~8 MB unpacked) for a platform that cannot run the host
-application.
+happens before its code runs. This is deliberate: a `.mcpb` runs inside a desktop
+MCP host such as Claude Desktop, which is not distributed for musl, so the two
+extra binaries would add ~4 MB compressed (~8 MB unpacked) for a platform that
+cannot run the host application.
 
 **The bundle's contents are pruned to that decision, because npm's alone are
 host-dependent.** `npm ci` resolves resvg's platform packages from
