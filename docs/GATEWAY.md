@@ -37,7 +37,7 @@ To override the path, set the `REMOTION_MCP_AUDIT_LOG` environment variable.
 
 **Log rotation:** The log is bounded to approximately 5 MB across two rotating segments. When the active segment fills, the oldest segment is discarded and a new one begins.
 
-**Privacy:** The audit log stays on your machine. Nothing is sent to Anthropic, the MCP registry, or any other service.
+**Privacy:** The audit log stays on your machine. Nothing is sent to your AI provider, the MCP registry, or any other service.
 
 **If your log predates this fix, it may be mostly test data.** `smoke-test.mjs` and
 `test/protocol.test.mjs` used to spawn the server without redirecting the audit log,
@@ -53,11 +53,11 @@ Delete the log to start clean; it is regenerated on the next tool call.
 
 You have two ways to view the audit log:
 
-### Via Claude (recommended)
+### Via your AI client
 
-In Claude, simply ask: **"show me the gateway"**
+Ask your client: **"show me the gateway"**
 
-Claude will read your local audit log and publish an interactive dashboard as an artifact. The dashboard shows a timeline of all tool calls, their outcomes, duration, and any security events.
+A client that can read local files and render HTML will read your local audit log and build an interactive dashboard from it. The dashboard shows a timeline of all tool calls, their outcomes, duration, and any security events.
 
 ### Via command line
 

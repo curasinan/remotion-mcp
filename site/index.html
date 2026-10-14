@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>remotion-viz — local video &amp; visualization tools for Claude</title>
-<meta name="description" content="A local MCP server that gives Claude Desktop programmatic video rendering (Remotion) and SVG/HTML rasterization — stdio-only, sandboxed, audited, signed.">
+<title>remotion-viz — local video &amp; visualization tools for MCP clients</title>
+<meta name="description" content="A local MCP server that gives any MCP client programmatic video rendering (Remotion) and SVG/HTML rasterization — stdio-only, sandboxed, audited, signed.">
 <style>
   :root {
     --bg: #f7f6f3; --fg: #1c1b19; --muted: #6b675f; --card: #ffffff;
@@ -71,9 +71,9 @@
 <main>
   <header class="hero">
     <p class="kicker">MCP server · runs on your machine</p>
-    <h1>Give Claude a video studio<br>and a rendering desk.</h1>
+    <h1>Give your AI a video studio<br>and a rendering desk.</h1>
     <p class="lede">
-      <strong>remotion-viz</strong> is a local MCP server for Claude Desktop:
+      <strong>remotion-viz</strong> is a local MCP server for any MCP client:
       programmatic video with <a href="https://www.remotion.dev">Remotion</a>,
       plus SVG and HTML rasterization — using your own Chrome, fonts and files.
       Nothing leaves your machine; there is no server to sign into, because
@@ -87,10 +87,10 @@
   </header>
 
   <section>
-    <h2>What Claude can do with it</h2>
+    <h2>What your AI can do with it</h2>
     <p class="sub">Thirteen tools. Ask in plain language — “turn this data into an
     animated chart video”, “rasterize this SVG”, “screenshot this HTML dashboard” —
-    and Claude drives these on your machine.</p>
+    and your AI client drives these on your machine.</p>
 
     <p class="group">Programmatic video (Remotion)</p>
     <div class="tools">
@@ -184,9 +184,9 @@
     <h2>Install</h2>
     <p class="sub">Requires Node 22+ on the host. Download
     <a href="https://github.com/curasinan/remotion-mcp/releases/latest">the latest
-    <code>.mcpb</code></a> and open it with Claude Desktop — the manifest declares the
-    tools and the permission surface, and Claude Desktop does the rest. Running from
-    source (Claude Code, or any MCP stdio client) is covered in the
+    <code>.mcpb</code></a> and open it with an MCPB-compatible host such as Claude Desktop — the
+    manifest declares the tools and the permission surface, and the host does the rest.
+    Running from source with any MCP stdio client is covered in the
     <a href="https://github.com/curasinan/remotion-mcp#readme">README</a>.</p>
   </section>
 
