@@ -1,0 +1,60 @@
+remotion-viz-mcp-server
+Copyright 2026 Sinan
+
+This product includes software developed by Sinan.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+---
+
+Licensing history
+
+Releases up to and including v1.2.1 were offered under the MIT License, which
+both README.md and the `license` field of the `manifest.json` inside each
+`.mcpb` stated at the time. Those grants stand: anyone who obtained v1.2.1 or
+earlier holds an MIT licence to that version, and this relicensing does not and
+cannot revoke it. Apache-2.0 applies from the first release published after this
+notice was added.
+
+The `.mcpb` attached to the v1.2.1 release therefore still carries
+`"license": "MIT"` in its bundled manifest. That is correct for that artifact
+and is left as it is.
+
+---
+
+Third-party components
+
+This software depends on, but does not redistribute the source of, the packages
+listed in `package-lock.json`. The distributable `.mcpb` bundle vendors their
+installed form; `scripts/build-bundle.mjs` records what is included and
+`npm sbom` output is published with each release as both CycloneDX and SPDX.
+
+Direct runtime dependencies, read from each package's own `package.json` in
+`node_modules` on 2026-10-16:
+
+  @modelcontextprotocol/sdk  1.30.0    MIT
+  @resvg/resvg-js            2.6.2     MPL-2.0
+  fast-xml-parser            4.5.7     MIT
+  pixelmatch                 7.2.0     ISC
+  pngjs                      7.0.0     MIT
+  puppeteer-core             24.43.1   Apache-2.0
+  zod                        3.25.76   MIT
+
+`@resvg/resvg-js` is MPL-2.0, a file-level weak copyleft. Vendoring its
+prebuilt binaries into the `.mcpb` alongside Apache-2.0 code is permitted —
+MPL-2.0 covers its own files, not the aggregate — but anyone redistributing
+the bundle inherits the obligation to make that component's source available.
+It is the only non-permissive licence in the direct set.
+
+This list is a convenience, not the authoritative record. The published SBOM
+(CycloneDX and SPDX, attached to each release) covers the full transitive tree
+at the version actually shipped.
