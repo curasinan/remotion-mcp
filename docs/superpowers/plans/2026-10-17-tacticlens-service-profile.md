@@ -10,7 +10,70 @@
 
 **Spec:** `../../../../docs/DESIGN-tacticlens-service.md` (outside this repo, at `helpers/docs/`). Read it with this plan; it carries the architecture diagram, the threat model and the attack record. Owner rulings of 2026-10-17 amend it — see Global Constraints.
 
-**Two repos, one plan.** Each task is marked **[MCP]** (`remotion-mcp`, public) or **[ISE]** (`ISE304-project`, public). They are not independent: T13's templates are a hard precondition for T14 and T16.
+---
+
+## Scope and execution order
+
+**Amended 2026-10-17 by owner ruling, after the task bodies below were written.** Task numbers are stable identifiers, not a schedule — they are deliberately *not* renumbered, because 40+ cross-references in Interfaces blocks and the Review Focus section read them, and a renumber with one stale reader sends an implementer to the wrong task. Read the order from here; read the tasks by their numbers.
+
+### Scope: this repository only
+
+**`ISE304-project` is an independent group project and is NOT in this plan's scope.** This plan develops the MCP server. Consequently:
+
+- **Task 2 [ISE] and Task 13 [ISE] are OUT OF SCOPE.** Do not create, configure or commit anything in `ISE304-project`. Do not wait on it either.
+- **Task 13's templates were a precondition for Tasks 14, 15 and 18.** They are replaced by **Task 20** below: a small, domain-agnostic fixture pack inside this repo. The football templates remain the group's work, baked in at deploy time; fixed constraint 3 (the engine stays domain-agnostic) is strengthened by this, not weakened — the engine is now developed and benchmarked against a pack that contains no football at all.
+- **ADR-0005 cannot cite a charter that does not exist.** `ISE304-project` is 0 KB as of 2026-10-17. Write ADR-0005 citing the owner's fixed-constraint document, and mark its Status **Proposed**, not Accepted, with an explicit gate: *"Accepted when `ISE304-project/docs/CHARTER.md` exists and confirms that tenants do not supply their own Remotion projects."* That claim is the load-bearing one for the template-pack trust boundary, and it is currently an owner assertion rather than a committed requirement. The other three ADRs are Accepted on landing.
+- **Task 19's `docs/CONTRACT-backend.md` is now the primary handoff artifact to the group**, not a side deliverable. It is the only thing that makes the two timelines joinable.
+
+### Order
+
+| # | Task | Why here |
+| --- | --- | --- |
+| 1 | **Task 1** — tsconfig exclusion | ~15 minutes, and ADR-0004 cites its outcome. Must precede the ADRs so ADR-0004 states a verified fact rather than an intention. |
+| 2 | **Task 4** — ADRs 0004, 0005, 0006, 0007 | **Owner ruling: ADRs first.** Project Plan is due 2026-10-28 and is this document plus the ADR set. 0005 lands Proposed per the gate above. |
+| 3 | Task 3 — lift `requireEntryPoint` | |
+| 4 | Task 5 — render core | |
+| 5 | **Task 20** — fixture template pack | Replaces Task 13. Must precede Tasks 7, 14, 15 and 18, all of which read `pack-manifest.json`. |
+| 6 | Task 6 → 7 → 8 → 9 → 10 → 11 → 12 | Service root, frozen four, gateway, child, jobs, frame budget. |
+| 7 | Task 14 → 15 → 16 → 17 → 18 → 19 | End-to-end, image, deploy, sweeper, benchmark, reconciliation and the contract. |
+
+Task 1 and Task 4 together, plus the owner's own charter commit, are the whole 2026-10-28 deliverable.
+
+---
+
+## Task 20 [MCP]: A domain-agnostic fixture template pack
+
+Replaces the out-of-scope Task 13. Without it, every task that reads `pack-manifest.json` blocks on another team's repo.
+
+**Files:**
+- Create: `fixtures/pack/src/Swatch.tsx`, `fixtures/pack/src/Ticker.tsx`, `fixtures/pack/src/schemas.ts`, `fixtures/pack/props/*.json`, `scripts/build-fixture-pack.mjs`, `scripts/check-schema-vocabulary.mjs`
+- Modify: `package.json` (`build:pack`)
+
+**Interfaces:**
+- Produces: `pack-manifest.json` — `{ packHash: string, templates: [{ id, compositionId, schemaName, defaultFps, maxFrames }] }`. Tasks 7, 12, 14, 15 and 18 consume it. **This is the same shape the group's football pack must emit**, so Task 19's contract document specifies it.
+
+Two compositions only, and deliberately not football: `Swatch` (a still — coloured panel with a text label) and `Ticker` (a short animation at 25 fps). Between them they exercise the still path, the video path, the zod validation path and the font path, which is everything the engine needs to be developed against.
+
+- [ ] **Step 1: Write the schema-vocabulary CI gate first**
+
+Walks each exported zod schema and fails on any construct outside the allowlist: `z.object`, `z.string`, `z.number`, `z.boolean`, `z.array`, `z.enum`, `z.optional`, `z.literal`. `z.transform`, `z.refine` and `z.any` are refused — a transform makes the schema unimplementable by a non-TypeScript caller, and the schema is the backend contract.
+
+- [ ] **Step 2: Run the gate against an intentionally bad schema and confirm it fails.** Paste the output, then delete the bad schema. A gate nobody has watched reject something is indistinguishable from one that matches nothing.
+
+- [ ] **Step 3: Write `schemas.ts`** — one schema per composition.
+
+- [ ] **Step 4: Commit props fixtures, including one with Turkish glyphs** — a `label` of `Beşiktaş · İstanbul · Şenol Güneş`. Task 15's golden-image test renders this.
+
+- [ ] **Step 5: Implement both compositions.**
+
+- [ ] **Step 6: Implement `scripts/build-fixture-pack.mjs`**, emitting `pack-manifest.json` with `packHash` computed over the built bundle bytes.
+
+- [ ] **Step 7: Verify**
+
+Run: `npm run build:pack && node --test test/pack.test.mjs`
+Expected: the gate passes, both compositions render from their fixtures, `pack-manifest.json` validates against the shape above, and `packHash` changes when a source file changes (prove it: edit, rebuild, compare).
+
+- [ ] **Step 8: Commit**
 
 ---
 
