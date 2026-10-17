@@ -300,6 +300,7 @@ npm run gateway
 - Tool reference: [`docs/TOOLS.md`](docs/TOOLS.md)
 - Architecture decisions: [`docs/adr/`](docs/adr/)
 - Bundle permissions and dependency auditing: [`docs/BUNDLE.md`](docs/BUNDLE.md)
+- CI and release pipeline, and what each gate is known to catch: [`docs/CI.md`](docs/CI.md)
 
 ## References
 
@@ -313,4 +314,16 @@ npm run gateway
 
 ## License
 
-MIT
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution and the licences of
+the dependencies vendored into the `.mcpb`.
+
+**Releases up to and including v1.2.1 were MIT.** Both this file and the
+`manifest.json` inside each bundle said so at the time, and those grants stand —
+if you took v1.2.1 or earlier under MIT, you keep it. Apache-2.0 applies from the
+first release after this change. The `.mcpb` attached to v1.2.1 still carries
+`"license": "MIT"`, which is correct for that artifact and left alone.
+
+Apache-2.0 rather than MIT for the explicit patent grant, which matters more here
+than for a typical small tool: the server vendors prebuilt native binaries and
+drives a browser engine, so the surface a patent claim could attach to is not
+only the code written in this repository.
