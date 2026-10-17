@@ -1,4 +1,4 @@
-// The stdio build must never contain service-profile or gateway code; see ADR-1.
+// The stdio build must never contain service-profile or gateway code; see ADR-4.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
