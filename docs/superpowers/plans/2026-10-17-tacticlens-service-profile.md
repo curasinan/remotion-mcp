@@ -201,7 +201,9 @@ git commit -m "build: exclude the service and gateway trees from the stdio build
 
 ---
 
-## Task 2 [ISE]: Charter first, then the repo
+## Task 2 [ISE]: Charter first, then the repo — **OUT OF SCOPE, DO NOT START**
+
+> Left in place for the group to pick up. Not this plan's work; see "Scope and execution order".
 
 ADR-0005 cites the charter, so the charter must exist before ADR-0005 can be marked Accepted. The repo is currently 0 KB.
 
@@ -543,7 +545,9 @@ Anchor to the existing render timeout, not to taste: `TIMEOUT_RENDER_MS` is the 
 
 ---
 
-## Task 13 [ISE]: `ShotMap` and `XgTimeline`
+## Task 13 [ISE]: `ShotMap` and `XgTimeline` — **OUT OF SCOPE, DO NOT START**
+
+> The group's work. Task 20 supplies the fixture pack this plan develops against.
 
 3–4 days of React/Remotion work that existed in no week of the original schedule, and a hard precondition for T14 and T16.
 
@@ -579,7 +583,7 @@ A schema is the backend contract, so it must be expressible in the subset both s
 - Test: `test/service-e2e.test.mjs` (create)
 
 **Interfaces:**
-- Consumes: everything from T6–T13.
+- Consumes: everything from T6–T12, plus Task 20's fixture pack (NOT T13, which is out of scope).
 
 - [ ] **Step 1: Write the failing test** — a `render_still` call through the gateway, with a signed identity, against a real built pack, producing a PNG whose dimensions match the request and whose first eight bytes are the PNG signature.
 - [ ] **Step 2: Run and watch it fail.**
@@ -602,7 +606,7 @@ REVIEW FOCUS 2. Runs INSIDE the built service image, because that is the only
 place the font set is the shipped one, and viz_compare is absent from the
 service profile so nothing else ever looks at a frame.
 
-Renders the Turkish-glyph fixture from T13 and asserts the output differs from
+Renders the Turkish-glyph fixture from Task 20 and asserts the output differs from
 a reference rendered with the font package removed. Tofu boxes are visually
 distinct from glyphs, so the comparison is the assertion.
 ```
@@ -714,7 +718,7 @@ Then an explicit **never** list: never commit a key or a `.env`; never run the s
 | --- | --- | --- |
 | 2026-10-24 | Week 0 complete | T1, T2, T8 started |
 | 2026-10-28 | **Project Plan due** | T4 (the ADRs) must be landed |
-| 2026-11-07 | Profile separation proven | T3, T5, T6, T7, T9, T13 |
+| 2026-11-07 | Profile separation proven | T3, T5, T6, T7, T9, T20 |
 | 2026-11-21 | Deployed and measured | T10–T12, T14–T18 |
 | 2026-11-24 | **Analysis due** | T19; writeup |
 | ~2026-12-01 | **Walking skeleton** (team dependency) | this repo provides: gateway endpoint, one still template, `docs/CONTRACT-backend.md` |
