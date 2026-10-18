@@ -26,7 +26,7 @@ import {
 import { displayPath, ensureParentDirectory, resolveExistingDirectory, resolveInWorkspace } from "../services/paths.js";
 import { tilePanels } from "../services/tile.js";
 import { ToolInputError } from "../types.js";
-import { requireEntryPoint } from "./project.js";
+import { requireEntryPoint } from "../services/entrypoint.js";
 
 /** Largest file inlined as a base64 image content block. */
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
