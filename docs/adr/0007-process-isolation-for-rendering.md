@@ -70,17 +70,17 @@ quoted because they are not committed anywhere else:
 
 **The owner changed fixed constraint 6's mechanism on 2026-10-26 (ruling 1).**
 The service spawns the Remotion CLI directly, with no forked Node worker. The
-intent of constraint 6 stays: a render that hangs or crashes cannot leave
-processes behind, and cannot take the service down except by exhausting the
-container's memory (see below). The failure surfaces as a tool error. The image
-must carry `setpriv` and `tini`, and at startup the service must check that the
-installed Remotion renderer is at least 4.0.458.
+intent of constraint 6 stays. Design §3 states it as a goal: a render that hangs
+or crashes "cannot leave processes behind, and cannot take the service down
+silently". The failure surfaces as a tool error. The image must carry `setpriv`
+and `tini`, and at startup the service must check that the installed Remotion
+renderer is at least 4.0.458.
 
-The design gives the ground for dropping the worker (design §5.6): the service
-process runs no native code on the still path, with no resvg and no puppeteer,
-because ADR-5 keeps `raster.ts` out of `dist-service/`. The native code a render
-runs is in the CLI and Chrome, which are already separate processes. A crash
-inside either becomes a `render_failed` tool error.
+Ruling 1 dropped the worker. The design records two facts about the still path
+(design §5.6). The service process runs no native code on it, with no resvg and
+no puppeteer (ADR-5 keeps `raster.ts` out of `dist-service/`). And a crash
+inside the CLI or Chrome becomes a `render_failed` tool error. The native code a
+render runs is in the CLI and Chrome, which are already separate processes.
 
 **Why "completes" and not "supersedes".** Nothing in ADR-3 is reversed. Option 2
 sits inside ADR-3's own Decision, conditioned on it being "still warranted", and
@@ -95,10 +95,9 @@ unknown, not a fix for a known path.
 ## Decision
 
 The service spawns the Remotion CLI directly, and on any stop it kills every
-process group the CLI created. This does not take ADR-3's Option 2 mechanism as
-written, because the service never reaches resvg and so has nothing to move
-behind a child of its own. It takes ADR-3's reasoning, and applies it to the
-CLI and the Chrome it launches.
+process group the CLI created. Owner ruling 1 chose this in place of a forked
+Node worker. It is not ADR-3's Option 2 as written, which moves resvg behind a
+child, and the service never reaches resvg (design §5.6).
 
 ### The service owns its spawner
 
@@ -240,8 +239,8 @@ it started is gone, whether or not its request is still open.
   process, so it releases its slot at once.
 - Slots are released exactly once.
 
-**The value.** 2 is unmeasured. The capacity benchmark that would measure it is
-not part of the work for 2026-11-20 (design §3).
+**The value.** 2 is the default (design §8, call 4), and it is unmeasured. The
+capacity benchmark harness is a non-goal for 2026-11-20 (design §3).
 
 ### The heap cap is not the native-memory guard
 
@@ -286,9 +285,8 @@ with it. The renders in flight are lost.
 Video renders are asynchronous: `render_video_start` returns a job id, and
 `render_job_status` polls it (fixed constraint 7). Both tools will be
 registered from the first service build and will return a documented
-`not_implemented`. The job
-store, idempotency and enforcing the frame budget on video are later work, not
-cut (design §3).
+`not_implemented`. The job store, idempotency and enforcing the frame budget on
+video are later work, not cut (design §3).
 
 **What stills get first.** Each template's manifest entry will carry
 `maxFrames`. `render_still` will refuse a `frame` at or past it, and pass width,
@@ -312,16 +310,17 @@ implemented, a frame budget refuses those renders up front:
   frames render.
 - **The refusal:** a category `frame_budget`, stating the resolved count and the
   budget.
-- **The value:** no number is set here. Setting it needs the capacity benchmark,
-  which is a non-goal for 2026-11-20 (design §3).
+- **The value:** no number is set here; enforcing the frame budget on video is
+  later work (design §3).
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
-  exist yet: `src/service/render-process.ts`, the startup checks, the image with
-  `tini` and `setpriv`, `docs/DEPLOY.md`, and the tests described above. What
-  exists is `killTree` and the raster cap with its test. This ADR records the
-  decision, and `docs/superpowers/plans/final_script.md` builds them.
+- **Build status.** As of 2026-10-26 none of the service files and checks this
+  ADR names exist yet: `src/service/render-process.ts`, the startup checks, the
+  image with `tini` and `setpriv`, `docs/DEPLOY.md`, and the tests described
+  above. What exists is `killTree` and the raster cap with its test. This ADR
+  records the decision, and `docs/superpowers/plans/final_script.md` builds
+  them.
 
 ## Scope
 

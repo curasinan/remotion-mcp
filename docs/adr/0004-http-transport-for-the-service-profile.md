@@ -166,8 +166,7 @@ runs inside a render can do whatever the service can.
 
 That is acceptable only because the pack is code its operator chose to bake
 (ADR-5, owner ruling 7). Closing the gap would take render children under a uid
-of their own. Switching uid needs privilege the service should not have, so it
-would take a separate launcher. Nothing in the design does this.
+of their own. Nothing in the design does this.
 
 ### Where it runs
 

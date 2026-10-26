@@ -141,8 +141,7 @@ condition of the repository's proof (owner ruling 5).
 ### What the service enforces
 
 The service will handle each request with a `node:http` server, in this order
-(design §5.2). The cheap checks come first, and nothing is created until the
-identity is checked.
+(design §5.2). No server is created until the identity has been checked.
 
 1. **Route and method.** Only `POST /mcp` passes. Any other method gets 405, and
    any other path gets 404.
@@ -204,17 +203,14 @@ deployer chooses (design §5.8).
 - **What it records:** request id, principal, tenant, tool, outcome, category
   and duration, plus keyed hashes and byte sizes of the params and the result.
 - **The hashes are keyed.** They are HMAC-SHA256 under an audit key,
-  `AUDIT_HMAC_KEY`, that exists only in the environment. Props are short,
-  bounded values (ADR-5), so a bare hash could be confirmed by guessing the
-  payload.
+  `AUDIT_HMAC_KEY`, that exists only in the environment.
 - **What it never records:** payloads, verbatim error messages or raw argument
-  values. It will not record the identity header either, so `body_sha256` is
-  never logged as the bare hash that the keyed ones avoid.
+  values.
 - **Why it has its own wrapper.** Local-dev's `safeHandler` records every
   `ToolInputError` message verbatim (`src/services/format.ts:96`) and every
   other error's message (`:102`), and its argument summary keeps short strings
-  and numbers as they are (`src/services/log.ts:24-40`). The service cannot
-  reuse it, so it will have its own, and `safeHandler` is left alone.
+  and numbers as they are (`src/services/log.ts:24-40`). The design gives the
+  service its own wrapper and leaves `safeHandler` alone (design §5.8).
 
 ### The gateway's transport obligations
 
@@ -298,8 +294,8 @@ change.
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
-  exist yet: the service itself, the test signer and vectors, the live
+- **Build status.** As of 2026-10-26 none of the service files and checks this
+  ADR names exist yet: the service itself, the test signer and vectors, the live
   `tools/list` check, and the service's audit log. This ADR records the
   decision, and `docs/superpowers/plans/final_script.md` builds them.
 - **The gateway is a single point of failure for the service path, for every

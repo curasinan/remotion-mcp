@@ -279,12 +279,12 @@ which review, is the operator's to govern, because the risk is theirs.
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
-  exist yet: `src/service/`, `tsconfig.service.json`, `scripts/build-pack.mjs`,
-  the fixture pack, both gates, the absence suite and `docs/DEPLOY.md`. What
-  exists is the leaf `src/services/entrypoint.ts` and its tests (PR #20). This
-  ADR records the decision, and `docs/superpowers/plans/final_script.md` builds
-  them.
+- **Build status.** As of 2026-10-26 none of the service files and checks this
+  ADR names exist yet: `src/service/`, `tsconfig.service.json`,
+  `scripts/build-pack.mjs`, the fixture pack, both gates, the absence suite and
+  `docs/DEPLOY.md`. What exists is the leaf `src/services/entrypoint.ts` and its
+  tests (PR #20). This ADR records the decision, and
+  `docs/superpowers/plans/final_script.md` builds them.
 - **Absence is claimed for the registration closure and the compiled artifact,
   not for the image.**
   - `puppeteer-core` and `@resvg/resvg-js` are production dependencies of this
