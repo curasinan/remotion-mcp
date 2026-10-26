@@ -244,14 +244,19 @@ test("the deadline returns timedOut before cleanup finishes", LINUX_ONLY, async 
 
 test("a CLI that ignores SIGTERM is SIGKILLed after the grace", LINUX_ONLY, async (t) => {
   const s = scene(t);
+  // Long enough that a SIGKILL sent with no grace, a few ms after the SIGTERM, cannot pass for one sent after it.
+  const GRACE_MS = 300;
+  // Node fires a timer by whole-millisecond reads of a clock that may be coarse, so it can fire up to about 2 ms
+  // short of GRACE_MS as performance.now() measures it.
+  const CLOCK_SLACK_MS = 5;
   const calls = [];
   const kill = (id, signal) => {
-    calls.push({ id, signal, alive: exists(id) });
+    calls.push({ id, signal, alive: exists(id), at: performance.now() });
     killTree(id, signal);
   };
   const controller = new AbortController();
   const run = runRenderProcess(process.execPath, s.argv("--no-browser", "--ignore-sigterm"),
-    options(s, { signal: controller.signal, kill }));
+    options(s, { signal: controller.signal, kill, graceMs: GRACE_MS }));
   const { cli } = await s.pids("fake-cli");
   await s.ready(); // its SIGTERM handler is installed before it prints ready
 
@@ -263,6 +268,9 @@ test("a CLI that ignores SIGTERM is SIGKILLed after the grace", LINUX_ONLY, asyn
   const sigkill = calls.findIndex((c) => c.id === cli && c.signal === "SIGKILL");
   assert.ok(term >= 0, "SIGTERM was sent to the CLI's group");
   assert.ok(sigkill > term, "SIGKILL followed the SIGTERM");
+  const waited = calls[sigkill].at - calls[term].at;
+  assert.ok(waited >= GRACE_MS - CLOCK_SLACK_MS,
+    `the SIGKILL landed ${waited.toFixed(1)} ms after the SIGTERM, short of the ${GRACE_MS} ms grace`);
   assert.equal(calls[sigkill].alive, true, "the CLI outlived its SIGTERM, so the SIGKILL is what stopped it");
   assert.deepEqual(report, { verified: true, survivors: [] });
   assert.equal(exists(cli), false);
