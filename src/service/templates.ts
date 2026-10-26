@@ -240,7 +240,10 @@ export function loadPack(dir: string): LoadedPack {
     else list.push(...raw.templates);
   }
 
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  // allErrors stays false: ajv then stops a node at its first failing keyword, and maxLength, enum and const all run
+  // before pattern. With allErrors on, a pack's pattern would run on a caller string of any length, and one
+  // backtracking regex would block the event loop (ajv's security guide gives the same warning).
+  const ajv = new Ajv2020({ allErrors: false, strict: true });
   const firstById = new Map<string, number>();
   list.forEach((entry, i) => {
     const at = `/templates/${i}`;

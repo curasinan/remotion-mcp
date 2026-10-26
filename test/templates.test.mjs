@@ -1,6 +1,7 @@
 // Template packs: the loader, the JSON Schema gate and props validation (design 5.4).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -219,7 +220,7 @@ test("the zod 4 toJSONSchema export of the realistic template passes the gate", 
   assert.deepEqual(loadPack(GOOD).template("scoreboard").propsSchema, exported);
 });
 
-test("invalid props map to pointers and never echo values", () => {
+test("invalid props map to pointers and never echo values", (t) => {
   const pack = loadPack(GOOD);
   const noLabel = validProps();
   delete noLabel.label;
@@ -228,13 +229,16 @@ test("invalid props map to pointers and never echo values", () => {
     [noLabel, ["/label"]],
     [{ ...validProps(), extra: CANARY }, ["/extra"]],
     [{ ...validProps(), "a/b~c": CANARY }, ["/a~1b~0c"]],
-    // maxLength and pattern both fail at /color: the path is named once.
+    // maxLength fails at /color, and validation stops there: pattern never runs on the over-long string.
     [{ ...validProps(), color: `${CANARY}-too-long` }, ["/color"]],
     [{ ...validProps(), theme: CANARY }, ["/theme"]],
     [{ ...validProps(), players: [{ name: "Ada", number: 100 }] }, ["/players/0/number"]],
     [{ ...validProps(), players: [{ number: 7 }] }, ["/players/0/name"]],
     [{ ...validProps(), players: Array.from({ length: 23 }, () => ({ name: CANARY, number: 1 })) }, ["/players"]],
-    [JSON.parse(`{"__proto__": "${CANARY}"}`), ["/label", "/color", "/players", "/theme", "/opacity", "/__proto__"]],
+    // Validation stops at the first failing keyword, here the first missing required prop.
+    [JSON.parse(`{"__proto__": "${CANARY}"}`), ["/label"]],
+    // An own `__proto__` key from JSON.parse is an unknown key like any other.
+    [JSON.parse(`{"__proto__": "${CANARY}", ${JSON.stringify(validProps()).slice(1)}`), ["/__proto__"]],
     [null, [""]],
     [[CANARY], [""]],
   ];
@@ -250,6 +254,73 @@ test("invalid props map to pointers and never echo values", () => {
   assert.deepEqual(pack.validateProps("scoreboard", noLabel), { ok: false, paths: ["/label"] });
   assert.deepEqual(pack.validateProps("scoreboard", { ...validProps(), extra: CANARY }), { ok: false, paths: ["/extra"] });
   assert.deepEqual(pack.validateProps("scoreboard", { ...validProps(), "a/b~c": 1 }), { ok: false, paths: ["/a~1b~0c"] });
+
+  // anyOf reports each failing branch and then itself, all at one path: the path is still named once.
+  const union = loadPack(tempPack(t, (m) => {
+    m.templates[1].propsSchema.properties.color =
+      { anyOf: [{ type: "string", maxLength: 3 }, { type: "integer", minimum: 0, maximum: 9 }] };
+  }));
+  assert.deepEqual(union.validateProps("swatch", { color: CANARY }), { ok: false, paths: ["/color"] });
+});
+
+/** The good pack's color pattern; the spy below records what this regex is run on. */
+const COLOR_PATTERN = "^#[0-9a-fA-F]{6}$";
+
+test("A13: a pack's pattern never sees a caller string past its maxLength or outside its enum", (t) => {
+  // The gate lets an enum string carry a pattern with no maxLength; swatch gains one, beside its bounded color.
+  const pack = loadPack(tempPack(t, (m) => {
+    m.templates[1].propsSchema.properties.tone = { type: "string", enum: ["#000000", "#FFFFFF"], pattern: COLOR_PATTERN };
+  }));
+  assert.equal(pack.template("swatch").propsSchema.properties.color.pattern, COLOR_PATTERN);
+
+  const realTest = RegExp.prototype.test;
+  const lengths = [];
+  /** The result, and the code-point length of every string the color pattern was run on meanwhile. */
+  const validate = (id, props) => {
+    lengths.length = 0;
+    RegExp.prototype.test = function spy(s) {
+      if (this.source === COLOR_PATTERN) lengths.push([...String(s)].length);
+      return realTest.call(this, s);
+    };
+    try {
+      return { result: pack.validateProps(id, props), lengths: [...lengths] };
+    } finally {
+      RegExp.prototype.test = realTest;
+    }
+  };
+
+  // Positive control: the spy does see the pattern run, on an in-bounds color.
+  assert.deepEqual(validate("swatch", { color: "#1A2B3C" }), { result: { ok: true }, lengths: [7] });
+  assert.deepEqual(validate("swatch", { color: "#1A2B3C", tone: "#FFFFFF" }), { result: { ok: true }, lengths: [7, 7] });
+
+  // Past maxLength 7, or outside the enum, the pattern must not run: a backtracking regex would stall on it.
+  const long = `#${"a".repeat(100_000)}`;
+  assert.deepEqual(validate("swatch", { color: long }), { result: { ok: false, paths: ["/color"] }, lengths: [] });
+  assert.deepEqual(validate("scoreboard", { ...validProps(), color: long }),
+    { result: { ok: false, paths: ["/color"] }, lengths: [] });
+  assert.deepEqual(validate("swatch", { color: "#1A2B3C", tone: long }),
+    { result: { ok: false, paths: ["/tone"] }, lengths: [7] });
+});
+
+test("A13: a catastrophic pack pattern cannot stall validation with a string past maxLength", (t) => {
+  // ^(a+)+$ backtracks exponentially on "aaa…!". The props string is far past maxLength 5, so validation must
+  // stop at maxLength: were the pattern run on it, the event loop would block for hours. The check runs in a
+  // child with a deadline, because a synchronous stall would hang this runner rather than fail the test.
+  const dir = tempPack(t, (m) => {
+    m.templates[1].propsSchema.properties.color = { type: "string", maxLength: 5, pattern: "^(a+)+$" };
+  });
+  const child = `const [, moduleUrl, packDir] = process.argv;
+const { loadPack } = await import(moduleUrl);
+const pack = loadPack(packDir);
+process.stdout.write(JSON.stringify([pack.validateProps("swatch", { color: "a".repeat(64) + "!" }),
+  pack.validateProps("swatch", { color: "aaaaa" })]));`;
+  const run = spawnSync(process.execPath,
+    ["--input-type=module", "-e", child, pathToFileURL(path.join(SERVICE, "templates.js")).href, dir],
+    { encoding: "utf8", timeout: 20_000 });
+  assert.equal(run.error?.code, undefined, "validation did not finish within 20 s: the pattern ran past maxLength");
+  assert.equal(run.status, 0, run.stderr);
+  // The second result is the positive control: the pattern does apply within maxLength.
+  assert.deepEqual(JSON.parse(run.stdout), [{ ok: false, paths: ["/color"] }, { ok: true }]);
 });
 
 test("REVIEW FOCUS 2: Turkish text validates, and maxLength counts code points", () => {
