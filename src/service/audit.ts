@@ -8,6 +8,12 @@ import { createHmac } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * One audit line. `params_hash` and `params_bytes` cover `JSON.stringify` of a tool's arguments as the SDK passes
+ * them on after zod validation, not as the caller sent them: the schema's keys in the schema's order (for
+ * render_still: template_id, frame, props), whatever order the request used. `result_hash` and `result_bytes`
+ * cover the decoded image bytes and the UTF-8 text of an ok result, in content order.
+ */
 export interface ServiceAuditEvent { ts: string; outcome: "ok" | "error" | "refused" | "violation";
   request_id?: string; principal?: string; tenant?: string; tool?: string; category?: string;
   fields?: string[]; http_status?: number; duration_ms?: number;

@@ -13,7 +13,9 @@ import { serviceError } from "./errors.js";
 import type { runRenderProcess } from "./render-process.js";
 import type { RenderSlots } from "./slots.js";
 import type { LoadedPack } from "./templates.js";
-import { TOOL_DEFS, type ToolDef, type ToolExtra } from "./tools.js";
+import {
+  callIdentity, type CallIdentity, errorText, serviceLog, TOOL_DEFS, type ToolDef, type ToolExtra,
+} from "./tools.js";
 
 export const SERVICE_TOOLS = Object.freeze(
   ["list_templates", "render_still", "render_video_start", "render_job_status"] as const,
@@ -22,19 +24,14 @@ export const SERVICE_TOOLS = Object.freeze(
 export interface ServiceContext { pack: LoadedPack; slots: RenderSlots; run: typeof runRenderProcess;
   cli: { file: string; prefixArgs: string[] }; browserExecutable: string; tempRoot: string; audit: AuditSink;
   stillDeadlineMs: number; cliTimeoutMs: number; graceMs: number; verifyDeadlineMs: number;
-  pngCapBytes: number; shutdown: AbortSignal; onUnverifiedCleanup: () => void }
-
-type Identity = Pick<ServiceAuditEvent, "request_id" | "principal" | "tenant">;
+  pngCapBytes: number; shutdown: AbortSignal; onUnverifiedCleanup: () => void;
+  /**
+   * The operator's log, never a caller's: one line for each internal throw, render_failed, unverified cleanup and
+   * work dir that could not be removed. When absent, each line goes to stderr with a trailing newline.
+   */
+  log?: (line: string) => void }
 
 const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-
-/** The verified claims' ids, which the HTTP handler puts in `authInfo.extra.claims`. */
-function identityOf(extra: ToolExtra | undefined): Identity {
-  const claims: unknown = extra?.authInfo?.extra?.claims;
-  if (typeof claims !== "object" || claims === null) return {};
-  const c = claims as Record<string, unknown>;
-  return { request_id: text(c.request_id), principal: text(c.principal), tenant: text(c.tenant) };
-}
 
 /** What a successful result returned: an image's decoded bytes and a text's UTF-8 bytes, in content order. */
 function resultBytes(result: CallToolResult): Buffer {
@@ -47,7 +44,8 @@ function resultBytes(result: CallToolResult): Buffer {
 
 /**
  * What the SDK calls for one tool. It runs the handler, records one audit event of hashes and sizes, and turns any
- * throw into `internal`, so no exception, and no message one carries, reaches the SDK.
+ * throw into `internal`, so no exception, and no message one carries, reaches the SDK. The message goes to the
+ * operator's log instead.
  */
 function wrap(name: string, def: ToolDef, takesArgs: boolean, ctx: ServiceContext) {
   return async (...received: unknown[]): Promise<CallToolResult> => {
@@ -56,13 +54,16 @@ function wrap(name: string, def: ToolDef, takesArgs: boolean, ctx: ServiceContex
     // The SDK passes (args, extra) to a tool with an input schema, and (extra) alone to one without.
     const args = takesArgs ? received[0] : undefined;
     const extra = (takesArgs ? received[1] : received[0]) as ToolExtra | undefined;
-    let identity: Identity = {};
+    let identity: CallIdentity = {};
     let params: Pick<ServiceAuditEvent, "params_hash" | "params_bytes"> = {};
     let outcome: Pick<ServiceAuditEvent, "outcome" | "category" | "result_hash" | "result_bytes">;
     let result: CallToolResult;
     try {
-      identity = identityOf(extra);
+      identity = callIdentity(extra);
       if (args !== undefined) {
+        // `args` is what the SDK passes on after zod has validated the call, not the arguments as sent: the schema's
+        // keys, in the schema's order (template_id, frame, props for render_still), whatever order the caller used.
+        // params_hash covers that normalised form, so whoever recomputes it serialises in schema order too.
         const json = JSON.stringify(args);
         params = { params_hash: ctx.audit.hash(json), params_bytes: Buffer.byteLength(json, "utf8") };
       }
@@ -73,7 +74,8 @@ function wrap(name: string, def: ToolDef, takesArgs: boolean, ctx: ServiceContex
         const bytes = resultBytes(result);
         outcome = { outcome: "ok", result_hash: ctx.audit.hash(bytes), result_bytes: bytes.length };
       }
-    } catch {
+    } catch (err) {
+      serviceLog(ctx, extra, name, "internal", errorText(err));
       result = serviceError("internal");
       outcome = { outcome: "error", category: "internal" };
     }

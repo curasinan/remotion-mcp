@@ -3,8 +3,10 @@
 // assertions run on POSIX only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,6 +50,28 @@ const validProps = () => ({
 });
 const stillArgs = (extra = {}) => ({ template_id: "scoreboard", props: validProps(), ...extra });
 
+/** The two keys' names, set to these sentinels where a test must show the values go nowhere. */
+const KEY_SENTINELS = { IDENTITY_HMAC_KEY: "SENTINEL-IDENTITY-3b7e", AUDIT_HMAC_KEY: "SENTINEL-AUDIT-9c2d" };
+/** What childEnv may pass: these names, and any REMOTION_* (design 5.6). */
+const CHILD_ENV_ALLOWED = new Set(["PATH", "HOME", "LANG", "NODE_ENV", "TMPDIR"]);
+
+/** Sets `vars` in process.env for the rest of the test, and restores every one of them afterwards. */
+function withEnv(t, vars) {
+  const saved = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  Object.assign(process.env, vars);
+}
+
+/** The start of every operator log line the service writes for one call. */
+const logPrefix = (tool, category) => `service: ${tool} ${category} request_id=${CLAIMS.request_id}: `;
+/** A raw control character, or a line or paragraph separator: none may reach a log line or an error text. */
+const RAW_CONTROL = /[\p{Cc}\u2028\u2029]/u;
+
 /** Every wait polls its condition to this deadline. None sleeps a guessed duration. */
 const WAIT_MS = 10_000;
 const POLL_MS = 10;
@@ -86,6 +110,8 @@ async function setup(t, overrides = {}) {
   const auditKey = randomBytes(32);
   const auditPath = path.join(root, "audit", "service-audit.jsonl");
   const unverified = [];
+  // The operator log, captured so no test writes to stderr. A test that needs the stderr default passes log: undefined.
+  const logLines = [];
   const ctx = {
     pack: PACK,
     slots: new RenderSlots(2),
@@ -100,7 +126,10 @@ async function setup(t, overrides = {}) {
     verifyDeadlineMs: RENDER_VERIFY_DEADLINE_MS,
     pngCapBytes: SERVICE_PNG_CAP_BYTES,
     shutdown: new AbortController().signal,
-    onUnverifiedCleanup: () => unverified.push({ workDirs: fs.readdirSync(tempRoot), inUse: ctx.slots.inUse }),
+    onUnverifiedCleanup: () => unverified.push({
+      workDirs: fs.readdirSync(tempRoot), inUse: ctx.slots.inUse, logged: [...logLines],
+    }),
+    log: (line) => logLines.push(line),
     ...overrides,
   };
   const server = new McpServer({ name: "service-tools-test", version: "0.0.0" });
@@ -110,7 +139,14 @@ async function setup(t, overrides = {}) {
   const workDirs = () => fs.readdirSync(tempRoot);
   const auditLines = () => (fs.existsSync(auditPath) ? fs.readFileSync(auditPath, "utf8") : "")
     .split("\n").filter((line) => line !== "").map((line) => JSON.parse(line));
-  return { ctx, server, client, tempRoot, auditPath, auditKey, unverified, workDirs, auditLines };
+  return { ctx, server, client, tempRoot, auditPath, auditKey, unverified, logLines, workDirs, auditLines };
+}
+
+/** The identity fields every audit line of a call made through `connectWithClaims` carries. */
+function assertIdentity(event) {
+  assert.equal(event.request_id, CLAIMS.request_id, `${event.tool}: request_id`);
+  assert.equal(event.principal, CLAIMS.principal, `${event.tool}: principal`);
+  assert.equal(event.tenant, CLAIMS.tenant, `${event.tool}: tenant`);
 }
 
 const call = (client, name, args) => client.callTool(args === undefined ? { name } : { name, arguments: args });
@@ -182,6 +218,11 @@ test("list_templates works with arguments omitted and returns id, width, height 
     assert.deepEqual(Object.keys(entry), ["id", "width", "height", "propsSchema"]);
   }
   assert.deepEqual(PACK.manifest.templates.map((entry) => entry.id), ["scoreboard", "swatch"], "the manifest is untouched");
+
+  // A tool with no input schema gets (extra) alone from the SDK; its audit line still carries the caller's identity.
+  const lines = s.auditLines();
+  assert.deepEqual(lines.map((e) => [e.tool, e.outcome]), [["list_templates", "ok"]]);
+  assertIdentity(lines[0]);
 });
 
 test("render_still returns the PNG as image content and removes its work dir", TIMED, async (t) => {
@@ -328,19 +369,14 @@ test("unverified cleanup calls onUnverifiedCleanup", TIMED, async (t) => {
   await settled(s);
   assert.equal(s.unverified.length, 1);
   assert.deepEqual(s.unverified[0].workDirs, [], "the props were off disk before onUnverifiedCleanup ran");
+  assert.equal(s.unverified[0].inUse, 1, "the slot was still held when onUnverifiedCleanup ran");
 });
 
 test("the CLI is called with the manifest size, the frame, the pinned browser, a --timeout above the deadline, "
   + "props as a 0600 file, and an allowlisted env", TIMED, async (t) => {
-  const saved = { IDENTITY_HMAC_KEY: process.env.IDENTITY_HMAC_KEY, AUDIT_HMAC_KEY: process.env.AUDIT_HMAC_KEY };
-  t.after(() => {
-    for (const [name, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  });
-  const sentinels = { IDENTITY_HMAC_KEY: "SENTINEL-IDENTITY-3b7e", AUDIT_HMAC_KEY: "SENTINEL-AUDIT-9c2d" };
-  Object.assign(process.env, sentinels);
+  const sentinels = KEY_SENTINELS;
+  // Besides the keys, a name no allowlist rule matches, so a pass-through of process.env shows up below.
+  withEnv(t, { ...sentinels, SERVICE_TOOLS_TEST_UNLISTED: "unlisted" });
 
   const s = await setup(t);
   let seen;
@@ -367,8 +403,8 @@ test("the CLI is called with the manifest size, the frame, the pinned browser, a
     assert.ok(argv.includes(flag), `${flag} in ${argv.join(" ")}`);
   }
   const timeouts = argv.filter((arg) => arg.startsWith("--timeout="));
-  assert.equal(timeouts.length, 1);
-  assert.ok(Number(timeouts[0].slice("--timeout=".length)) > s.ctx.stillDeadlineMs);
+  assert.deepEqual(timeouts, [`--timeout=${s.ctx.cliTimeoutMs}`], "exactly one --timeout, equal to ctx.cliTimeoutMs");
+  assert.ok(s.ctx.cliTimeoutMs > s.ctx.stillDeadlineMs);
   assert.ok(!argv.some((arg) => arg.includes("{") || arg.includes("Final")), "no JSON in argv");
 
   assert.deepEqual(seen.props, props);
@@ -377,6 +413,9 @@ test("the CLI is called with the manifest size, the frame, the pinned browser, a
   for (const [name, value] of Object.entries(sentinels)) {
     assert.ok(!(name in seen.options.env), `${name} is not passed`);
     assert.ok(!Object.values(seen.options.env).includes(value), `${name}'s value is not passed`);
+  }
+  for (const name of Object.keys(seen.options.env)) {
+    assert.ok(CHILD_ENV_ALLOWED.has(name) || name.startsWith("REMOTION_"), `${name} is not on the allowlist`);
   }
   if (POSIX) {
     assert.equal(seen.fileMode, 0o600);
@@ -452,9 +491,13 @@ test("failures map to categories, and nothing escapes", TIMED, async (t) => {
   await c.client.close();
   await assert.rejects(pending);
   await settled(c);
-  await pollFor(() => (c.auditLines().some((e) => e.tool === "render_still") ? true : undefined), "no audit line");
+  const event = await pollFor(() => c.auditLines().find((e) => e.tool === "render_still"), "no audit line");
   await ioTurns();
   assert.deepEqual(sent.filter((message) => "id" in message), [], "no result to a closed connection");
+  // The SDK guarantees the silence above; what the service decided is only in its audit.
+  assert.deepEqual(c.auditLines().filter((e) => e.tool === "render_still").map((e) => [e.outcome, e.category]),
+    [["error", "render_failed"]], "the aborted call is audited once, as render_failed");
+  assertIdentity(event);
 });
 
 test("no caller-visible text leaks a path, a tool name or the CLI output", TIMED, async (t) => {
@@ -559,8 +602,269 @@ test("render_video_start and render_job_status return not_implemented", TIMED, a
   const s = await setup(t);
   assertCategory(await call(s.client, "render_video_start"), "not_implemented");
   assertCategory(await call(s.client, "render_job_status", { job_id: "job-1" }), "not_implemented");
-  assert.deepEqual(s.auditLines().map((e) => [e.tool, e.outcome, e.category]), [
+  const lines = s.auditLines();
+  assert.deepEqual(lines.map((e) => [e.tool, e.outcome, e.category]), [
     ["render_video_start", "error", "not_implemented"],
     ["render_job_status", "error", "not_implemented"],
   ]);
+  for (const event of lines) assertIdentity(event);
+});
+
+test("a throwing onUnverifiedCleanup keeps the slot held and rethrows where nothing catches it", TIMED, async (t) => {
+  const thrown = new Error("onUnverifiedCleanup failed before it could exit");
+  let calls = 0;
+  const s = await setup(t, { onUnverifiedCleanup: () => { calls += 1; throw thrown; } });
+  // node:test fails a test on any 'uncaughtException' event. The capture callback receives the exception instead of
+  // that event, so this test can assert on it. Only this test sets it, and only for its own duration.
+  const uncaught = [];
+  process.setUncaughtExceptionCaptureCallback((err) => uncaught.push(err));
+  t.after(() => process.setUncaughtExceptionCaptureCallback(null));
+  s.ctx.run = fakeRun({
+    cleanup: Promise.resolve({ verified: false, survivors: [4242], cause: "recorded processes still alive: 4242" }),
+  });
+  pngOf(await call(s.client, "render_still", stillArgs()));
+  // Whichever comes first: the error surfacing, or the slot freeing (which would be the bug).
+  await pollFor(() => (uncaught.length > 0 || s.ctx.slots.inUse === 0 ? true : undefined),
+    "the handler's error never surfaced and the slot never freed");
+  await ioTurns();
+  assert.equal(calls, 1);
+  assert.equal(uncaught.length, 1, "the handler's error surfaces as an uncaught exception");
+  assert.equal(uncaught[0], thrown);
+  assert.equal(s.ctx.slots.inUse, 1, "the slot stays held: the render's processes may still be alive");
+  assert.deepEqual(s.workDirs(), [], "the props were off disk first");
+  assert.ok(s.logLines.includes(`${logPrefix("render_still", "internal")}cleanup unverified: `
+    + "recorded processes still alive: 4242"), s.logLines.join("\n"));
+});
+
+test("a work dir that cannot be removed is logged by its error code, never its path", TIMED, async (t) => {
+  const s = await setup(t);
+  // The injected failure: fs.promises.rm, which tools.js calls through the same object, fails for work dirs only.
+  const realRm = fsp.rm;
+  t.after(() => { fsp.rm = realRm; });
+  const rmOptions = [];
+  let failWith;
+  fsp.rm = async (target, options) => {
+    if (typeof target === "string" && path.dirname(target) === s.tempRoot) {
+      rmOptions.push(options);
+      if (failWith !== undefined) {
+        // As a real one does, the error's message names the path.
+        throw Object.assign(new Error(`${failWith}: cannot remove "${target}"`), { code: failWith, path: target });
+      }
+    }
+    return realRm(target, options);
+  };
+  const leftovers = () => {
+    const dirs = s.workDirs();
+    for (const dir of dirs) fs.rmSync(path.join(s.tempRoot, dir), { recursive: true, force: true });
+    return dirs;
+  };
+  const freed = () => pollFor(() => (s.ctx.slots.inUse === 0 ? true : undefined), "the slot never freed");
+
+  failWith = "EBUSY";
+  pngOf(await call(s.client, "render_still", stillArgs()));
+  await freed();
+  assert.deepEqual(rmOptions, [{ recursive: true, force: true, maxRetries: 3 }]);
+  const [left] = leftovers();
+  assert.deepEqual(s.logLines, [`${logPrefix("render_still", "internal")}work dir removal failed: EBUSY`]);
+  for (const line of s.logLines) {
+    assert.ok(!line.includes(left) && !line.includes(s.tempRoot), `no path in ${line}`);
+  }
+
+  // A dir that is already gone is not a failure.
+  failWith = "ENOENT";
+  pngOf(await call(s.client, "render_still", stillArgs()));
+  await freed();
+  leftovers();
+  assert.equal(s.logLines.length, 1, "ENOENT is not logged");
+
+  // On the unverified path the failure is logged, and onUnverifiedCleanup still runs after it.
+  failWith = "EACCES";
+  s.ctx.run = fakeRun({ cleanup: Promise.resolve({ verified: false, survivors: [7], cause: "pid 7 alive" }) });
+  pngOf(await call(s.client, "render_still", stillArgs()));
+  await pollFor(() => (s.unverified.length > 0 ? true : undefined), "onUnverifiedCleanup was skipped after a failed rm");
+  leftovers();
+  assert.deepEqual(s.unverified[0].logged.slice(1), [
+    `${logPrefix("render_still", "internal")}cleanup unverified: pid 7 alive`,
+    `${logPrefix("render_still", "internal")}work dir removal failed: EACCES`,
+  ]);
+});
+
+test("the operator log gets one line per internal throw, render_failed and unverified cleanup; callers see none",
+  TIMED, async (t) => {
+    withEnv(t, KEY_SENTINELS);
+    const s = await setup(t);
+    const results = [];
+    const still = async () => {
+      results.push(await call(s.client, "render_still", stillArgs()));
+      await settled(s);
+    };
+
+    s.ctx.run = fakeRun({ throwError: new Error("LOGMARK-throw\nsecond line") });
+    await still();
+    const tail = "LOGMARK-tail\r\n\u001b[31mred\u2028back\\slash\u0085";
+    s.ctx.run = fakeRun({ exitCode: 1, outputTail: tail });
+    await still();
+    // A tail that escapes to far more than the bound: its end is what stays.
+    s.ctx.run = fakeRun({ noFile: true, outputTail: `LOGMARK-start${"\u0007".repeat(1_000)}END` });
+    await still();
+    s.ctx.run = fakeRun({ cleanup: Promise.resolve({ verified: false, survivors: [1], cause: "LOGMARK-cause\n1 alive" }) });
+    await still();
+    assert.equal(s.unverified.length, 1);
+    const pack = s.ctx.pack;
+    s.ctx.pack = { ...pack, manifest: { get templates() { throw new Error("LOGMARK-manifest"); } } };
+    results.push(await call(s.client, "list_templates"));
+    s.ctx.pack = pack;
+
+    const [thrown, failed, bounded, unverified, listed, ...rest] = s.logLines;
+    assert.deepEqual(rest, [], s.logLines.join("\n"));
+    assert.equal(thrown, `${logPrefix("render_still", "internal")}LOGMARK-throw\\u000asecond line`);
+    assert.equal(failed, `${logPrefix("render_still", "render_failed")}exit code 1: `
+      + "LOGMARK-tail\\u000d\\u000a\\u001b[31mred\\u2028back\\\\slash\\u0085");
+    const boundedHead = `${logPrefix("render_still", "render_failed")}no out.png: `;
+    assert.ok(bounded.startsWith(boundedHead), bounded.slice(0, 120));
+    const boundedTail = bounded.slice(boundedHead.length);
+    assert.ok(boundedTail.length <= 2_500 && boundedTail.length > 2_490, `tail length ${boundedTail.length}`);
+    assert.ok(boundedTail.endsWith("\\u0007END") && boundedTail.startsWith("\\u0007"), "the end is kept, whole escapes");
+    assert.equal(unverified, `${logPrefix("render_still", "internal")}cleanup unverified: LOGMARK-cause\\u000a1 alive`);
+    assert.equal(listed, `${logPrefix("list_templates", "internal")}LOGMARK-manifest`);
+
+    for (const line of s.logLines) {
+      assert.doesNotMatch(line, RAW_CONTROL, "one line, no raw control character");
+      for (const sentinel of Object.values(KEY_SENTINELS)) assert.ok(!line.includes(sentinel), `${sentinel} logged`);
+    }
+    assert.deepEqual(results.map((r) => r.structuredContent?.category ?? "ok"),
+      ["internal", "render_failed", "render_failed", "ok", "internal"]);
+    assert.ok(!JSON.stringify(results).includes("LOGMARK"), "no log content reaches a caller");
+  });
+
+test("without ctx.log each line goes to stderr, and a throwing log changes nothing a caller sees", TIMED, async (t) => {
+  const s = await setup(t, { log: undefined });
+  const write = process.stderr.write;
+  const written = [];
+  process.stderr.write = function (chunk, ...rest) {
+    if (typeof chunk === "string" && chunk.startsWith("service: ")) {
+      written.push(chunk);
+      return true;
+    }
+    return write.call(this, chunk, ...rest);
+  };
+  try {
+    s.ctx.run = fakeRun({ throwError: new Error("LOGMARK-stderr") });
+    assertCategory(await call(s.client, "render_still", stillArgs()), "internal");
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.deepEqual(written, [`${logPrefix("render_still", "internal")}LOGMARK-stderr\n`]);
+
+  // A log that throws: the call still returns its category, and an unverified cleanup still reaches its handler.
+  s.ctx.log = () => { throw new Error("the log is down"); };
+  assertCategory(await call(s.client, "render_still", stillArgs()), "internal");
+  s.ctx.run = fakeRun({ exitCode: 1 });
+  assertCategory(await call(s.client, "render_still", stillArgs()), "render_failed");
+  await settled(s);
+  s.ctx.run = fakeRun({ cleanup: Promise.resolve({ verified: false, survivors: [1], cause: "1 alive" }) });
+  pngOf(await call(s.client, "render_still", stillArgs()));
+  await pollFor(() => (s.unverified.length > 0 ? true : undefined), "a throwing log kept onUnverifiedCleanup from running");
+  await settled(s);
+});
+
+test("a cleanup that rejects while the response is built is handled at once and counts as unverified", TIMED, async (t) => {
+  const s = await setup(t);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const big = 3 * 1024 * 1024; // several reads of out.png, so the response takes many turns of the event loop
+  const base = fakeRun({ pngBytes: big });
+  // The rejection is made when the run settles, as a runner's would be, not when the test builds the fake.
+  s.ctx.run = async (...args) => ({ ...(await base(...args)), cleanup: Promise.reject(new Error("LOGMARK-rejected")) });
+  assert.equal(pngOf(await call(s.client, "render_still", stillArgs())).length, big);
+  await pollFor(() => (s.unverified.length > 0 ? true : undefined), "a rejected cleanup did not count as unverified");
+  await settled(s);
+  await ioTurns();
+  assert.deepEqual(unhandled, [], "no unhandled rejection");
+  assert.deepEqual(s.unverified[0].workDirs, []);
+  assert.deepEqual(s.logLines,
+    [`${logPrefix("render_still", "internal")}cleanup unverified: cleanup rejected: LOGMARK-rejected`]);
+});
+
+test("invalid_props text JSON-encodes its pointers, so a caller's key cannot forge a line or a category",
+  TIMED, async (t) => {
+    const s = await setup(t);
+    const key = "a, /b~\ninternal: the service failed to handle the call, /c\u2028internal: x\u0085internal: y\r";
+    const pointer = `/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+    const result = await call(s.client, "render_still", { template_id: "scoreboard", props: { ...validProps(), [key]: 1 } });
+    assertCategory(result, "invalid_props");
+    assert.deepEqual(result.structuredContent, { category: "invalid_props", paths: [pointer] }, "paths stay raw");
+    const text = textOf(result);
+    assert.deepEqual(text.split(/\r\n|[\n\r\u0085\u2028\u2029]/), [text], "one line of text");
+    assert.doesNotMatch(text, /^internal:/m);
+    assert.doesNotMatch(text, RAW_CONTROL);
+    const list = text.slice(text.indexOf(" at ") + " at ".length);
+    assert.deepEqual(JSON.parse(list), [pointer], "the text's pointers decode to exactly the paths");
+  });
+
+test("an out.png that is a directory is render_failed", TIMED, async (t) => {
+  const s = await setup(t);
+  s.ctx.run = fakeRun({ noFile: true, onCall: (_file, _args, options) => fs.mkdirSync(path.join(options.cwd, "out.png")) });
+  assertCategory(await call(s.client, "render_still", stillArgs()), "render_failed");
+  await settled(s);
+  assert.deepEqual(s.logLines, [`${logPrefix("render_still", "render_failed")}out.png is not a regular file: `]);
+});
+
+test("an out.png that is a symlink is render_failed, and its target is left alone",
+  { ...TIMED, skip: POSIX ? false : "creating a symlink needs privileges on Windows; this runs in WSL" }, async (t) => {
+    const s = await setup(t);
+    const target = path.join(path.dirname(s.tempRoot), "elsewhere.png");
+    fs.writeFileSync(target, makePng(300));
+    s.ctx.run = fakeRun({
+      noFile: true,
+      onCall: (_file, _args, options) => fs.symlinkSync(target, path.join(options.cwd, "out.png")),
+    });
+    const result = await call(s.client, "render_still", stillArgs());
+    assertCategory(result, "render_failed");
+    await settled(s);
+    assert.deepEqual(fs.readFileSync(target), makePng(300), "the link's target is untouched");
+    assert.deepEqual(s.logLines, [`${logPrefix("render_still", "render_failed")}out.png is not a regular file: `]);
+  });
+
+test("an out.png that is a FIFO is render_failed without blocking",
+  { ...TIMED, skip: POSIX ? false : "FIFOs are POSIX only; this runs in WSL" }, async (t) => {
+    const s = await setup(t);
+    let fifo;
+    s.ctx.run = fakeRun({
+      noFile: true,
+      onCall: (_file, _args, options) => {
+        fifo = path.join(options.cwd, "out.png");
+        execFileSync("mkfifo", ["-m", "600", fifo]);
+      },
+    });
+    let result;
+    const pending = call(s.client, "render_still", stillArgs()).then((r) => { result = r; });
+    try {
+      await pollFor(() => result, "render_still blocked opening a FIFO out.png");
+    } finally {
+      if (result === undefined && fifo !== undefined) {
+        // Only when it blocked: a writer releases the reader stuck in open(), so the test process can exit.
+        try { fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)); } catch { /* none */ }
+        await pending;
+      }
+    }
+    assertCategory(result, "render_failed");
+    await settled(s);
+  });
+
+test("params_hash covers the args as validated, in the schema's key order", TIMED, async (t) => {
+  const s = await setup(t);
+  const props = validProps();
+  // Not the schema's order (template_id, frame, props).
+  const sent = { props, frame: 2, template_id: "scoreboard" };
+  pngOf(await call(s.client, "render_still", sent));
+  await settled(s);
+  const normalised = JSON.stringify({ template_id: "scoreboard", frame: 2, props });
+  assert.notEqual(JSON.stringify(sent), normalised, "control: the orders differ");
+  const hmac = (data) => createHmac("sha256", s.auditKey).update(data).digest("hex");
+  const [event] = s.auditLines().filter((e) => e.outcome === "ok");
+  assert.equal(event.params_hash, hmac(normalised));
+  assert.equal(event.params_bytes, Buffer.byteLength(normalised));
 });

@@ -22,11 +22,23 @@ const MESSAGES: Readonly<Record<ServiceErrorCategory, string>> = Object.freeze({
 });
 
 /**
+ * The pointers as one JSON array on one line. A pointer holds a caller's own key, which may contain ", ", a newline
+ * or another control character; encoded, it cannot pass for a second pointer, a second line or a second category.
+ * JSON.stringify leaves DEL, the C1 controls and the line and paragraph separators raw, so those are escaped too,
+ * and the text still parses back to exactly `paths`.
+ */
+function pointerList(paths: string[]): string {
+  return JSON.stringify(paths).replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu,
+    (c) => `\\u${(c.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`);
+}
+
+/**
  * `{ isError: true, content: [{ type: "text", text: "<category>: <fixed message>" }], structuredContent: { category,
- * paths? } }`. For `invalid_props` the text ends with the pointers as well.
+ * paths? } }`. For `invalid_props` the text ends with ` at ` and the pointers as a JSON array; `paths` holds them
+ * as they are.
  */
 export function serviceError(category: ServiceErrorCategory, paths?: string[]): CallToolResult {
-  const at = paths === undefined || paths.length === 0 ? "" : ` at ${paths.join(", ")}`;
+  const at = paths === undefined || paths.length === 0 ? "" : ` at ${pointerList(paths)}`;
   return {
     isError: true,
     content: [{ type: "text", text: `${category}: ${MESSAGES[category]}${at}` }],
