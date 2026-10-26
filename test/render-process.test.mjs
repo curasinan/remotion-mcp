@@ -21,23 +21,56 @@ const { runRenderProcess, parseProcStat, descendantsOf, childEnv } =
 const { RenderSlots } = await import(pathToFileURL(path.join(SERVICE, "slots.js")).href);
 const { killTree } = await import(pathToFileURL(path.join(DIST, "services", "exec.js")).href);
 
-const LINUX_ONLY = { skip: process.platform !== "linux" && "needs /proc and process groups" };
+/** Every test that spawns has this timeout, so a hang fails with the test's name instead of stalling CI. */
+const SPAWN_TIMEOUT_MS = 30_000;
+const SPAWNS = { timeout: SPAWN_TIMEOUT_MS };
+const LINUX_ONLY = { ...SPAWNS, skip: process.platform !== "linux" && "needs /proc and process groups" };
 const FAKE_CLI = path.join(REPO, "test", "fixtures", "proc-tree", "fake-cli.mjs");
 
 /** Every wait polls its condition to this deadline. None sleeps a guessed duration. */
 const WAIT_MS = 10_000;
 const POLL_MS = 25;
 
-/** Polls `probe` until it returns something other than undefined, and fails with `message` at the deadline. */
+/**
+ * Polls `probe` until it returns something other than undefined, and fails with `message` at the deadline.
+ * The deadline is on the monotonic clock, so a test that moves Date.now cannot stretch it.
+ */
 async function pollFor(probe, message) {
-  const deadline = Date.now() + WAIT_MS;
+  const deadline = performance.now() + WAIT_MS;
   for (;;) {
     const value = probe();
     if (value !== undefined) return value;
-    if (Date.now() >= deadline) return assert.fail(typeof message === "function" ? message() : message);
+    if (performance.now() >= deadline) return assert.fail(typeof message === "function" ? message() : message);
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
 }
+
+/**
+ * Resolves after two turns of the event loop, so at least one whole poll phase runs after the call. Data that
+ * was already in a pipe when it is called has then been read, and its 'data' events emitted. It waits for an
+ * event-loop phase, not for a duration.
+ */
+async function ioTurns() {
+  for (let i = 0; i < 2; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A probe for pollFor: undefined while `promise` is pending, then its value. A rejection is thrown from the probe,
+ * so the poll fails with it.
+ */
+function track(promise) {
+  let settled = false;
+  let value;
+  let error;
+  promise.then((v) => { settled = true; value = v; }, (e) => { settled = true; error = e ?? new Error("rejected"); });
+  return () => {
+    if (error !== undefined) throw error;
+    return settled ? value : undefined;
+  };
+}
+
+/** The service's own process group, read after the last ")" of /proc/self/stat. */
+const ownPgid = () => parseProcStat(fs.readFileSync("/proc/self/stat", "utf8")).pgid;
 
 /** Whether a process exists or, for a negative id, whether that process group still has a member. */
 function exists(id) {
@@ -90,7 +123,9 @@ function scene(t) {
   const ids = new Set();
   t.after(() => {
     const p = readJson(handshake) ?? {};
-    for (const id of [...ids, p.cli, p.browser, p.grandchild, p.browserPgid && -p.browserPgid]) {
+    // p.daemon is the grandchild that escaped by daemonising: it leads a group of its own.
+    for (const id of [...ids, p.cli, p.browser, p.grandchild, p.browserPgid && -p.browserPgid,
+      p.intermediate, p.daemon, p.daemon && -p.daemon]) {
       // Never 0, 1 or -1: they mean this test's own group, init, or every process it may signal.
       if (!Number.isInteger(id) || Math.abs(id) <= 1) continue;
       try {
@@ -111,6 +146,8 @@ function scene(t) {
     pids: (who) => pollFor(() => readJson(handshake), `${who} never wrote its pids`),
     /** Resolves once fake-cli has printed "ready", the line that makes runRenderProcess snapshot the tree. */
     ready: () => pollFor(() => (fs.existsSync(`${handshake}.ready`) ? true : undefined), "fake-cli never printed ready"),
+    /** fake-cli's marker files beside the handshake: <handshake>.<name>. */
+    marker: (name) => `${handshake}.${name}`,
   };
 }
 
@@ -153,6 +190,7 @@ test("descendantsOf never returns pid or pgid <= 1 or its own group", (t) => {
   stat(102, 101, 101, "helper");      // in the browser's group
   stat(103, 101, 103, "a) S 1 1");    // a name that forges fields; found by its real ppid 101
   stat(107, 100, 0);                  // its pid is kept, its pgid 0 is not
+  stat(108, 100, 1);                  // its pid is kept, its pgid 1 is not: kill(-1) signals every process
   stat(0, 100, 0);                    // pid 0 is never returned
   stat(1, 100, 1, "init");            // pid 1 is never returned, nor walked through
   stat(104, 1, 104);                  //   so this is not found
@@ -164,13 +202,13 @@ test("descendantsOf never returns pid or pgid <= 1 or its own group", (t) => {
   fs.mkdirSync(path.join(procDir, "301"));  // exited between the listing and the read: no stat file
 
   const sorted = (r) => ({ pids: [...r.pids].sort((a, b) => a - b), pgids: [...r.pgids].sort((a, b) => a - b) });
-  const expected = { pids: [101, 102, 103, 107], pgids: [101, 103] };
+  const expected = { pids: [101, 102, 103, 107, 108], pgids: [101, 103] };
   // The service's group, read from <procDir>/self/stat, as production reads /proc/self/stat.
   assert.deepEqual(sorted(descendantsOf(100, { procDir })), expected);
   assert.deepEqual(sorted(descendantsOf(100, { procDir, selfPgid: SELF_PGID })), expected);
   // An explicit selfPgid overrides <procDir>/self/stat: with 999 named as its own, 105's subtree is found.
   assert.deepEqual(sorted(descendantsOf(100, { procDir, selfPgid: 999 })),
-    { pids: [101, 102, 103, 105, 106, 107], pgids: [101, 103, 106, 777] });
+    { pids: [101, 102, 103, 105, 106, 107, 108], pgids: [101, 103, 106, 777] });
   for (const root of [0, 1]) {
     assert.deepEqual(descendantsOf(root, { procDir }), { pids: [], pgids: [] }, `root ${root} is everything`);
   }
@@ -180,7 +218,7 @@ test("descendantsOf never returns pid or pgid <= 1 or its own group", (t) => {
   }
 });
 
-test("runRenderProcess starts nothing for an aborted signal or a bad duration, and rejects when the CLI cannot start", async (t) => {
+test("runRenderProcess starts nothing for an aborted signal or a bad duration, and rejects when the CLI cannot start", SPAWNS, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "no-cli-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   // Spawning this rejects with ENOENT, so a result that resolves proves nothing was spawned.
@@ -192,10 +230,16 @@ test("runRenderProcess starts nothing for an aborted signal or a bad duration, a
   assert.equal(aborted.timedOut, false);
   assert.deepEqual(await aborted.cleanup, { verified: true, survivors: [] });
 
+  // Past 2147483647 ms, setTimeout fires after 1 ms instead, and a verification deadline of Number.MAX_VALUE
+  // would poll forever.
   for (const key of ["deadlineMs", "graceMs", "verifyDeadlineMs"]) {
-    for (const bad of [Number.NaN, -1, Infinity]) {
+    const bads = [Number.NaN, -1, Infinity, 2_147_483_648, ...(key === "verifyDeadlineMs" ? [Number.MAX_VALUE] : [])];
+    for (const bad of bads) {
       await assert.rejects(runRenderProcess(missing, [], { ...base, [key]: bad }), RangeError, `${key} = ${bad}`);
     }
+    // The largest delay a timer takes is accepted: it gets as far as the spawn.
+    await assert.rejects(runRenderProcess(missing, [], { ...base, [key]: 2_147_483_647 }), { code: "ENOENT" },
+      `${key} = 2147483647`);
   }
 
   // No process exists, so there is no cleanup to wait for: the caller frees its slot at once.
@@ -297,6 +341,8 @@ test("REVIEW FOCUS 3: aborting the signal after the handshake kills every descen
   const result = await run;
   assert.equal(result.aborted, true);
   assert.equal(slots.inUse, 1, "the slot is held while the kill runs");
+  // The slot above is this test's own bookkeeping. This is what makes holding it correct: the kill is still running.
+  assert.equal(await settledYet(result.cleanup), false, "cleanup had already settled when the result did");
   void result.cleanup.finally(release);
   await slots.drained();
   // The slot freed only once cleanup verified, so every process is already gone: no polling here.
@@ -339,6 +385,219 @@ test("cleanup reports unverified with the survivor when a kill is skipped", LINU
   // The grandchild shares the skipped group, but a recorded pid still alive is SIGKILLed by its own pid.
   assert.ok(calls.some((c) => c.id === pids.grandchild && c.signal === "SIGKILL"), "the grandchild was SIGKILLed by pid");
   await allGone([pids.grandchild]);
+  assert.match(report.cause ?? "", /still alive/, "the report says why it is unverified");
+});
+
+test("a CLI whose child daemonises settles at its exit, and cleanup reports the pipes the escaped grandchild holds", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  // The grandchild is reparented away from the CLI before any snapshot sees it. An empty procDir makes that
+  // certain, instead of a race between the daemonising and the 250 ms snapshot ticker.
+  const procDir = path.join(s.dir, "proc");
+  fs.mkdirSync(procDir);
+  const DEADLINE_MS = 20_000;
+  const run = runRenderProcess(process.execPath, s.argv("--daemonize", `--exit-on-file=${s.exitFile}`),
+    options(s, { procDir, deadlineMs: DEADLINE_MS, verifyDeadlineMs: 500 }));
+  // Checked the moment the result settles: cleanup cannot have settled yet, since it waits up to 500 ms for the
+  // pipes. A result that waited for 'close' would settle only after cleanup has let go of them.
+  let cleanupSettledFirst;
+  const settled = track(run.then(async (result) => {
+    cleanupSettledFirst = await settledYet(result.cleanup);
+    return result;
+  }));
+  const p = await s.pids("the daemonised grandchild");
+  // The scene's teardown also kills it; this names the pid the grandchild wrote, in case the test fails first.
+  t.after(() => {
+    for (const id of [p.daemon, -p.daemon]) {
+      try {
+        process.kill(id, "SIGKILL");
+      } catch (err) {
+        if (err.code !== "ESRCH") throw err;
+      }
+    }
+  });
+  await s.ready();
+  await allGone([p.intermediate]); // so the grandchild is no descendant of the CLI
+
+  fs.writeFileSync(s.exitFile, "");
+  // WAIT_MS is half the deadline, so a result that waited for the pipes to close settles too late to pass.
+  const result = await pollFor(settled,
+    `the result did not settle within ${WAIT_MS / 1000}s of the CLI's exit: it waited for the pipes the grandchild holds`);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(cleanupSettledFirst, false, "the result settled at the exit, before cleanup decided");
+  const report = await result.cleanup;
+  assert.equal(report.verified, false, "an unrecorded process holds the CLI's pipes");
+  assert.equal(report.cause, "pipes held open");
+  assert.deepEqual(report.survivors, [], "the only recorded process, the CLI, is gone");
+  // Once cleanup has decided, the service lets go of the pipes: the grandchild's writes fail, and it exits.
+  await allGone([p.daemon]);
+});
+
+test("the kill path never signals a pid or group <= 1, nor the service's own group, whatever a snapshot holds", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const selfPgid = ownPgid();
+  // Ids that no process has: kill(2) on them gives ESRCH.
+  const FAKE = 2_000_000_000;
+  // A doctored /proc, built aside and renamed into place, so a snapshot sees all of it or none. Its self/stat
+  // names a group that is not the service's, so descendantsOf passes the real one through to the kill path, which
+  // reads the service's group from the real /proc/self/stat.
+  const procDir = path.join(s.dir, "proc");
+  const staging = `${procDir}.tmp`;
+  const stat = (pid, ppid, pgid, name = String(pid)) => {
+    fs.mkdirSync(path.join(staging, name), { recursive: true });
+    fs.writeFileSync(path.join(staging, name, "stat"), `${pid} (p) S ${ppid} ${pgid} 0 0 -1\n`);
+  };
+  // The kill seam records only, so a regression here can never signal anything real.
+  const calls = [];
+  const kill = (id, signal) => { calls.push({ id, signal }); };
+  const snapshots = [];
+  const run = runRenderProcess(process.execPath, s.argv("--no-browser", `--exit-on-file=${s.exitFile}`),
+    options(s, { procDir, kill, verifyDeadlineMs: 200, onSnapshot: (snap) => snapshots.push(snap) }));
+  const { cli } = await s.pids("fake-cli");
+  stat(process.pid, 1, FAKE + 9, "self");
+  stat(FAKE + 1, cli, selfPgid);       // in the service's own group
+  stat(selfPgid, cli, FAKE + 2);       // the leader of the service's group, by pid: killTree(pid) signals -pid first
+  stat(process.pid, cli, FAKE + 3);    // the service itself
+  stat(FAKE + 4, cli, 1);              // in init's group: descendantsOf drops pgid 1, and so does the kill path
+  stat(FAKE + 5, cli, FAKE + 5);       // an ordinary group, which is signalled
+  fs.renameSync(staging, procDir);
+  await pollFor(() => (snapshots.some((snap) => snap.pgids.includes(FAKE + 5)) ? true : undefined),
+    "no snapshot recorded the doctored tree");
+
+  fs.writeFileSync(s.exitFile, "");
+  const result = await run;
+  assert.equal(result.exitCode, 0);
+  const report = await result.cleanup;
+  const forbidden = calls.filter((c) => c.id <= 1 || c.id === selfPgid || c.id === process.pid);
+  assert.deepEqual(forbidden, [], `the service's group is ${selfPgid} and its pid ${process.pid}`);
+  assert.ok(calls.some((c) => c.id === FAKE + 5 && c.signal === "SIGKILL"), "the ordinary group was still signalled");
+  // What it refused to signal is still alive, so cleanup cannot be verified, and the service exits.
+  assert.equal(report.verified, false);
+  assert.ok(report.survivors.includes(process.pid), `survivors [${report.survivors}] name the service itself`);
+});
+
+test("a CLI that prints nothing has its browser recorded by the snapshot ticker, and killed", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const snapshots = [];
+  const run = runRenderProcess(process.execPath, s.argv("--silent", `--exit-on-file=${s.exitFile}`),
+    options(s, { onSnapshot: (snap) => snapshots.push(snap) }));
+  const pids = await s.pids("fake-browser");
+  assert.notEqual(pids.browserPgid, pids.cli, "the browser leads a group of its own");
+  // No output means no snapshot on a chunk: only the ticker can record the browser.
+  await pollFor(() => (snapshots.some((snap) => snap.pids.includes(pids.browser)) ? true : undefined),
+    () => `no snapshot recorded the browser ${pids.browser} in ${WAIT_MS / 1000}s (${snapshots.length} snapshots)`);
+
+  fs.writeFileSync(s.exitFile, "");
+  const result = await run;
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.outputTail, "", "the CLI printed nothing");
+  assert.deepEqual(await result.cleanup, { verified: true, survivors: [] });
+  await allGone([pids.browser, pids.grandchild, -pids.browserPgid]);
+});
+
+test("outputTail keeps the last 2 500 characters of stdout and stderr together", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const run = runRenderProcess(process.execPath, s.argv("--no-browser", "--flood", `--exit-on-file=${s.exitFile}`),
+    options(s));
+  await s.pids("fake-cli");
+  // fake-cli writes stderr's block only after stdout's has been read here, so stderr's arrives last.
+  await pollFor(() => (fs.existsSync(s.marker("stdout")) ? true : undefined), "fake-cli never wrote its stdout block");
+  await ioTurns();
+  fs.writeFileSync(s.marker("go"), "");
+  await s.ready();
+  await ioTurns();
+
+  fs.writeFileSync(s.exitFile, "");
+  const result = await run;
+  assert.equal(result.exitCode, 0);
+  const tail = result.outputTail;
+  assert.ok(tail.length <= 2_500, `outputTail holds ${tail.length} characters`);
+  assert.ok(tail.endsWith("<<STDERR-END>>\n"), `outputTail ends with stderr's last line: ...${JSON.stringify(tail.slice(-40))}`);
+  assert.ok(!tail.includes("<<STDOUT-END>>"), "stdout's block is more than 2 500 characters back");
+  assert.deepEqual(await result.cleanup, { verified: true, survivors: [] });
+});
+
+test("a kill that throws leaves cleanup unverified, and the cause names the error", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const controller = new AbortController();
+  const kill = () => { throw new Error("the kill seam refused"); };
+  const run = runRenderProcess(process.execPath, s.argv("--no-browser", "--ignore-sigterm"),
+    options(s, { signal: controller.signal, kill, graceMs: 0, verifyDeadlineMs: 200 }));
+  const { cli } = await s.pids("fake-cli");
+  await s.ready();
+
+  controller.abort();
+  const report = await (await run).cleanup;
+  assert.equal(report.verified, false);
+  assert.deepEqual(report.survivors, [cli], "no signal reached the CLI");
+  assert.match(report.cause ?? "", /the kill seam refused/);
+});
+
+test("an unexpected error while stopping leaves cleanup unverified, with its message as the cause", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const controller = new AbortController();
+  // Throws from the stop's first snapshot, which no part of the stop expects.
+  let armed = false;
+  const onSnapshot = () => {
+    if (armed) throw new Error("the snapshot seam failed mid-stop");
+  };
+  const run = runRenderProcess(process.execPath, s.argv("--no-browser", "--ignore-sigterm"),
+    options(s, { signal: controller.signal, onSnapshot }));
+  const { cli } = await s.pids("fake-cli");
+  await s.ready();
+
+  armed = true;
+  controller.abort();
+  const result = await run;
+  assert.equal(result.aborted, true);
+  const report = await result.cleanup;
+  assert.equal(report.verified, false);
+  assert.equal(report.cause, "the snapshot seam failed mid-stop");
+  assert.ok(report.survivors.includes(cli), `survivors [${report.survivors}] name the CLI it never stopped`);
+});
+
+test("a snapshot seam that throws while the CLI runs crashes nothing, and the snapshot is still recorded", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  let thrown = 0;
+  const onSnapshot = () => {
+    thrown += 1;
+    throw new Error("the snapshot seam failed");
+  };
+  const run = runRenderProcess(process.execPath, s.argv(`--exit-on-file=${s.exitFile}`), options(s, { onSnapshot }));
+  const pids = await s.pids("fake-browser");
+  await s.ready();
+  await pollFor(() => (thrown > 0 ? true : undefined), "no snapshot ran");
+
+  fs.writeFileSync(s.exitFile, "");
+  const result = await run;
+  assert.equal(result.exitCode, 0);
+  // The seam runs after each snapshot is recorded, so the browser's group is still known, and killed.
+  assert.deepEqual(await result.cleanup, { verified: true, survivors: [] });
+  await allGone([pids.browser, pids.grandchild, -pids.browserPgid]);
+});
+
+test("the verification deadline is on the monotonic clock, so a wall-clock step back cannot stretch it", LINUX_ONLY, async (t) => {
+  const s = scene(t);
+  const realNow = Date.now;
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow.call(Date) + offset);
+  const controller = new AbortController();
+  // Records only, so the CLI outlives every signal and verification runs to its deadline. Right after the
+  // SIGKILL, once the verification has taken its start time, the wall clock steps back an hour.
+  const kill = (_id, signal) => {
+    if (signal === "SIGKILL") setImmediate(() => { offset = -3_600_000; });
+  };
+  const run = runRenderProcess(process.execPath, s.argv("--no-browser", "--ignore-sigterm"),
+    options(s, { signal: controller.signal, kill, graceMs: 0, verifyDeadlineMs: 300 }));
+  const { cli } = await s.pids("fake-cli");
+  await s.ready();
+
+  controller.abort();
+  const cleanup = track((await run).cleanup);
+  const report = await pollFor(cleanup,
+    "cleanup never settled: its 300 ms deadline moved back with the wall clock");
+  assert.equal(report.verified, false);
+  assert.deepEqual(report.survivors, [cli]);
 });
 
 test("childEnv keeps PATH, HOME and REMOTION_*, sets TMPDIR to the work dir, and drops IDENTITY_HMAC_KEY and AUDIT_HMAC_KEY", () => {

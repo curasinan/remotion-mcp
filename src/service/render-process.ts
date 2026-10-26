@@ -2,7 +2,8 @@
  * The service's own spawner for the Remotion CLI (design 5.6, ADR-7). It never goes through runCommand or
  * cliLimiter. The CLI leads its own process group and Chrome leads another, so while the CLI is alive the
  * spawner records every descendant and its group from /proc. Stopping a render signals every recorded
- * group, then verifies that every recorded process is gone.
+ * group, then verifies that every recorded process is gone and that the CLI's stdout and stderr have closed,
+ * since an open pipe means a process nobody recorded still holds it.
  */
 
 import { spawn } from "node:child_process";
@@ -14,20 +15,32 @@ export interface CleanupReport {
   verified: boolean;
   /** The recorded pids still alive at the verification deadline. */
   survivors: number[];
+  /**
+   * Why cleanup is unverified: survivors, pipes held open by a process nobody recorded, or an unexpected error's
+   * message. Absent when verified. For the service's own log, never a caller.
+   */
+  cause?: string;
 }
 
 export interface RenderProcessOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
-  /** At this deadline the result settles with `timedOut`, and the kill continues in `cleanup`. */
+  /** At this deadline the result settles with `timedOut`, and the kill continues in `cleanup`. 0..2147483647. */
   deadlineMs: number;
-  /** Time between SIGTERM and SIGKILL after a deadline or an abort. */
+  /** Time between SIGTERM and SIGKILL after a deadline or an abort. 0..2147483647. */
   graceMs: number;
-  /** How long after the SIGKILL `cleanup` waits for every recorded process to be gone. */
+  /**
+   * How long after the SIGKILL `cleanup` waits for every recorded process to be gone and for the CLI's stdout and
+   * stderr to close. 0..2147483647.
+   */
   verifyDeadlineMs: number;
   signal?: AbortSignal;
   /** Signals a process group, or the pid when it leads none. Defaults to killTree; tests inject. */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Called after each snapshot of the CLI's descendants. A test seam, like `kill`. */
+  onSnapshot?: (s: { pids: number[]; pgids: number[] }) => void;
+  /** Where the snapshots read the process table. Defaults to /proc; tests point it at a doctored copy. */
+  procDir?: string;
 }
 
 export interface RenderProcessResult {
@@ -35,9 +48,15 @@ export interface RenderProcessResult {
   signal: NodeJS.Signals | null;
   timedOut: boolean;
   aborted: boolean;
-  /** The last 2 500 characters of stdout and stderr, in arrival order. For the service's logs, never a caller. */
+  /**
+   * The last 2 500 characters of stdout and stderr, in arrival order, as they stood when the result settled. For
+   * the service's logs, never a caller.
+   */
   outputTail: string;
-  /** Settles once every recorded process is gone, or the verification deadline has passed. Never rejects. */
+  /**
+   * Settles once every recorded process is gone and the CLI's pipes have closed, or the verification deadline has
+   * passed. Never rejects.
+   */
   cleanup: Promise<CleanupReport>;
 }
 
@@ -47,6 +66,9 @@ const OUTPUT_TAIL_CHARS = 2_500;
 /** How often the tree is recorded while the CLI is alive, besides on every chunk of output. */
 const SNAPSHOT_INTERVAL_MS = 250;
 const VERIFY_POLL_MS = 50;
+/** The longest delay setTimeout honours. Node fires a longer one after 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+const PIPES_HELD_OPEN = "pipes held open";
 /** The variables a render's processes get, besides REMOTION_* and TMPDIR. Keys are never among them. */
 const CHILD_ENV_NAMES = new Set(["PATH", "HOME", "LANG", "NODE_ENV"]);
 const DIGITS = /^\d+$/;
@@ -141,10 +163,12 @@ function exists(id: number): boolean {
   }
 }
 
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 /**
  * Spawns `file` detached, so it leads its own process group, and settles on its exit or at the deadline,
  * whichever comes first. An abort settles it at once, as `aborted`. Then `cleanup` stops every process the
- * render started and settles once they are verified gone.
+ * render started and settles once they are verified gone and the CLI's stdout and stderr have closed.
  *
  * It rejects only when no process was started: a bad duration, a spawn that throws, or a spawn error such as
  * ENOENT. A signal that is already aborted starts nothing and resolves as `aborted`.
@@ -156,9 +180,10 @@ export async function runRenderProcess(
 ): Promise<RenderProcessResult> {
   for (const [name, value] of [["deadlineMs", o.deadlineMs], ["graceMs", o.graceMs],
     ["verifyDeadlineMs", o.verifyDeadlineMs]] as const) {
-    // NaN would make the verification poll forever, and its slot would never free.
-    if (!Number.isFinite(value) || value < 0) {
-      throw new RangeError(`runRenderProcess: ${name} must be a finite number >= 0, got ${String(value)}`);
+    // NaN or Number.MAX_VALUE would make the verification poll forever, and its slot would never free. Past
+    // MAX_TIMER_MS a timer fires after 1 ms.
+    if (!Number.isFinite(value) || value < 0 || value > MAX_TIMER_MS) {
+      throw new RangeError(`runRenderProcess: ${name} must be a finite number in 0..${MAX_TIMER_MS}, got ${String(value)}`);
     }
   }
   if (o.signal?.aborted) {
@@ -168,6 +193,8 @@ export async function runRenderProcess(
     };
   }
   const kill = o.kill ?? killTree;
+  // The service's own group, from the real /proc whatever `procDir` says, since the kill path signals real ids.
+  const selfPgid = process.platform === "linux" ? readStat("/proc/self/stat")?.pgid : undefined;
 
   const child = spawn(file, args, {
     cwd: o.cwd, env: o.env, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"],
@@ -183,38 +210,65 @@ export async function runRenderProcess(
   const pgids = new Set<number>([cliPid]);
   let alive = true;
   let tail = "";
+  // A process the snapshots never saw, such as a daemonised grandchild, can hold the CLI's pipes after its exit.
+  let openPipes = 2;
+  child.stdout.once("close", () => { openPipes -= 1; });
+  child.stderr.once("close", () => { openPipes -= 1; });
 
   // Once the CLI has exited its orphans are reparented and the walk finds nothing, so the union recorded
   // while it was alive is what cleanup signals.
   const record = (): void => {
     if (!alive) return;
-    const found = descendantsOf(cliPid);
+    const found = descendantsOf(cliPid, { procDir: o.procDir });
     for (const pid of found.pids) pids.add(pid);
     for (const pgid of found.pgids) pgids.add(pgid);
+    o.onSnapshot?.(found);
+  };
+  // A snapshot that fails while the CLI runs is retried on the next chunk or tick. One that fails while stopping
+  // is an unexpected error, which the stop reports.
+  const recordWhileRunning = (): void => {
+    try {
+      record();
+    } catch {
+      // The next snapshot, or the stop's own, records the tree.
+    }
   };
   const onOutput = (chunk: string): void => {
     tail = (tail + chunk).slice(-OUTPUT_TAIL_CHARS);
-    record();
+    recordWhileRunning();
   };
   // Drained continuously, so a render that writes megabytes never wedges on a full pipe.
   child.stdout.setEncoding("utf8").on("data", onOutput);
   child.stderr.setEncoding("utf8").on("data", onOutput);
-  const ticker = setInterval(record, SNAPSHOT_INTERVAL_MS);
+  const ticker = setInterval(recordWhileRunning, SNAPSHOT_INTERVAL_MS);
 
+  let killError: string | undefined;
   const send = (id: number, signal: NodeJS.Signals): void => {
+    // Whatever a snapshot recorded, never an id <= 1 (killTree(0) signals the service's own group, killTree(1)
+    // signals -1, every process the service may signal), the service's own group, or the service itself.
+    if (!Number.isInteger(id) || id <= 1 || id === selfPgid || id === process.pid) return;
     try {
       kill(id, signal);
-    } catch {
-      // The verification below is the arbiter.
+    } catch (err) {
+      // The verification below is the arbiter; the first failure goes into its cause.
+      killError ??= `kill(${id}, ${signal}) threw: ${messageOf(err)}`;
     }
   };
 
   const verify = async (): Promise<CleanupReport> => {
-    const until = Date.now() + o.verifyDeadlineMs;
+    // The monotonic clock, so a wall-clock step cannot stretch or cut the deadline.
+    const until = performance.now() + o.verifyDeadlineMs;
     for (;;) {
       const survivors = [...pids].filter(exists);
-      if (survivors.length === 0) return { verified: true, survivors: [] };
-      if (Date.now() >= until) return { verified: false, survivors };
+      if (survivors.length === 0 && openPipes === 0) return { verified: true, survivors: [] };
+      if (performance.now() >= until) {
+        const causes: string[] = [];
+        if (survivors.length > 0) causes.push(`recorded processes still alive: ${survivors.join(", ")}`);
+        // With nothing recorded alive, an open pipe means a process nobody recorded holds it.
+        if (openPipes > 0) causes.push(PIPES_HELD_OPEN);
+        if (killError !== undefined) causes.push(killError);
+        return { verified: false, survivors, cause: causes.join("; ") };
+      }
       await delay(VERIFY_POLL_MS);
     }
   };
@@ -240,15 +294,17 @@ export async function runRenderProcess(
     if (stopping) return;
     stopping = true;
     void terminate(graceful)
-      .catch((): CleanupReport => ({ verified: false, survivors: [...pids] }))
+      .catch((err: unknown): CleanupReport => ({ verified: false, survivors: [...pids], cause: messageOf(err) }))
       .then((report) => {
         clearInterval(ticker);
+        // Decided: let go of the pipes, so one an escaped process holds open does not stay open here.
+        child.stdout.destroy();
+        child.stderr.destroy();
         finish(report);
       });
   };
 
   return new Promise<RenderProcessResult>((resolve) => {
-    let exitedWith: Outcome | undefined;
     let settled = false;
     const settle = (outcome: Outcome): void => {
       if (settled) return;
@@ -257,9 +313,9 @@ export async function runRenderProcess(
       o.signal?.removeEventListener("abort", onAbort);
       resolve({ ...outcome, outputTail: tail, cleanup });
     };
-    // A stop that lands after the CLI's exit, while its output is still draining, settles with that exit.
+    // A deadline or abort after the CLI's exit finds the result settled, and its stop already under way.
     const halt = (outcome: Outcome): void => {
-      if (exitedWith) return settle(exitedWith);
+      if (settled) return;
       settle(outcome);
       stop(true);
     };
@@ -271,15 +327,13 @@ export async function runRenderProcess(
     const onAbort = (): void => halt({ exitCode: null, signal: null, timedOut: false, aborted: true });
     o.signal?.addEventListener("abort", onAbort, { once: true });
 
+    // Settles on the exit, not on 'close': a process that escaped every snapshot may hold the pipes open for
+    // as long as it lives. The tail is what has arrived by then. Cleanup waits for the pipes.
     child.on("exit", (exitCode, signal) => {
       alive = false;
       clearInterval(ticker);
-      exitedWith = { exitCode, signal, timedOut: false, aborted: false };
+      settle({ exitCode, signal, timedOut: false, aborted: false });
       stop(false);
-    });
-    // 'close' follows 'exit' once stdout and stderr have ended, so the tail holds the CLI's last words.
-    child.on("close", () => {
-      if (exitedWith) settle(exitedWith);
     });
     // After a successful spawn nothing this module does can raise one; listening keeps it from throwing.
     child.on("error", () => {});
