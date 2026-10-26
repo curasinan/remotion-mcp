@@ -289,7 +289,9 @@ function reportExpansion(nodes: Map<string | undefined, number>, refs: RefEdge[]
     }
     const unsized = (targets.get(name) ?? []).filter((to) => !sizes.has(to));
     if (unsized.length > 0) {
-      stack.push(...unsized);
+      // One push each: push(...unsized) passes every target as an argument, and V8 caps how many a call takes, so a
+      // def with about 130 000 refs threw RangeError.
+      for (const to of unsized) stack.push(to);
     } else {
       sizes.set(name, expanded(name));
       stack.pop();
@@ -414,15 +416,22 @@ export function loadPack(dir: string): LoadedPack {
     for (const field of ["packHash", "remotionVersion"]) {
       if (!isText(raw[field])) report(`/${field}: non-empty string required`);
     }
-    if (!Array.isArray(raw.templates)) report("/templates: array required");
-    else if (raw.templates.length === 0) report("/templates: at least one template required");
-    else list.push(...raw.templates);
+    if (!Array.isArray(raw.templates)) {
+      report("/templates: array required");
+    } else if (raw.templates.length === 0) {
+      report("/templates: at least one template required");
+    } else {
+      // One push each, never push(...templates): V8 caps a call's arguments, so a long list would throw RangeError.
+      for (const entry of raw.templates) list.push(entry);
+    }
   }
 
   // allErrors stays false: ajv then stops a node at its first failing keyword, and maxLength, enum and const all run
   // before pattern. With allErrors on, a pack's pattern would run on a caller string of any length, and one
-  // backtracking regex would block the event loop (ajv's security guide gives the same warning).
-  const ajv = new Ajv2020({ allErrors: false, strict: true });
+  // backtracking regex would block the event loop (ajv's security guide gives the same warning). logger is off: when
+  // V8 cannot compile a schema's generated code, ajv's default logger prints the whole function (about 600 KB for an
+  // object of 1000 properties) to console.error. The throw itself still becomes a problem below.
+  const ajv = new Ajv2020({ allErrors: false, strict: true, logger: false });
   const firstById = new Map<string, number>();
   list.forEach((entry, i) => {
     const at = `/templates/${i}`;

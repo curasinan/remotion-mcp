@@ -467,6 +467,27 @@ process.stdout.write(JSON.stringify({ problems, elapsed: performance.now() - sta
   assert.ok(elapsed < 1000, `the count took ${elapsed} ms`);
 });
 
+// A spread call, push(...list), passes each element as its own argument, and V8 caps how many a call can take: past
+// about 130 000 it throws RangeError. The two lists below are as long as a manifest makes them, so neither is spread.
+test("a def that fans in 200 000 refs is refused as too big, never a RangeError out of the expansion count", (t) => {
+  // Def a is an anyOf of 200 000 refs to def b, so the count meets 200 000 unsized targets of one def at once.
+  const fanIn = { $defs: { a: { anyOf: Array.from({ length: 200_000 }, () => ({ $ref: "#/$defs/b" })) },
+    b: { type: "null" } }, ...obj({ x: { $ref: "#/$defs/a" } }) };
+  const tooBig = [": schema expands past 10000 nodes"];
+  const err = refusal(swatchPack(t, fanIn));
+  assert.ok(err instanceof PackError, String(err));
+  assert.deepEqual(err.problems, tooBig);
+  assert.deepEqual(checkSchemaVocabulary(fanIn), tooBig);
+});
+
+test("a manifest of 200 000 templates is a PackError naming each, never a RangeError", (t) => {
+  const err = refusal(tempPack(t, (m) => { m.templates = Array.from({ length: 200_000 }, () => 0); }));
+  assert.ok(err instanceof PackError, String(err));
+  assert.equal(err.problems.length, 200_000);
+  assert.equal(err.problems[0], "/templates/0: object required");
+  assert.equal(err.problems.at(-1), "/templates/199999: object required");
+});
+
 test("a number with const or a non-empty enum needs no bounds, and an enum counts only as a non-empty array", (t) => {
   // zod 4 exports z.literal(5) as a const number, and z.enum as a string enum.
   const literals = toJSONSchema(z.strictObject({ n: z.literal(5), e: z.enum(["a", "b"]) }));
@@ -730,6 +751,39 @@ test("a schema ajv's strict mode refuses is a PackError, never a raw throw", (t)
     assert.match(err.problems[0], /^: ajv refused the schema: /);
     assert.match(err.message, /^template pack refused: \/templates\/1\/propsSchema: ajv refused the schema: /);
   }
+});
+
+test("a schema ajv cannot compile prints nothing, and is still a located PackError", (t) => {
+  // With allErrors off, ajv nests one `if` per property, so one object of about 1000 properties nests deeper than V8's
+  // parser can go. ajv's default logger then printed the whole generated function, about 600 KB, to console.error,
+  // before loadPack turned the throw into a problem. The width that takes depends on the host's stack, so the test
+  // first finds one at which an ajv with the default logger does print: that is also the control that the spy works.
+  const printed = [];
+  for (const level of ["error", "warn", "log"]) {
+    t.mock.method(console, level, (...args) => { printed.push(`${level}: ${String(args[0]).slice(0, 80)}`); });
+  }
+  const wide = (n) => obj(Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, { type: "null" }])));
+  const width = [850, 1000, 1200, 1450, 1750, 2100, 2500].find((n) => {
+    printed.length = 0;
+    try {
+      new Ajv2020({ allErrors: false, strict: true }).compile(wide(n));
+    } catch {
+      // Whether it throws is not the point here; loadPack's refusal is checked below.
+    }
+    return printed.length > 0;
+  });
+  if (width === undefined) {
+    t.skip("an ajv with the default logger printed nothing at any probed width, so this host cannot show the dump");
+    return;
+  }
+
+  printed.length = 0;
+  const err = refusal(swatchPack(t, wide(width)));
+  assert.deepEqual(printed, [], `loadPack printed at width ${width}`);
+  assert.ok(err instanceof PackError, String(err));
+  assert.equal(err.problems.length, 1);
+  assert.match(err.problems[0], /^: ajv refused the schema: /);
+  assert.match(err.message, /^template pack refused: \/templates\/1\/propsSchema: ajv refused the schema: /);
 });
 
 test("a missing or malformed manifest is a PackError naming every problem", (t) => {
