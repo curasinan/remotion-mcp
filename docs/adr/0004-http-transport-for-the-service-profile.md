@@ -102,7 +102,7 @@ only when the request's identity header verifies (below).
 
 Only `POST /mcp` passes. Any other method gets 405 and any other path gets 404,
 before anything is created. The service serves no health endpoint over HTTP; the
-image's Docker `HEALTHCHECK` checks the process from inside the container.
+image's Docker `HEALTHCHECK` will check the process from inside the container.
 
 For each POST it creates a fresh `McpServer`, registers the four tools on it,
 and connects it to a fresh SDK streamable-HTTP transport with
@@ -158,10 +158,11 @@ refused all 12, and no tool ran for any of them (design §2).
 **What this does not cover.** Every process the service starts runs as the
 service's uid. That covers the Remotion CLI, Chrome, and the pack code they run.
 
-The service spawns them with an allowlisted environment: `PATH`, `HOME` and the
-Remotion and Chrome variables. Neither HMAC key is passed on. Even so, a child
-could read the service's own environment through `/proc`, because it runs as
-the same uid. So code that runs inside a render can do whatever the service can.
+The service will spawn them with an allowlisted environment: `PATH`, `HOME`,
+`LANG`, `NODE_ENV`, `REMOTION_*`, and `TMPDIR` set to the render's own work
+directory. Keys are never passed on. Even so, a child could read the service's
+own environment through `/proc`, because it runs as the same uid. So code that
+runs inside a render can do whatever the service can.
 
 That is acceptable only because the pack is code its operator chose to bake
 (ADR-5, owner ruling 7). Closing the gap would take render children under a uid
@@ -179,7 +180,7 @@ would take a separate launcher. Nothing in the design does this.
 - **Never Alpine.** Every Linux native target this project ships and tests is
   glibc: `scripts/build-bundle.mjs:63-65` keeps resvg's musl entries disabled.
   v1.2.1 shipped an accidental musl binary.
-- **Distribution.** This repository's CI publishes the image to GitHub
+- **Distribution.** This repository's CI will publish the image to GitHub
   Container Registry, pinned by digest, once the owner enables it (owner
   ruling 3). A deployer builds a small derived image that adds their template
   pack (ADR-5).
@@ -190,14 +191,14 @@ The owner owns and controls one central gateway (design §1). It is not in this
 repository. It authenticates callers, applies the owner's tenant grants, and
 signs one identity header per deployment. It reaches each deployment over HTTPS
 through that deployer's TLS proxy. This repository specifies the contract the
-gateway signs to (ADR-6) and ships a test signer and test vectors for it. It
-does not ship a gateway.
+gateway signs to (ADR-6) and will ship a test signer and test vectors for it
+(design §5.3). It does not ship a gateway.
 
-**Considered and not chosen: a unix domain socket.** A socket makes file modes
-the access control, which works when the gateway and the service share a host
-and a group. One central gateway and several deployments run by different
-operators share neither. A signed header can cross the network between them, and
-file modes cannot.
+**Considered and not chosen: a unix domain socket.** The earlier framing put
+the gateway in this repository, beside the service, on a socket. The owner ruled
+that framing wrong (design §1): the gateway is central and outside the
+repository, and the service trusts a request by its identity header, whatever
+network the request arrived from (design §5.1).
 
 ### The stdio guarantee is verified, not intended
 
@@ -241,9 +242,8 @@ service authenticates the gateway. Each item is paid as follows:
 | Per-request audit | The owner's envelope at the gateway, and the service's own hash-only audit log | design §5.8; ADR-6 |
 | Origin checks, DNS rebinding | A browser holds no key. A rebound or cross-site request cannot carry a header that verifies against its own body, so it gets 401. The service also refuses GET | design §5.2 |
 
-The deferral expires when anything other than the owner's gateway has to reach a
-deployment, or when a deployment has to trust more than one issuer of identity
-headers.
+The design does not build OAuth 2.1 and sets no trigger for revisiting it, so
+this ADR records none.
 
 That a browser never calls the service (fixed constraint 1) is a property of the
 callers' architecture. This repository does not enforce it, and does not rely on
@@ -251,6 +251,12 @@ it: the header check refuses a browser's request whatever its origin.
 
 ## Consequences
 
+- **Build status.** As of 2026-10-26 none of the service files and checks this
+  ADR names exist yet: `src/service/`, `tsconfig.service.json`, the image, the
+  absence suite, and the test signer and vectors. This ADR records the decision,
+  and `docs/superpowers/plans/final_script.md` builds them. What exists is the
+  `tsconfig.json` exclusion and `test/profiles.test.mjs` (PR #18), and the leaf
+  `src/services/entrypoint.ts` (PR #20).
 - **The service build loads hono; the stdio build still does not.** SDK
   1.30.0's Node transport imports `@hono/node-server`
   (`dist/esm/server/streamableHttp.js:9`), which loads `hono`. That is the
@@ -265,8 +271,8 @@ it: the header check refuses a browser's request whatever its origin.
 - **A long request meets a 60 s client default.** `render_still` holds a POST
   open for the whole render. The SDK client's default request timeout is 60 s,
   and after it the client gives up while the server keeps working. So the
-  service enforces its own deadline of 45 s and answers `render_timeout` at once
-  (ADR-7), which leaves room within 60 s for the hops and the error path.
+  service will enforce its own deadline of 45 s and answer `render_timeout` at
+  once (ADR-7), which leaves room within 60 s for the hops and the error path.
   - The spikes measured this against the SDK client (design §2).
   - The deployer's TLS proxy is one more hop. This repository has no
     measurement through one. Whether a proxy buffers SSE or cuts a quiet
@@ -276,8 +282,8 @@ it: the header check refuses a browser's request whatever its origin.
     under the deadline fails rather than being deferred to a job.
 - **Two build variants is a maintenance cost.** ADR-1 declined Option 3 for
   that reason, and it is accepted here. The absence suite (design §5.7) is what
-  keeps the two from silently converging. It checks call sites and modules as
-  well as names (ADR-5).
+  will keep the two from silently converging. It will check call sites and
+  modules as well as names (ADR-5).
 - **Remotion's licence is unverified in this repository.** The owner has read
   the current text and is asking Remotion for written confirmation. An
   unfavourable answer could stop the service profile from running at all. No

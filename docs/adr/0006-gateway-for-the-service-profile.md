@@ -41,9 +41,9 @@ fixed constraint 2, under which local-dev stays stdio-only.
 
 ### Limb 2: "a multi-user goal"
 
-The tenants the owner grants meet it (design §1). Several tenants, each with its
-own grant, reach several deployments through one gateway. That is a multi-user,
-multi-tenant goal, and the owner states it directly.
+The tenants the owner grants meet it (design §1, §6). Several tenants, each with
+its own grant, reach several deployments through one gateway. That is a
+multi-user, multi-tenant goal.
 
 The grants are the owner's operational data. They are not committed here,
 because this repository is public and carries no key, hostname or tenant id. The
@@ -132,16 +132,17 @@ component, and it is not in this repository.
 
 This repository does three things about it. It specifies what the service
 enforces. It specifies what the gateway must do for the service to work. And it
-ships a test signer (`scripts/sign-identity.mjs`) and test vectors
+will ship a test signer (`scripts/sign-identity.mjs`) and test vectors
 (`test/vectors/identity-v1.json`) of valid, forged, expired, wrong-audience,
 body-tampered and replayed cases, with the exact bytes. The owner's gateway can
-check itself against them. Whether it does is an owner checkpoint, not a
+then check itself against them. Whether it does is an owner checkpoint, not a
 condition of the repository's proof (owner ruling 5).
 
 ### What the service enforces
 
-A `node:http` server handles each request in this order (design §5.2). The
-cheap checks come first, and nothing is created until the identity is checked.
+The service will handle each request with a `node:http` server, in this order
+(design §5.2). The cheap checks come first, and nothing is created until the
+identity is checked.
 
 1. **Route and method.** Only `POST /mcp` passes. Any other method gets 405, and
    any other path gets 404.
@@ -198,22 +199,22 @@ deployment.
 **Ignored fields.** A tenant or team field in `_meta` or in tool arguments has
 no effect, and is recorded as a protocol violation.
 
-**The service's own audit.** It writes its events as JSONL to a path the
+**The service's own audit.** It will write its events as JSONL to a path the
 deployer chooses (design §5.8).
 - **What it records:** request id, principal, tenant, tool, outcome, category
   and duration, plus keyed hashes and byte sizes of the params and the result.
-- **The hashes are keyed.** They are SHA-256 under an audit key,
+- **The hashes are keyed.** They are HMAC-SHA256 under an audit key,
   `AUDIT_HMAC_KEY`, that exists only in the environment. Props are short,
   bounded values (ADR-5), so a bare hash could be confirmed by guessing the
   payload.
 - **What it never records:** payloads, verbatim error messages or raw argument
-  values. It does not record the identity header either, so `body_sha256` is
+  values. It will not record the identity header either, so `body_sha256` is
   never logged as the bare hash that the keyed ones avoid.
 - **Why it has its own wrapper.** Local-dev's `safeHandler` records every
   `ToolInputError` message verbatim (`src/services/format.ts:96`) and every
   other error's message (`:102`), and its argument summary keeps short strings
   and numbers as they are (`src/services/log.ts:24-40`). The service cannot
-  reuse it, so it has its own, and `safeHandler` is left alone.
+  reuse it, so it will have its own, and `safeHandler` is left alone.
 
 ### The gateway's transport obligations
 
@@ -251,10 +252,10 @@ lives with the owner's gateway, in the service, or in both:
 | --- | --- |
 | Per-principal credentials, keys never in the public repo | The owner's gateway. The service holds only its deployment's identity key, from the environment |
 | Tenant identity from the principal, never a tool argument | The owner's gateway grants a tenant and signs it. The service reads the tenant only from the verified header and ignores any other |
-| Service-profile allowlist enforcement | Structural, in the service: exactly four tools are registered (ADR-5), and a live `tools/list` proves it. The owner's gateway keeps a response filter as well |
+| Service-profile allowlist enforcement | Structural, in the service: exactly four tools will be registered (ADR-5), and a live `tools/list` will prove it. The owner's gateway keeps a response filter as well |
 | Body size limit | The service: 256 KiB by default, counted as bytes arrive. The gateway may add its own |
 | Per-key concurrency and rate limits | The owner's gateway. The service keeps a global count of render slots (ADR-7) |
-| Per-call audit envelope, hashes and sizes only | The owner's gateway, for every call it sees. The service writes its own hash-only log (above) |
+| Per-call audit envelope, hashes and sizes only | The owner's gateway, for every call it sees. The service will write its own hash-only log (above) |
 
 So the gateway keeps its keys, its tenant grants, its per-key limits, its
 response filter and its envelope. This ADR does not specify them further,
@@ -297,19 +298,24 @@ change.
 
 ## Consequences
 
+- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
+  exist yet: the service itself, the test signer and vectors, the live
+  `tools/list` check, and the service's audit log. This ADR records the
+  decision, and `docs/superpowers/plans/final_script.md` builds them.
 - **The gateway is a single point of failure for the service path, for every
   deployment.** It is the owner's component, and this repository does not ship
   it. Losing it does not affect local-dev, which is a deliberate asymmetry.
 - **One replica per deployment id means a rollout drops in-flight renders.**
-  Recreate leaves a gap between the old container and the new one. The replay
-  set is in memory, so a second replica would not share it.
+  Recreate leaves a gap between the old container and the new one. The design
+  pairs this rule with the replay set (design §8, call 3): the seen set lives
+  in memory.
 - **A restart refuses requests signed just before it.** The start-time rule
   refuses any header whose `iat` is earlier than the start time minus skew, so a
   request signed shortly before a restart is refused for about one skew
   interval.
 - **The proof stops at the repository's edge.** The test signer and the vectors
-  show the service side end to end. They do not show that the owner's gateway
-  signs the same bytes, which is an owner checkpoint (ruling 5).
+  will show the service side end to end. They will not show that the owner's
+  gateway signs the same bytes, which is an owner checkpoint (ruling 5).
 - **Open risk: unauthenticated refusals, at the gateway.** If the owner's
   gateway writes a 401 to its envelope log, no per-key limit applies to a caller
   without a key. A flood of bad-key requests could then rotate authenticated

@@ -70,17 +70,18 @@ in what it imports. Two such edges mattered:
 A flag would leave the dangerous handlers compiled, shipped, and one bad branch
 from reachable, so the profiles are separated structurally instead. The service
 profile has a different entry point, compile closure, output directory and
-artifact (ADR-4). It registers exactly four tools from **one** `registerTool(`
-site: a loop over a frozen `SERVICE_TOOLS` array in `src/service/registry.ts`.
+artifact (ADR-4). It will register exactly four tools from **one**
+`registerTool(` site: a loop over a frozen `SERVICE_TOOLS` array in
+`src/service/registry.ts`.
 
 ### The four forbidden tools are absent from the closure, not denied
 
 That puts four requirements on the build. Spikes of 2026-10-25 (design §2)
 established the first and the fourth:
 
-1. **`tsconfig.service.json` sets `"include": []`.** Its other settings are
-   `files: ["src/service/index.ts"]`, `noEmitOnError: true` and
-   `outDir: dist-service`, and the entry lands at
+1. **`tsconfig.service.json` must set `"include": []`.** Its other settings
+   will be `files: ["src/service/index.ts"]`, `noEmitOnError: true` and
+   `outDir: dist-service`, and the entry will land at
    `dist-service/service/index.js`. A config that extends `tsconfig.json` and
    sets only `files` inherits `include: ["src/**/*"]`, which `tsc --showConfig`
    confirms. Its program would then contain every module under `src/`,
@@ -95,16 +96,17 @@ established the first and the fourth:
    (`environment.ts:7`), and `browser.ts` makes a non-literal `import(...)`
    (`browser.ts:105`). A service that renders a prebuilt bundle needs no
    entry-point discovery, so `src/service/` must import neither `environment.ts`
-   nor `browser.ts` (design §5.7). The dependency check below is what proves it.
-3. **The service never reaches `tile.ts`.** The service's `render_still` takes
-   one frame through its own spawner (`src/service/render-process.ts`, ADR-7),
-   so it has nothing to tile. If the service imported `tile.ts`, resvg,
+   nor `browser.ts` (design §5.7). The module check and the dependency check
+   below will prove it.
+3. **The service never reaches `tile.ts`.** The service's `render_still` will
+   take one frame through its own spawner (`src/service/render-process.ts`,
+   ADR-7), so it has nothing to tile. If the service imported `tile.ts`, resvg,
    `network.ts` and a `puppeteer-core` import would enter `dist-service/`.
 4. **The absence suite reads the compiled output, not just names.** A grep of
    `dist-service/` for the four forbidden names fails on a correct closure,
    because shared hint strings name local-dev tools. It would also pass a
    closure that reached resvg. Type-only imports still emit their target
-   modules. So the suite is built from checks that tell a correct closure from a
+   modules. So the suite will run checks that tell a correct closure from a
    poisoned one:
    - **AST check.** It reads every `registerTool` and `.tool` call site in the
      emitted syntax tree. It allows only the one loop in `service/registry.js`.
@@ -112,7 +114,7 @@ established the first and the fourth:
      `registerTool`, such as an alias, `.bind` or destructuring. It requires
      zero forbidden names.
    - **Module check.** No file from `tools/*`, `raster`, `tile`, `network`,
-     `visualize`, `studio` or `compare` is present.
+     `visualize`, `studio`, `compare`, `environment` or `browser` is present.
    - **Dependency check.** There is no `@resvg/resvg-js` or `puppeteer-core`
      specifier, and no non-literal `import()`.
    - **Live check.** A live `tools/list` returns exactly the four tools.
@@ -131,16 +133,17 @@ established the first and the fourth:
 - No service response carries a filesystem path. Every error a caller sees is a
   category and a fixed message, never a path, a local-dev tool name or a raw zod
   or ajv message.
-- `render_video_start` and `render_job_status` are registered and return a
-  documented `not_implemented`. When `render_job_status` is implemented, it
-  looks up `(tenant from the verified identity, job_id)`. A job owned by another
-  tenant returns the same `job_not_found` as one that does not exist.
+- `render_video_start` and `render_job_status` will be registered and will
+  return a documented `not_implemented`. When `render_job_status` is
+  implemented, it looks up `(tenant from the verified identity, job_id)`. A job
+  owned by another tenant returns the same `job_not_found` as one that does not
+  exist.
 
 ### Template packs
 
 The service renders only compositions from a template pack. A deployer bakes the
-pack into a derived image that builds on the published service image (owner
-ruling 3). This repository contains no pack except a fixture.
+pack into a derived image that builds on the service image this repository will
+publish (owner ruling 3). This repository will contain no pack except a fixture.
 
 **What the derived image contains** (design §5.4):
 - `pack-manifest.json`:
@@ -163,29 +166,30 @@ ruling 3). This repository contains no pack except a fixture.
   runtime.
 
 Each pack image brings its own Remotion CLI and Chrome, and the base image pins
-no Remotion version (design §8, call 5). The service checks the installed
+no Remotion version (design §8, call 5). The service will check the installed
 renderer when it starts (ADR-7).
 
-**`scripts/build-pack.mjs`** runs in a Remotion project. It bundles the project,
-loads the schemas through the project's own esbuild, and discovers the
-compositions, failing if it finds none. It then runs the zod gate, writes the
-manifest, and checks that every bound the gate accepted appears in the exported
-JSON Schema, failing if one is missing. Its discovery limits are untested:
+**`scripts/build-pack.mjs`** will run in a Remotion project. It will bundle the
+project, load the schemas through the project's own esbuild, and discover the
+compositions, failing if it finds none. It will then run the zod gate, write the
+manifest, and check that every bound the gate accepted appears in the exported
+JSON Schema, failing if one is missing. The discovery limits are untested:
 `<Folder>`, hooks, module-scope font loading and pnpm layouts.
 
-**The fixture pack.** This repository develops against a domain-agnostic fixture
-pack, `Swatch`: a still with a text label, including a Turkish-glyph prop. Its
-build runs in a Linux CI job. The football pack belongs to the group, lives in
-`ISE304-project`, and must emit the same manifest shape.
+**The fixture pack.** This repository will develop against a domain-agnostic
+fixture pack, `Swatch`: a still with a text label, including a Turkish-glyph
+prop. Its build will run in a Linux CI job. The football pack belongs to the
+group, lives in `ISE304-project`, and must emit the same manifest shape.
 
 ### Two gates hold the pack to a vocabulary both sides can implement
 
 The vocabulary carries no explicit fetch target. It has two gates, because the
 service cannot trust that a deployer ran the first.
 
-**The zod gate runs in `build-pack`.** It accepts only zod 4 schemas, which is
-what Remotion 4 projects resolve (4.4.3 and 4.5.4 were observed). A zod 3 schema
-is refused with a clear message. The gate reads the checks of every node type:
+**The zod gate is a step of `build-pack`.** It will accept only zod 4 schemas.
+Remotion 4 projects resolve zod to zod 4 (zod 4.4.3 and 4.5.4 were observed),
+and a zod 3 schema will be refused with a clear message. The gate reads the
+checks of every node type:
 - **Allowed:**
   - strict objects
   - strings with a max, optionally with a regex
@@ -206,13 +210,13 @@ independent re-check caught it. That is why the gate reads checks, not wrapper
 types.
 
 Remotion's own `zColor`, `zTextarea` and `zMatrix` helpers fail the gate, and
-the authoring guide gives replacements. The export uses zod 4's own
+the pack authoring guide will give replacements. The export uses zod 4's own
 `z.toJSONSchema`, because the SDK's helper and `zod-to-json-schema` silently
-drop every bound. Build-pack's last step is what catches a bound that goes
-missing anyway.
+drop every bound. Build-pack's last step will catch a bound that goes missing
+anyway.
 
-**The JSON Schema gate runs at service startup,** on every `propsSchema` the
-service loads. The service refuses to start on a pack that fails it:
+**The JSON Schema gate must run at service startup,** on every `propsSchema` the
+service loads. The service must refuse to start on a pack that fails it:
 - every object has `additionalProperties: false`
 - every array has `maxItems`
 - no `format` is `uri` or `email`
@@ -222,19 +226,19 @@ service loads. The service refuses to start on a pack that fails it:
 
 ### Props are validated with ajv, against the published schema
 
-At request time the service validates props with ajv (`ajv/dist/2020`) against
-the template's `propsSchema`. No zod runs inside the service. `list_templates`
-returns each template's `propsSchema`, and the backend validates against that
-same published JSON Schema, so there is one contract. Remotion's own render path
-does not appear to validate props. That was inferred from its code, not tested
-with a render, so ajv is the validation.
+At request time the service will validate props with ajv (`ajv/dist/2020`)
+against the template's `propsSchema`. No zod runs inside the service.
+`list_templates` returns each template's `propsSchema`, and the backend
+validates against that same published JSON Schema, so there is one contract.
+Remotion's own render path does not appear to validate props. That was inferred
+from its code, not tested with a render, so ajv is the validation.
 
-Validation happens before a render slot is taken or a process is spawned. A
-failure is a refusal of category `invalid_props`. The audit records that
+Validation must happen before a render slot is taken or a process is spawned.
+A failure is a refusal of category `invalid_props`. The audit will record that
 category, not ajv's message, which can echo a caller's value (ADR-6).
 
 A composition may compute its size at render time with `calculateMetadata`. The
-service always passes the manifest's width, height and frame to the CLI
+service will always pass the manifest's width, height and frame to the CLI
 explicitly, so its pre-render checks hold whatever the composition computes.
 
 **The vocabulary does not keep URLs out of strings.** A bounded string can still
@@ -263,9 +267,9 @@ separation above is what makes it checkable that no tool takes code with a
 request.
 
 **Egress is the deployer's control (ruling 6), and this ADR's security claim is
-conditional on it.** `docs/DEPLOY.md` makes it mandatory: the container has no
-outbound route, and cloud metadata is blocked. It is the only control that binds
-Chrome's own fetches. This repository cannot enforce it, because egress
+conditional on it.** `docs/DEPLOY.md` will make it mandatory: the container has
+no outbound route, and cloud metadata is blocked. It is the only control that
+binds Chrome's own fetches. This repository cannot enforce it, because egress
 enforcement is outside the repository (design §3). A deployer who does not deny
 egress leaves a pack that fetches a URL from a prop free to reach whatever the
 container can reach.
@@ -275,18 +279,24 @@ which review, is the operator's to govern, because the risk is theirs.
 
 ## Consequences
 
+- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
+  exist yet: `src/service/`, `tsconfig.service.json`, `scripts/build-pack.mjs`,
+  the fixture pack, both gates, the absence suite and `docs/DEPLOY.md`. What
+  exists is the leaf `src/services/entrypoint.ts` and its tests (PR #20). This
+  ADR records the decision, and `docs/superpowers/plans/final_script.md` builds
+  them.
 - **Absence is claimed for the registration closure and the compiled artifact,
   not for the image.**
   - `puppeteer-core` and `@resvg/resvg-js` are production dependencies of this
     package, so the image's `node_modules` holds them after a production
     install.
-  - The poisoned-registry control proves the registry, not the image.
+  - The poisoned-registry control will prove the registry, not the image.
   - Until the image's dependency set is narrowed and a capability check proves
     it, this ADR does not claim the dangerous capabilities are absent from the
     image.
 - **The service has no second manifest.** It is not packaged as an `.mcpb`.
-  Agreement between the registry and what the service advertises is asserted
-  by a live `tools/list` (the absence suite's live check).
+  Agreement between the registry and what the service advertises will be
+  asserted by a live `tools/list` (the absence suite's live check).
 - **How a caller retrieves a still is decided; a video is not.** Owner ruling 2:
   `render_still` returns the PNG inside the MCP response, under a size cap.
   There is no storage and no download token. For video, `render_video_start` and

@@ -43,7 +43,7 @@ main process." (`:54`)
 
 **A correction to ADR-3's context table, for the record.** ADR-3 says the
 Remotion path is "already a separate process (CLI spawn)" and "cannot crash the
-main process" (`:13`). That is incomplete in two ways. First, a multi-frame
+main process" (`:13`). That is incomplete: a multi-frame
 `remotion_render_still` tiles its frames inside the server process, through
 resvg:
 - `render.ts:243` calls `tilePanels`.
@@ -53,9 +53,10 @@ resvg:
 The cap bounds that path too. Its residual risk belongs to local-dev (see
 Scope), but ADR-3 never recorded it.
 
-Second, a separate process can still leave things behind. The CLI starts Chrome,
-and a CLI that is killed or hangs does not always take Chrome with it. The
-spikes of 2026-10-25 measured this (see Decision).
+The table is also silent on a second gap, which does not contradict it. A
+separate process can leave things behind: the CLI starts Chrome, and a CLI that
+is killed or hangs does not always take Chrome with it. The spikes of 2026-10-25
+measured this (see Decision).
 
 **The constraints.** These are the owner's fixed constraints of 2026-10-17,
 quoted because they are not committed anywhere else:
@@ -69,17 +70,17 @@ quoted because they are not committed anywhere else:
 
 **The owner changed fixed constraint 6's mechanism on 2026-10-26 (ruling 1).**
 The service spawns the Remotion CLI directly, with no forked Node worker. The
-intent of constraint 6 stays: a render that hangs or crashes cannot take the
-service down or leave processes behind, and the failure surfaces as a tool
-error. The image must carry `setpriv` and `tini`, and at startup the service
-checks that the installed Remotion renderer is at least 4.0.458.
+intent of constraint 6 stays: a render that hangs or crashes cannot leave
+processes behind, and cannot take the service down except by exhausting the
+container's memory (see below). The failure surfaces as a tool error. The image
+must carry `setpriv` and `tini`, and at startup the service must check that the
+installed Remotion renderer is at least 4.0.458.
 
-A worker is not what keeps native code away from the service. The service
-process runs no native code on the still path: no resvg and no puppeteer,
+The design gives the ground for dropping the worker (design §5.6): the service
+process runs no native code on the still path, with no resvg and no puppeteer,
 because ADR-5 keeps `raster.ts` out of `dist-service/`. The native code a render
-runs is in the CLI and Chrome, which are already separate processes. A worker
-between the service and the CLI would only be one more process to kill, and a
-worker that is SIGKILLed or aborts natively never runs its own cleanup.
+runs is in the CLI and Chrome, which are already separate processes. A crash
+inside either becomes a `render_failed` tool error.
 
 **Why "completes" and not "supersedes".** Nothing in ADR-3 is reversed. Option 2
 sits inside ADR-3's own Decision, conditioned on it being "still warranted", and
@@ -101,7 +102,7 @@ CLI and the Chrome it launches.
 
 ### The service owns its spawner
 
-The spawner is `src/service/render-process.ts`.
+The spawner will be `src/service/render-process.ts`.
 - It reuses only `killTree` from `src/services/exec.ts` (`:20-45`).
 - It does not go through `runCommand` or `cliLimiter`, and local-dev code is not
   changed. `runCommand` spawns with `{ ...process.env, CI: "1", ...env }`
@@ -110,6 +111,11 @@ The spawner is `src/service/render-process.ts`.
 - It takes an `AbortSignal`. It spawns the CLI `detached`, as `runCommand` does
   on POSIX (`exec.ts:72`), so the CLI leads its own process group. It records
   the CLI's pid.
+- **stdio.** Fixed constraint 6's "stdio ignored in the child" applies to the
+  CLI as follows. Stdin is ignored. Stdout and stderr are piped and drained
+  continuously into a bounded tail, the last 2 500 characters, so a render that
+  writes megabytes cannot wedge on an undrained pipe. The tail serves the
+  service's own diagnosis and never reaches a caller (ADR-5).
 - It runs `remotion still` on the pack's prebuilt `bundle/`. The service mints
   the output path, pins the browser executable, and passes width, height and
   frame explicitly.
@@ -136,7 +142,7 @@ A render spans more than one process group, and the spikes of 2026-10-25 (design
 The required property is that **no process from the render survives its deadline
 or its abort.**
 
-**How it stops a render.** On deadline, abort or shutdown:
+**How it stops a render.** On deadline, abort or shutdown, the spawner will:
 1. Walk `/proc` from the CLI's pid to record every descendant and its process
    group.
 2. Send SIGTERM to the CLI's group and to every recorded group.
@@ -149,39 +155,36 @@ It signals only ids it recorded from this render's own tree, and never an id of
 `killTree` serves local-dev on Windows, and has no graceful phase.
 
 **Which part carries the guarantee.** `setpriv`'s pdeathsig is what reliably
-kills Chrome. The `/proc` walk is defence in depth. A test hides `setpriv` from
-the PATH and asserts that the walk alone leaves no `chrome-headless-shell`
+kills Chrome. The `/proc` walk is defence in depth. A test will hide `setpriv`
+from the PATH and assert that the walk alone leaves no `chrome-headless-shell`
 behind. That test is what establishes the walk's effect, because the spike did
 not test it separately.
 
-**The arbiter is a test.** The test runs a render that spawns a process leading
-its own group. It records every process of the render by an independent means.
-After the kill, it polls until none of them is alive, up to a deadline. The
-grace is a policy, not a wait, and the test never sleeps it.
+**The arbiter is a test.** The test will run a render that spawns a process
+leading its own group. It will record every process of the render by an
+independent means. After the kill, it will poll until none of them is alive, up
+to a deadline. The grace is a policy, not a wait, and the test never sleeps it.
 
-**Considered and not chosen.** Two ways to find a render's processes without the
-`/proc` walk:
-- An environment marker that the render's processes inherit. It cannot find
-  Chrome (above).
-- A cgroup per render, killed as a unit. It needs a writable, delegated cgroup
-  v2 subtree, which an unprivileged Docker container does not get by default.
+**Considered and not chosen.** An environment marker that the render's processes
+inherit, scanned for after the fact. It cannot find Chrome (above).
 
 ### If cleanup cannot be verified, the service exits
 
 When the service cannot verify that every recorded pid has exited, it logs that,
 marks itself unhealthy, and exits non-zero (exit code 70). The container
-restarts, and takes every leftover process with it. `docs/DEPLOY.md` requires a
-restart policy.
+restarts, and takes every leftover process with it. `docs/DEPLOY.md` will
+require a restart policy.
 
 ### Startup checks
 
-The service refuses to start unless:
+The service must refuse to start unless all of these hold:
 - `setpriv` is on the PATH
 - the installed renderer is at least 4.0.458 and has the setpriv wrapper
   (`dist/linux/wrap-with-setpriv.js`)
 - the pinned browser runs, meaning `--version` succeeds, which proves its shared
   libraries are present
 - the pack passes the JSON Schema gate (ADR-5)
+- `AUDIT_LOG_PATH` can be opened for appending
 
 The version check reads the *installed*
 `node_modules/@remotion/renderer/package.json`. The declared range in
@@ -189,28 +192,30 @@ The version check reads the *installed*
 
 ### The process tree
 
-The image runs under `tini` as PID 1, so orphans are reaped. The container's
-memory limit is the outer backstop (below).
+The image must run under `tini` as PID 1, so that orphans are reaped. The
+container's memory limit is the outer backstop (below).
 
 ### Output and errors
 
-- **Output.** The CLI writes the PNG to a path the service minted. The service
-  returns it as MCP image content, up to a size cap (4 MiB by default), and then
-  deletes the file (owner ruling 2). That path stays internal: no service
+- **Output.** The CLI writes the PNG to a path the service mints. The service
+  returns it inside the MCP response as image content (owner ruling 2), up to a
+  cap of 4 MiB by default, and then deletes the file (design §5.5). There is no
+  storage and no download token. That path stays internal: no service
   response carries a filesystem path (ADR-5). A timed-out render's partial
   output is deleted, as `src/tools/render.ts:175-182` already does for
   local-dev's CLI.
 - **A crash, a timeout or a busy service surfaces as a tool error,** not a
   protocol error. A crash inside the CLI or Chrome becomes `render_failed`.
-  - **The deadline.** `render_still` has 45 s (`RENDER_STILL_DEADLINE_MS`). At
-    the deadline it returns `render_timeout` at once, and finishes the kill in
-    the background while the slot stays held. The 45 s leaves room within the
-    SDK client's 60 s default for the hops and the error path (ADR-4).
+  - **The deadline.** `render_still` will have 45 s
+    (`RENDER_STILL_DEADLINE_MS`). At the deadline it returns `render_timeout` at
+    once, and finishes the kill in the background while the slot stays held. The
+    45 s leaves room within the SDK client's 60 s default for the hops and the
+    error path (ADR-4).
   - **Other tenants.** A crash that stays inside the CLI's tree leaves other
     tenants' jobs running. An allocation over the container's memory limit may
     not stay inside it; see below.
 - **Crash testing needs a purpose-built CLI.** No known input aborts a render,
-  so a test of a crash, a hang or a leak uses a stub CLI built to do it.
+  so a test of a crash, a hang or a leak will use a stub CLI built to do it.
 
 ### Render slots bound running renders
 
@@ -221,7 +226,7 @@ itself, at admission.
 **Taking a slot.** A render takes one slot from a single global count. The
 default is 2. If none is free, the render is refused at admission with
 `render_busy`.
-- The service holds no queue, and the SDK's `cliLimiter` is not used.
+- The service holds no queue, and local-dev's `cliLimiter` is not used.
 - So a request whose caller has gone cannot wait inside the service and start a
   render later.
 - The slots are not per principal. Per-key limits are the owner's gateway's job
@@ -254,8 +259,8 @@ cap described in Context. It covers `viz_render_svg` and multi-frame
 `remotion_render_still`. No service path reaches `raster.ts`, which ADR-5 keeps
 out of `dist-service/`, so the service has no resvg memory to guard. Its native
 memory belongs to the CLI and Chrome, and the container's memory limit backstops
-it. The service has its own bound on a still's size: it checks `width × height`
-against the raster bound before it takes a slot.
+it. The service has its own bound on a still's size: before it takes a slot, it
+will check the still's `width × height` against the raster bound.
 
 Process isolation changes the blast radius of a native abort, not its
 probability. In local-dev, resvg still runs in the stdio server's own process,
@@ -273,21 +278,22 @@ from being chosen instead.
 Nothing in the design raises the render children's `oom_score_adj`, or stops the
 container runtime from killing the whole cgroup on OOM. So an allocation over
 the limit can take the service down with it. The restart policy that `DEPLOY.md`
-requires recovers the service, and the restart takes every leftover process with
-it. The renders in flight are lost.
+will require recovers the service, and the restart takes every leftover process
+with it. The renders in flight are lost.
 
 ### The frame budget, the video analogue of the pixel cap
 
 Video renders are asynchronous: `render_video_start` returns a job id, and
-`render_job_status` polls it (fixed constraint 7). Both tools are registered
-from the first service build and return a documented `not_implemented`. The job
+`render_job_status` polls it (fixed constraint 7). Both tools will be
+registered from the first service build and will return a documented
+`not_implemented`. The job
 store, idempotency and enforcing the frame budget on video are later work, not
 cut (design §3).
 
-**What stills have now.** Each template's manifest entry carries `maxFrames`.
-`render_still` refuses a `frame` at or past it, and passes width, height and
-frame to the CLI explicitly, so a composition's own computed size never decides
-what renders.
+**What stills get first.** Each template's manifest entry will carry
+`maxFrames`. `render_still` will refuse a `frame` at or past it, and pass width,
+height and frame to the CLI explicitly, so a composition's own computed size
+never decides what renders.
 
 **The video path has no bound in local-dev.**
 - `frames` is an optional string (`src/tools/render.ts:95-99`), and its regex
@@ -306,9 +312,16 @@ implemented, a frame budget refuses those renders up front:
   frames render.
 - **The refusal:** a category `frame_budget`, stating the resolved count and the
   budget.
-- **The value:** it follows from the render deadline and a measured cost per
-  frame. That measurement is the capacity benchmark above, so no number is set
-  here.
+- **The value:** no number is set here. Setting it needs the capacity benchmark,
+  which is a non-goal for 2026-11-20 (design §3).
+
+## Consequences
+
+- **Build status.** As of 2026-10-26 none of the files and checks this ADR names
+  exist yet: `src/service/render-process.ts`, the startup checks, the image with
+  `tini` and `setpriv`, `docs/DEPLOY.md`, and the tests described above. What
+  exists is `killTree` and the raster cap with its test. This ADR records the
+  decision, and `docs/superpowers/plans/final_script.md` builds them.
 
 ## Scope
 
