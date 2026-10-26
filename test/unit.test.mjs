@@ -270,3 +270,67 @@ test("GUARD: composition_id regex forbids a leading hyphen", () => {
   assert.equal(re.test("--config"), false);
   assert.equal(re.test("-h"), false);
 });
+
+// The still argv: one builder for both profiles, so their CLI calls cannot drift apart.
+import { buildStillArgv } from "../dist/services/render-core.js";
+import { ToolInputError } from "../dist/types.js";
+
+/** Minimal valid options; each test overrides what it probes. */
+const STILL_BASE = { source: "src/index.ts", compositionId: "Main", output: "out/a.png", frame: 0 };
+
+test("buildStillArgv reproduces the argv remotion_render_still has always built", () => {
+  const argv = buildStillArgv({
+    source: "src/index.ts", compositionId: "Main", output: "out/a.png",
+    frame: 3, scale: 1, propsJson: '{"a":1}',
+  });
+  assert.deepEqual(argv, [
+    "still", "src/index.ts", "Main", "out/a.png",
+    "--frame=3", "--scale=1", "--image-format=png", "--overwrite", "--log=info",
+    '--props={"a":1}',
+  ]);
+  assert.equal(argv.some((a) => a.startsWith("--timeout")), false,
+    "the local-dev still gained a --timeout it never passed");
+});
+
+test("buildStillArgv appends the service options after --log and --props, in order", () => {
+  const argv = buildStillArgv({
+    source: "bundle", compositionId: "slow", output: "out.png", frame: 0,
+    propsFile: "props.json", width: 64, height: 64, browserExecutable: "/x/chrome", timeoutMs: 60000,
+  });
+  assert.deepEqual(argv.slice(0, 5), ["still", "bundle", "slow", "out.png", "--frame=0"]);
+  assert.deepEqual(argv.slice(-6), [
+    "--log=info", "--props=props.json", "--width=64", "--height=64",
+    "--browser-executable=/x/chrome", "--timeout=60000",
+  ]);
+});
+
+test("GUARD: buildStillArgv refuses a positional the CLI would read as an option", () => {
+  for (const key of ["source", "compositionId", "output"]) {
+    for (const value of ["-h", "--config=evil.js"]) {
+      assert.throws(() => buildStillArgv({ ...STILL_BASE, [key]: value }),
+        (e) => e instanceof ToolInputError && e.category === "argv_injection",
+        `${key}='${value}' reached the argv as a positional the CLI would parse as an option`);
+      // Positive control: the same value without the dash passes, so only the dash is refused.
+      const undashed = value.replace(/^-+/, "");
+      assert.equal(buildStillArgv({ ...STILL_BASE, [key]: undashed }).includes(undashed), true);
+    }
+  }
+});
+
+test("GUARD: buildStillArgv refuses props given both inline and as a file", () => {
+  assert.throws(
+    () => buildStillArgv({ ...STILL_BASE, propsJson: '{"a":1}', propsFile: "props.json" }),
+    ToolInputError,
+    "inline props and a props file were both accepted, so two --props flags reached the argv");
+  // Positive control: each alone is accepted.
+  assert.equal(buildStillArgv({ ...STILL_BASE, propsJson: '{"a":1}' }).at(-1), '--props={"a":1}');
+  assert.equal(buildStillArgv({ ...STILL_BASE, propsFile: "props.json" }).at(-1), "--props=props.json");
+});
+
+test("GUARD: buildStillArgv refuses a --timeout below 7000 ms or not a whole number", () => {
+  for (const timeoutMs of [6999, 7000.5]) {
+    assert.throws(() => buildStillArgv({ ...STILL_BASE, timeoutMs }), ToolInputError,
+      `timeoutMs=${timeoutMs} reached the argv`);
+  }
+  assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 7000 }).at(-1), "--timeout=7000");
+});

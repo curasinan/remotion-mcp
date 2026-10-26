@@ -322,6 +322,34 @@ test("a strip missing frames is refused rather than shown as complete", async ()
   assert.match(r.result.content[0].text, /Next step:/);
 });
 
+// The single-frame still now goes through buildStillArgv; this pins the argv the CLI receives.
+test("a single-frame still hands the CLI the expected argv", async () => {
+  const recorded = path.join(workspace, "still-argv.json");
+  fs.rmSync(recorded, { force: true });
+  // A 1x1 PNG, so the output the tool reports on is a real image.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  stubProject("still-argv", `
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(recorded)}, JSON.stringify(args));
+fs.writeFileSync(args[3], Buffer.from(${JSON.stringify(png)}, "base64"));
+process.exit(0);
+`);
+
+  const r = await callTool("remotion_render_still", {
+    project_dir: "still-argv", entry_point: "src/index.ts", composition_id: "Main",
+    output_path: "still-argv/out/a.png", frame: 3, props_json: '{"a":1}', return_image: false,
+  });
+  assert.equal(r.result.isError, undefined, r.result.content[0].text.slice(0, 300));
+  assert.equal(fs.existsSync(recorded), true, "the stub CLI never ran, so no argv was recorded");
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(recorded, "utf8")), [
+    "still", "src/index.ts", "Main", path.join("out", "a.png"),
+    "--frame=3", "--scale=1", "--image-format=png", "--overwrite", "--log=info",
+    '--props={"a":1}',
+  ]);
+});
+
 // A legitimate SVG round-trips.
 test("a valid SVG rasterizes and writes inside the workspace", async () => {
   const r = await callTool("viz_render_svg", { svg: GOOD_SVG, width: 100, output_path: "out/ok.png", return_image: false });
