@@ -322,19 +322,25 @@ test("a strip missing frames is refused rather than shown as complete", async ()
   assert.match(r.result.content[0].text, /Next step:/);
 });
 
-// The single-frame still now goes through buildStillArgv; this pins the argv the CLI receives.
-test("a single-frame still hands the CLI the expected argv", async () => {
-  const recorded = path.join(workspace, "still-argv.json");
+/** A stub project whose CLI records its argv and writes a 1x1 PNG; returns the record's path. */
+function argvRecordingProject(name) {
+  const recorded = path.join(workspace, `${name}.json`);
   fs.rmSync(recorded, { force: true });
   // A 1x1 PNG, so the output the tool reports on is a real image.
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-  stubProject("still-argv", `
+  stubProject(name, `
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(recorded)}, JSON.stringify(args));
 fs.writeFileSync(args[3], Buffer.from(${JSON.stringify(png)}, "base64"));
 process.exit(0);
 `);
+  return recorded;
+}
+
+// The single-frame still now goes through buildStillArgv; this pins the argv the CLI receives.
+test("a single-frame still hands the CLI the expected argv", async () => {
+  const recorded = argvRecordingProject("still-argv");
 
   const r = await callTool("remotion_render_still", {
     project_dir: "still-argv", entry_point: "src/index.ts", composition_id: "Main",
@@ -348,6 +354,19 @@ process.exit(0);
     "--frame=3", "--scale=1", "--image-format=png", "--overwrite", "--log=info",
     '--props={"a":1}',
   ]);
+});
+
+// remotion_render_still documents "-1 is the last frame"; the shared builder must not refuse it.
+test("a negative frame reaches the CLI unchanged", async () => {
+  const recorded = argvRecordingProject("still-negative-frame");
+
+  const r = await callTool("remotion_render_still", {
+    project_dir: "still-negative-frame", entry_point: "src/index.ts", composition_id: "Main",
+    output_path: "still-negative-frame/out/a.png", frame: -1, return_image: false,
+  });
+  assert.equal(r.result.isError, undefined, r.result.content[0].text.slice(0, 300));
+  assert.equal(fs.existsSync(recorded), true, "the stub CLI never ran, so no argv was recorded");
+  assert.equal(JSON.parse(fs.readFileSync(recorded, "utf8"))[4], "--frame=-1");
 });
 
 // A legitimate SVG round-trips.
