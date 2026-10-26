@@ -290,6 +290,13 @@ function nested(n, step = (child) => obj({ x: child })) {
   return node;
 }
 
+/** A string inside `n` arrays, or whatever `wrap` nests it in: a value `n` levels deep, where a scalar counts 0. */
+function nestedValue(n, wrap = (v) => [v]) {
+  let value = "v";
+  for (let i = 0; i < n; i++) value = wrap(value);
+  return value;
+}
+
 test("a schema nests at most 64 deep, and a far deeper one is a PackError, never a RangeError", (t) => {
   const tooDeep = (at) => [`${at}: schema nested too deeply`];
   assert.deepEqual(checkSchemaVocabulary(nested(64)), []);
@@ -321,14 +328,143 @@ test("a schema nests at most 64 deep, and a far deeper one is a PackError, never
   assert.ok(err instanceof PackError, String(err));
   assert.deepEqual(err.problems, tooDeep(`/properties/x${"/anyOf/0".repeat(63)}`));
 
-  // An annotation is no schema, so the walk does not bound it; freezing a deep one still cannot overflow the stack.
+  // A default is no schema, but list_templates publishes it. 100 000 levels used to load, and JSON.stringify of the
+  // manifest then threw a RangeError from about 5 000. Past 64 levels it is now a PackError, never a RangeError.
   const annotated = swatchPack(t, obj({ x: { type: "string", maxLength: 1, default: "DEEP" } }));
   const manifest = path.join(annotated, "pack-manifest.json");
   fs.writeFileSync(manifest, fs.readFileSync(manifest, "utf8")
     .replace('"DEEP"', `${"[".repeat(100_000)}${"]".repeat(100_000)}`));
-  const loaded = loadPack(annotated);
+  const deepDefault = refusal(annotated);
+  assert.ok(deepDefault instanceof PackError, String(deepDefault));
+  assert.deepEqual(deepDefault.problems, ["/properties/x/default: value nested too deeply"]);
+
+  // Positive control: a 64-deep default loads, is frozen, and the manifest it sits in still serializes.
+  const loaded = loadPack(swatchPack(t, obj({ x: { type: "string", maxLength: 1, default: nestedValue(64) } })));
   assert.ok(Object.isFrozen(loaded.template("swatch").propsSchema.properties.x.default));
+  assert.ok(JSON.stringify(loaded.manifest).includes("[".repeat(64)));
   assert.deepEqual(loaded.validateProps("swatch", { x: "ab" }), { ok: false, paths: ["/x"] });
+});
+
+test("a const, enum, examples or default value nests at most 64 deep, so publishing or comparing it cannot overflow",
+  (t) => {
+    const tooDeep = (at) => [`${at}: value nested too deeply`];
+    const string = { type: "string", maxLength: 1 };
+    // Every place a value may sit; enum and examples count each element on its own.
+    const places = [
+      [(v) => obj({ x: { const: v } }), "/properties/x/const"],
+      [(v) => obj({ x: { enum: ["a", v] } }), "/properties/x/enum/1"],
+      [(v) => obj({ x: { ...string, examples: ["a", v] } }), "/properties/x/examples/1"],
+      [(v) => obj({ x: { ...string, default: v } }), "/properties/x/default"],
+      [(v) => ({ ...obj({}), default: v }), "/default"],
+      [(v) => ({ $defs: { d: { const: v } }, ...obj({}) }), "/$defs/d/const"],
+      [(v) => obj({ x: { type: "array", maxItems: 1, items: { enum: [v] } } }), "/properties/x/items/enum/0"],
+    ];
+    const inObject = (v) => ({ a: v });
+    for (const [schemaOf, at] of places) {
+      assert.deepEqual(checkSchemaVocabulary(schemaOf(nestedValue(64))), [], at);
+      assert.deepEqual(checkSchemaVocabulary(schemaOf(nestedValue(65))), tooDeep(at), at);
+      // Objects nest as arrays do.
+      assert.deepEqual(checkSchemaVocabulary(schemaOf(nestedValue(64, inObject))), [], at);
+      assert.deepEqual(checkSchemaVocabulary(schemaOf(nestedValue(65, inObject))), tooDeep(at), at);
+      // The measure keeps its own stack: far past the cap is a problem, never a RangeError.
+      assert.deepEqual(checkSchemaVocabulary(schemaOf(nestedValue(100_000))), tooDeep(at), at);
+    }
+    // examples that is not an array is measured whole (ajv refuses it later in any case).
+    assert.deepEqual(checkSchemaVocabulary(obj({ x: { ...string, examples: { a: nestedValue(63) } } })), []);
+    assert.deepEqual(checkSchemaVocabulary(obj({ x: { ...string, examples: { a: nestedValue(64) } } })),
+      tooDeep("/properties/x/examples"));
+
+    // A 12 000-deep const used to load, and a matching 24 KB body then made ajv's deep-equal throw a RangeError.
+    // The levels are spliced in as text, as JSON.stringify of so deep a value overflows the runner's own stack.
+    const dir = swatchPack(t, obj({ x: { const: "DEEP" } }));
+    const file = path.join(dir, "pack-manifest.json");
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8")
+      .replace('"DEEP"', `${"[".repeat(12_000)}${"]".repeat(12_000)}`));
+    const err = refusal(dir);
+    assert.ok(err instanceof PackError, String(err));
+    assert.deepEqual(err.problems, tooDeep("/properties/x/const"));
+
+    // Positive control at request time: a 64-deep const loads, and ajv compares a caller value against it.
+    const pack = loadPack(swatchPack(t, obj({ x: { const: nestedValue(64) } })));
+    assert.deepEqual(pack.validateProps("swatch", { x: nestedValue(64) }), { ok: true });
+    assert.deepEqual(pack.validateProps("swatch", { x: nestedValue(64, inObject) }), { ok: false, paths: ["/x"] });
+    assert.deepEqual(pack.validateProps("swatch", { x: nestedValue(12_000) }), { ok: false, paths: ["/x"] });
+    assert.ok(JSON.stringify(pack.manifest).includes("[".repeat(64)));
+  });
+
+/**
+ * `n` defs, each an anyOf of two refs to the next, ending in a null: 2^n paths for ajv to try. Expanded, with a ref
+ * node counted as 1 plus its def, d_k holds 3 + 2 * size(d_k+1) nodes, so d_0 holds 2^(n+2) - 3, and the root,
+ * with its property node, 2^(n+2) - 1.
+ */
+function fanOut(n) {
+  const $defs = {};
+  for (let k = 0; k < n; k++) $defs[`d${k}`] = { anyOf: [{ $ref: `#/$defs/d${k + 1}` }, { $ref: `#/$defs/d${k + 1}` }] };
+  $defs[`d${n}`] = { type: "null" };
+  return { $defs, ...obj({ x: { $ref: "#/$defs/d0" } }) };
+}
+
+test("a schema expands, each $ref in place, to at most 10000 nodes, so anyOf fan-out cannot stall validation", (t) => {
+  const tooBig = [": schema expands past 10000 nodes"];
+  // 2^13 - 1 = 8191 nodes pass; 2^14 - 1 = 16383 do not.
+  assert.deepEqual(checkSchemaVocabulary(fanOut(11)), []);
+  assert.deepEqual(checkSchemaVocabulary(fanOut(12)), tooBig);
+
+  // n = 22 used to load, and validating {x: "s"} against it then took 1.7 s. It is refused, well under a second.
+  const dir = swatchPack(t, fanOut(22));
+  const started = performance.now();
+  assert.deepEqual(checkSchemaVocabulary(fanOut(22)), tooBig);
+  const err = refusal(dir);
+  const elapsed = performance.now() - started;
+  assert.ok(err instanceof PackError, String(err));
+  assert.deepEqual(err.problems, tooBig);
+  assert.match(err.message, /\/templates\/1\/propsSchema: schema expands past 10000 nodes/);
+  assert.ok(elapsed < 1000, `the refusal took ${elapsed} ms`);
+
+  // Exactly at the budget: def a holds 99 nulls, so 100 nodes, and each of the root's 99 refs to it is 1 + 100, so the
+  // root holds 1 + 99 * 101 = 10000. A def counts once per ref to it, and never in place. One null more is 10001.
+  const props = (count, node) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`p${i}`, node]));
+  const atBudget = { $defs: { a: obj(props(99, { type: "null" })) }, ...obj(props(99, { $ref: "#/$defs/a" })) };
+  assert.deepEqual(checkSchemaVocabulary(atBudget), []);
+  assert.deepEqual(checkSchemaVocabulary({ ...atBudget, properties: { ...atBudget.properties, q: { type: "null" } } }),
+    tooBig);
+  const edge = loadPack(swatchPack(t, atBudget));
+  const nulls = Object.fromEntries(Array.from({ length: 99 }, (_, i) => [`p${i}`, null]));
+  assert.deepEqual(edge.validateProps("swatch", { p0: nulls, p98: nulls }), { ok: true });
+  assert.deepEqual(edge.validateProps("swatch", { p0: { ...nulls, p50: 0 } }), { ok: false, paths: ["/p0/p50"] });
+
+  // A def shared from many places stays within the budget. Def one sits in 50 rows of 50 refs, 2500 places in all:
+  // a row is 1 + 50 * (1 + 1) = 101 nodes, and the root 1 + 50 * (1 + 101) = 5101.
+  const shared = { $defs: { one: ONE, row: obj(props(50, { $ref: "#/$defs/one" })) },
+    ...obj(props(50, { $ref: "#/$defs/row" })) };
+  assert.deepEqual(checkSchemaVocabulary(shared), []);
+  const many = loadPack(swatchPack(t, shared));
+  assert.deepEqual(many.validateProps("swatch", { p0: { p0: "a", p49: "b" }, p49: { p1: "c" } }), { ok: true });
+  assert.deepEqual(many.validateProps("swatch", { p49: { p49: "bb" } }), { ok: false, paths: ["/p49/p49"] });
+
+  // The good pack and the realistic zod export stay well inside it.
+  assert.equal(loadPack(GOOD).manifest.templates.length, 2);
+});
+
+test("the expansion count visits each def once: 200 levels of fan-out, 2^202 nodes expanded, are refused at once", () => {
+  // A count that followed every ref would never finish, so it runs in a child with a deadline, not in this runner.
+  const child = `const [, moduleUrl] = process.argv;
+const { checkSchemaVocabulary } = await import(moduleUrl);
+const $defs = {};
+for (let k = 0; k < 200; k++) $defs["d" + k] = { anyOf: [{ $ref: "#/$defs/d" + (k + 1) }, { $ref: "#/$defs/d" + (k + 1) }] };
+$defs.d200 = { type: "null" };
+const started = performance.now();
+const problems = checkSchemaVocabulary({ $defs, type: "object", additionalProperties: false,
+  properties: { x: { $ref: "#/$defs/d0" } } });
+process.stdout.write(JSON.stringify({ problems, elapsed: performance.now() - started }));`;
+  const run = spawnSync(process.execPath,
+    ["--input-type=module", "-e", child, pathToFileURL(path.join(SERVICE, "templates.js")).href],
+    { encoding: "utf8", timeout: 20_000 });
+  assert.equal(run.error?.code, undefined, "the count did not finish within 20 s: it followed every ref");
+  assert.equal(run.status, 0, run.stderr);
+  const { problems, elapsed } = JSON.parse(run.stdout);
+  assert.deepEqual(problems, [": schema expands past 10000 nodes"]);
+  assert.ok(elapsed < 1000, `the count took ${elapsed} ms`);
 });
 
 test("a number with const or a non-empty enum needs no bounds, and an enum counts only as a non-empty array", (t) => {

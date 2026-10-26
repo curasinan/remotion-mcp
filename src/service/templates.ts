@@ -46,6 +46,17 @@ const DEF_NAME = /^[A-Za-z0-9_.-]+$/;
 /** How deep a schema may nest, its root counted as 1. The walk stops there, so it never recurses further. */
 const MAX_SCHEMA_DEPTH = 64;
 /**
+ * How deep a `default`, `examples`, `const` or `enum` value may nest: the arrays and objects on its deepest path, so
+ * a scalar is 0. list_templates serializes these values, and ajv deep-compares a caller's value against a `const` or
+ * an `enum` element, both by recursion.
+ */
+const MAX_VALUE_DEPTH = 64;
+/**
+ * How many nodes a schema may hold with each `$ref` replaced by its def. ajv validates through every ref, so an
+ * anyOf of two refs to the same def, repeated def after def, doubles the work per def.
+ */
+const MAX_EXPANDED_NODES = 10_000;
+/**
  * Remotion's own composition id rule, `/^([a-zA-Z0-9-\u4E00-\u9FFF])+$/` in remotion 4.0.532's
  * `dist/cjs/validation/validate-composition-id.js`. The id reaches the CLI as a positional argument, so a leading
  * '-' is refused as well: the CLI would read it as a flag.
@@ -93,8 +104,44 @@ function refName(ref: unknown): string | undefined {
 /** A `$ref` to an existing def: the def it sits in (undefined outside `$defs`), the def it names, and its pointer. */
 interface RefEdge { from: string | undefined; to: string; ptr: string }
 
-/** What one walk shares: the root's `$defs`, the problems found, and every resolved `$ref`. */
-interface WalkState { defs: Record<string, unknown> | undefined; out: string[]; refs: RefEdge[] }
+/**
+ * What one walk shares: the root's `$defs`, the problems found, every resolved `$ref`, and how many nodes each def
+ * holds before its refs are expanded (the key undefined counts the nodes outside `$defs`).
+ */
+interface WalkState { defs: Record<string, unknown> | undefined; out: string[]; refs: RefEdge[];
+  nodes: Map<string | undefined, number> }
+
+/**
+ * Whether `value` holds more than MAX_VALUE_DEPTH arrays and objects along one path. It keeps its own stack and
+ * returns at the first container past the cap, so no depth can overflow the call stack.
+ */
+function nestsTooDeep(value: unknown): boolean {
+  const stack: [unknown, number][] = [[value, 0]];
+  for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
+    const [item, enclosing] = top;
+    if (typeof item !== "object" || item === null) continue;
+    if (enclosing >= MAX_VALUE_DEPTH) return true;
+    for (const child of Object.values(item)) stack.push([child, enclosing + 1]);
+  }
+  return false;
+}
+
+/** Appends a problem for each `default`, `examples`, `const` or `enum` value of `node` that nests too deeply. */
+function checkValueDepth(node: Record<string, unknown>, ptr: string, out: string[]): void {
+  const tooDeep = (value: unknown, at: string): void => {
+    if (nestsTooDeep(value)) out.push(`${at}: value nested too deeply`);
+  };
+  for (const key of ["default", "const"]) {
+    if (has(node, key)) tooDeep(node[key], `${ptr}/${key}`);
+  }
+  // Each element on its own, as ajv compares a caller's value with one element at a time.
+  for (const key of ["enum", "examples"]) {
+    if (!has(node, key)) continue;
+    const value = node[key];
+    if (Array.isArray(value)) value.forEach((element, i) => tooDeep(element, `${ptr}/${key}/${i}`));
+    else tooDeep(value, `${ptr}/${key}`);
+  }
+}
 
 /**
  * Appends every problem of `node`, and of the nodes under it, to `state.out`. `depth` counts the root as 1, and
@@ -115,6 +162,7 @@ function walk(node: unknown, ptr: string, depth: number, def: string | undefined
     out.push(`${ptr}: schema must be an object`);
     return;
   }
+  state.nodes.set(def, (state.nodes.get(def) ?? 0) + 1);
 
   for (const key of Object.keys(node)) {
     if (!NODE_KEYWORDS.has(key) && !(root && ROOT_KEYWORDS.has(key))) out.push(`${ptr}: keyword ${key} not allowed`);
@@ -147,6 +195,7 @@ function walk(node: unknown, ptr: string, depth: number, def: string | undefined
     if (!isBound(node.minimum) && !isBound(node.exclusiveMinimum)) out.push(`${ptr}: minimum or exclusiveMinimum required`);
     if (!isBound(node.maximum) && !isBound(node.exclusiveMaximum)) out.push(`${ptr}: maximum or exclusiveMaximum required`);
   }
+  checkValueDepth(node, ptr, out);
 
   const below = depth + 1;
   if (has(node, "properties")) {
@@ -181,9 +230,11 @@ function walk(node: unknown, ptr: string, depth: number, def: string | undefined
 
 /**
  * Appends each `$ref` that lies on a cycle: one in a def that the def it names can reach again. ajv would
- * recurse through such a ref once per level of the caller's props. The search keeps its own stack.
+ * recurse through such a ref once per level of the caller's props. The search keeps its own stack. Returns
+ * whether it found any.
  */
-function reportCycles(refs: RefEdge[], out: string[]): void {
+function reportCycles(refs: RefEdge[], out: string[]): boolean {
+  const before = out.length;
   const next = new Map<string, string[]>();
   for (const { from, to } of refs) {
     if (from === undefined) continue;
@@ -208,6 +259,43 @@ function reportCycles(refs: RefEdge[], out: string[]): void {
   for (const { from, to, ptr } of refs) {
     if (from !== undefined && reaches(to, from)) out.push(`${ptr}: recursive $ref not allowed`);
   }
+  return out.length > before;
+}
+
+/**
+ * Appends a problem at the root when the schema, each `$ref` replaced by the def it names, holds more than
+ * MAX_EXPANDED_NODES nodes. A node counts 1 plus the nodes under it, and a `$ref` node adds its def's expanded size.
+ * The def graph must be acyclic. Each def is sized once, after the defs it names, with an explicit stack, and every
+ * sum saturates one past the budget, so the count is linear in the schema and never overflows.
+ */
+function reportExpansion(nodes: Map<string | undefined, number>, refs: RefEdge[], out: string[]): void {
+  const past = MAX_EXPANDED_NODES + 1;
+  const targets = new Map<string | undefined, string[]>();
+  for (const { from, to } of refs) {
+    const list = targets.get(from);
+    if (list === undefined) targets.set(from, [to]);
+    else list.push(to);
+  }
+  const sizes = new Map<string, number>();
+  /** The expanded size of the nodes counted under `owner`, once every def it names is sized. */
+  const expanded = (owner: string | undefined): number => (targets.get(owner) ?? [])
+    .reduce((sum, to) => Math.min(past, sum + (sizes.get(to) as number)), Math.min(past, nodes.get(owner) ?? 0));
+
+  const stack = [...(targets.get(undefined) ?? [])];
+  for (let name = stack.at(-1); name !== undefined; name = stack.at(-1)) {
+    if (sizes.has(name)) {
+      stack.pop();
+      continue;
+    }
+    const unsized = (targets.get(name) ?? []).filter((to) => !sizes.has(to));
+    if (unsized.length > 0) {
+      stack.push(...unsized);
+    } else {
+      sizes.set(name, expanded(name));
+      stack.pop();
+    }
+  }
+  if (expanded(undefined) > MAX_EXPANDED_NODES) out.push(`: schema expands past ${MAX_EXPANDED_NODES} nodes`);
 }
 
 /**
@@ -219,9 +307,11 @@ export function checkSchemaVocabulary(schema: unknown): string[] {
     defs: isRecord(schema) && isRecord(schema.$defs) ? schema.$defs : undefined,
     out: [],
     refs: [],
+    nodes: new Map(),
   };
   walk(schema, "", 1, undefined, state, true);
-  reportCycles(state.refs, state.out);
+  // The expansion is sized only over an acyclic def graph; a cycle is refused on its own.
+  if (!reportCycles(state.refs, state.out)) reportExpansion(state.nodes, state.refs, state.out);
   return state.out;
 }
 
@@ -360,8 +450,11 @@ export function loadPack(dir: string): LoadedPack {
   checkBundleIndex(path.join(bundleDir, "index.html"), report);
   if (problems.length > 0 || raw === undefined) throw new PackError(problems, located);
 
-  // Every field below was checked above. Each schema is frozen only now, after the walk has bounded it, so the
-  // schema list_templates publishes stays the one ajv enforces.
+  // Every field below was checked above. Each schema is frozen only now, after the walk has bounded it: its nodes nest
+  // at most 64 deep, each default, examples, const and enum value (each enum and examples element) holds at most 64
+  // nested arrays and objects, and the schema expands, each $ref in place, to at most 10000 nodes. So list_templates
+  // can serialize it, and ajv can apply it, with no RangeError and no exponential stall. Frozen, the schema
+  // list_templates publishes stays the one ajv enforces.
   const templates = (list as Record<string, unknown>[]).map((entry): TemplateEntry => Object.freeze({
     id: entry.id as string,
     compositionId: entry.compositionId as string,
