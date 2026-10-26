@@ -9,7 +9,8 @@ profile. Does not supersede it.
 
 This ADR follows the owner's rulings of 2026-10-26, which are §1 of the
 [v2 design](../superpowers/specs/2026-10-26-service-profile-v2-design.md), cited
-here by number: ruling 1 (isolation) and ruling 2 (output).
+here by number: ruling 1 (isolation), ruling 2 (output) and ruling 3
+(distribution).
 
 ADR-3's Decision (`0003-isolation-boundary.md:34-36`):
 
@@ -85,11 +86,12 @@ render runs is in the CLI and Chrome, which are already separate processes.
 **Why "completes" and not "supersedes".** Nothing in ADR-3 is reversed.
 Local-dev keeps ADR-3's decision and its accepted residual risk (see Scope).
 ADR-3 makes Option 2 conditional on "if it is still warranted" (`:35`). Its
-table records that the Remotion CLI and Chrome already run as separate processes
-(`:13-14`), and its rationale gives Option 2's gain as protecting the main
-process from unknown native crashes (`:43-45`). The service process never loads
-resvg (design §5.6). What this ADR adds for the service profile is the guarantee
-that a render's processes are all killed (owner ruling 1, design §3 goal 3).
+context records that the Remotion CLI and Chrome already run as separate
+processes (`:13`, `:17-18`), and its rationale gives Option 2's gain as
+protecting the main process from unknown native crashes (`:43-45`). The service
+process never loads resvg (design §5.6). What this ADR adds for the service
+profile is the guarantee that a render's processes are all killed (owner
+ruling 1, design §3 goal 3).
 
 ## Decision
 
@@ -238,8 +240,8 @@ it started is gone, whether or not its request is still open.
   process, so it releases its slot at once.
 - Slots are released exactly once.
 
-**The value.** 2 is the default (design §8, call 4), and it is unmeasured. The
-capacity benchmark harness is a non-goal for 2026-11-20 (design §3).
+**The value.** 2 is the default, a call the design made without the owner
+(design §8, call 4).
 
 ### The heap cap is not the native-memory guard
 

@@ -206,11 +206,12 @@ deployer chooses (design §5.8).
   `AUDIT_HMAC_KEY`, that exists only in the environment.
 - **What it never records:** payloads, verbatim error messages or raw argument
   values.
-- **Why it has its own wrapper.** Local-dev's `safeHandler` records every
-  `ToolInputError` message verbatim (`src/services/format.ts:96`) and every
-  other error's message (`:102`), and its argument summary keeps short strings
-  and numbers as they are (`src/services/log.ts:24-40`). The design gives the
-  service its own wrapper and leaves `safeHandler` alone (design §5.8).
+- **Its own wrapper.** The design gives the service its own wrapper for this
+  audit and leaves local-dev's `safeHandler` alone (design §5.8).
+  `safeHandler` records what the list above excludes: every `ToolInputError`
+  message verbatim (`src/services/format.ts:96`), every other error's message
+  (`:102`), and an argument summary that keeps short strings and numbers as
+  they are (`src/services/log.ts:24-40`).
 
 ### The gateway's transport obligations
 

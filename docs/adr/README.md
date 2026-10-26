@@ -9,11 +9,11 @@ Accepted ADRs are never edited.
   the others, including any relation that arose after it landed.
 - A Proposed ADR's Status line changes once, when its stated gate is met.
 
-ADRs 0004, 0006 and 0007 were corrected in place before they reached `main`, per
-owner ruling 4 of 2026-10-26. ADR-5's boundary was restated in place per owner
-ruling 7 of the same date. Both rulings are in design §1, in
+ADRs 0004, 0006 and 0007 were corrected in place before they reached `main`,
+per owner ruling 4 of 2026-10-26, and merging PR #18 is their acceptance.
+ADR-5 is accepted by owner ruling 7 of the same date, which restated its
+boundary; its other contents follow design §6. Both rulings are in design §1 of
 [the v2 design](../superpowers/specs/2026-10-26-service-profile-v2-design.md).
-Merging PR #18 is their acceptance.
 
 | ADR | Decision | Status | Relation |
 | --- | --- | --- | --- |
