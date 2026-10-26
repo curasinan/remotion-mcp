@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { z, toJSONSchema } from "zod/v4";
 
 const REPO = path.join(import.meta.dirname, "..");
@@ -99,13 +100,9 @@ test("each bad pack is refused with its problem named at the right pointer", () 
     const err = refusal(path.join(PACKS, name));
     assert.ok(err instanceof PackError, `${name}: ${err}`);
     assert.equal(err.name, "PackError");
-    for (const problem of expected) {
-      assert.ok(err.problems.includes(problem), `${name}: ${JSON.stringify(err.problems)} lacks ${problem}`);
-    }
     // Exactly these: each fixture holds one hole, so it proves that one rule.
     assert.deepEqual(err.problems, expected, name);
   }
-  assert.ok(refusal(path.join(PACKS, "hidden-in-oneof")).problems.includes("/properties/x: keyword oneOf not allowed"));
 });
 
 test("enum and const strings need no maxLength, and exclusive bounds count as bounds", () => {
@@ -139,7 +136,7 @@ test("checkSchemaVocabulary reports nested and untyped holes at full pointers", 
   const number = { type: "integer", minimum: 1, maximum: 99 };
 
   check(obj({ x: {} }), ["/properties/x: type required"]);
-  check(obj({ x: { type: ["string", "null"], maxLength: 3 } }), ["/properties/x: type must be a single string"]);
+  check(obj({ x: { type: ["string", "null"] } }), ["/properties/x: type must be a single string"]);
   check(obj({ x: { type: "array", maxItems: 2 } }), ["/properties/x: items required"]);
   check(obj({ players: { type: "array", maxItems: 22, items: obj({ name: { type: "string" }, number }) } }),
     ["/properties/players/items/properties/name: maxLength required"]);
@@ -152,11 +149,11 @@ test("checkSchemaVocabulary reports nested and untyped holes at full pointers", 
   // Positive controls: the same shapes, bounded, pass.
   check(obj({ players: { type: "array", maxItems: 22, items: obj({ name, number }) } }), []);
   check({ $defs: { Name: name }, ...obj({ x: { $ref: "#/$defs/Name" } }) }, []);
-  check({ $defs: { "a/b~c": name }, ...obj({ x: { $ref: "#/$defs/a~1b~0c" } }) }, []);
 
-  // A $ref reaches only a #/$defs entry, by its own name.
-  for (const $ref of ["#", "#/$defs", "#/$defs/Name/maxLength", "other.json#/$defs/Name", "#/properties/x", 7]) {
-    check({ $defs: { Name: name }, ...obj({ x: { $ref } }) }, ["/properties/x: $ref must name an existing #/$defs entry"]);
+  // A $ref is exactly #/$defs/<name>: anything else is refused before the name is looked up.
+  for (const $ref of ["#", "#/$defs", "#/$defs/", "#/$defs/Name/maxLength", "#/$defs/Name\n", "other.json#/$defs/Name",
+    "#/properties/x", 7]) {
+    check({ $defs: { Name: name }, ...obj({ x: { $ref } }) }, ["/properties/x: $ref must be #/$defs/<name>"]);
   }
   // Names are escaped per RFC 6901, and the root is the empty pointer.
   check(obj({ "a/b~c": { type: "string" } }), ["/properties/a~1b~0c: maxLength required"]);
@@ -203,6 +200,156 @@ test("the vocabulary is closed: root-only keywords, literal false, schema-object
 
   check(true, [": boolean schema not allowed"]);
   check(null, [": schema must be an object"]);
+});
+
+/** A string bounded to one character: what each ref below claims to reach. */
+const ONE = { type: "string", maxLength: 1 };
+
+/** Swatch's schema replaced by `schema`, in a temp copy of the good pack. */
+const swatchPack = (t, schema) => tempPack(t, (m) => { m.templates[1].propsSchema = schema; });
+
+test("a $ref is exactly #/$defs/<name> of [A-Za-z0-9_.-], so ajv follows the def the walker checked", (t) => {
+  // Def `a` holds an unbounded string schema as its `default`, an annotation the walker never visits. Each ref
+  // names a sibling def bounded to one character. ajv percent-decodes the fragment and splits it on "/", so a `live`
+  // ref reaches $defs.a.default instead. The ~1 ref is not live, since ajv unescapes it to the sibling's name, but
+  // that name holds a "/" all the same.
+  const long = "y".repeat(200_000);
+  for (const [key, $ref, live] of [
+    ["a%2Fdefault", "#/$defs/a%2Fdefault", true],
+    ["a%2fdefault", "#/$defs/a%2fdefault", true],
+    ["a/default", "#/$defs/a~1default", false],
+    ["a/default", "#/$defs/a/default", true],
+  ]) {
+    const schema = { $defs: { a: { type: "string", maxLength: 5, default: { type: "string" } }, [key]: ONE },
+      ...obj({ x: { $ref } }) };
+    // The premise: ajv itself lets the over-long string through a live ref.
+    assert.equal(new Ajv2020({ strict: true }).compile(schema)({ x: long }), live, `ajv on ${$ref}`);
+    assert.deepEqual(checkSchemaVocabulary(schema),
+      ["/properties/x: $ref must be #/$defs/<name>", `/$defs/${key.replaceAll("/", "~1")}: def name not allowed`], $ref);
+    assert.ok(refusal(swatchPack(t, schema)) instanceof PackError, $ref);
+  }
+
+  // A def name outside the charset is refused at its own pointer, whether or not a ref names it.
+  assert.deepEqual(checkSchemaVocabulary({ $defs: { "Team Name": ONE, "Şenol": ONE, "": ONE, "a~b": ONE }, ...obj({}) }), [
+    "/$defs/Team Name: def name not allowed",
+    "/$defs/Şenol: def name not allowed",
+    "/$defs/: def name not allowed",
+    "/$defs/a~0b: def name not allowed",
+  ]);
+
+  // Positive control: a name drawing on every allowed class resolves, and ajv enforces that very def.
+  const valid = { $defs: { "Label_1.v2": { type: "string", maxLength: 3 } }, ...obj({ x: { $ref: "#/$defs/Label_1.v2" } }) };
+  assert.deepEqual(checkSchemaVocabulary(valid), []);
+  const pack = loadPack(swatchPack(t, valid));
+  assert.deepEqual(pack.validateProps("swatch", { x: "abc" }), { ok: true });
+  assert.deepEqual(pack.validateProps("swatch", { x: "abcd" }), { ok: false, paths: ["/x"] });
+
+  // The names zod 4 gives the defs it extracts keep to the charset.
+  const Hex = z.string().max(7);
+  const shared = toJSONSchema(z.strictObject({ a: Hex, b: Hex }), { reused: "ref" });
+  assert.deepEqual(Object.keys(shared.$defs), ["__schema0"]);
+  assert.deepEqual(checkSchemaVocabulary(shared), []);
+});
+
+test("a $ref may not reach its own def, directly or through others", (t) => {
+  const direct = { $defs: { n: { type: "array", maxItems: 2, items: { $ref: "#/$defs/n" } } }, ...obj({ x: { $ref: "#/$defs/n" } }) };
+  assert.deepEqual(checkSchemaVocabulary(direct), ["/$defs/n/items: recursive $ref not allowed"]);
+
+  // a -> b -> c -> a; the root's own ref into the cycle is not on it.
+  const indirect = {
+    $defs: {
+      a: obj({ next: { $ref: "#/$defs/b" } }),
+      b: { type: "array", maxItems: 2, items: { $ref: "#/$defs/c" } },
+      c: { anyOf: [{ $ref: "#/$defs/a" }, { type: "null" }] },
+    },
+    ...obj({ x: { $ref: "#/$defs/a" } }),
+  };
+  assert.deepEqual(checkSchemaVocabulary(indirect), [
+    "/$defs/a/properties/next: recursive $ref not allowed",
+    "/$defs/b/items: recursive $ref not allowed",
+    "/$defs/c/anyOf/0: recursive $ref not allowed",
+  ]);
+
+  // Positive control: defs that share a def, with no cycle, pass.
+  const shared = { $defs: { name: ONE, player: obj({ name: { $ref: "#/$defs/name" } }) },
+    ...obj({ a: { $ref: "#/$defs/player" }, b: { $ref: "#/$defs/name" } }) };
+  assert.deepEqual(checkSchemaVocabulary(shared), []);
+
+  // Loaded, the direct cycle is a PackError; it used to load, and a 10 KB body then threw a RangeError.
+  for (const schema of [direct, indirect]) {
+    const err = refusal(swatchPack(t, schema));
+    assert.ok(err instanceof PackError, String(err));
+    assert.deepEqual(err.problems, checkSchemaVocabulary(schema));
+  }
+});
+
+/** A schema `n` nodes deep, the root counted, nesting through `step`, around a null. */
+function nested(n, step = (child) => obj({ x: child })) {
+  let node = { type: "null" };
+  for (let i = 1; i < n; i++) node = step(node);
+  return node;
+}
+
+test("a schema nests at most 64 deep, and a far deeper one is a PackError, never a RangeError", (t) => {
+  const tooDeep = (at) => [`${at}: schema nested too deeply`];
+  assert.deepEqual(checkSchemaVocabulary(nested(64)), []);
+  assert.deepEqual(checkSchemaVocabulary(nested(65)), tooDeep("/properties/x".repeat(64)));
+  // Every way down counts: items, anyOf branches, and $defs entries, which sit one below the root.
+  const items = (child) => ({ type: "array", maxItems: 1, items: child });
+  assert.deepEqual(checkSchemaVocabulary(nested(64, items)), []);
+  assert.deepEqual(checkSchemaVocabulary(nested(65, items)), tooDeep("/items".repeat(64)));
+  const anyOf = (child) => ({ anyOf: [child] });
+  assert.deepEqual(checkSchemaVocabulary(nested(65, anyOf)), tooDeep("/anyOf/0".repeat(64)));
+  assert.deepEqual(checkSchemaVocabulary({ $defs: { d: nested(63) }, ...obj({}) }), []);
+  assert.deepEqual(checkSchemaVocabulary({ $defs: { d: nested(64) }, ...obj({}) }),
+    tooDeep(`/$defs/d${"/properties/x".repeat(63)}`));
+
+  // The deepest allowed schema loads, and ajv validates against it.
+  const deepest = loadPack(swatchPack(t, nested(64)));
+  let props = null;
+  for (let i = 1; i < 64; i++) props = { x: props };
+  assert.deepEqual(deepest.validateProps("swatch", props), { ok: true });
+
+  // 12 000 anyOf levels: the walk stops at the cap, so loadPack throws a PackError naming the first node past it.
+  // JSON.stringify of so deep an object can overflow the runner's own stack, so the levels are spliced in as text.
+  const dir = swatchPack(t, obj({ x: "DEEP" }));
+  const file = path.join(dir, "pack-manifest.json");
+  const levels = 12_000;
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8")
+    .replace('"DEEP"', `${'{"anyOf":['.repeat(levels)}{"type":"null"}${"]}".repeat(levels)}`));
+  const err = refusal(dir);
+  assert.ok(err instanceof PackError, String(err));
+  assert.deepEqual(err.problems, tooDeep(`/properties/x${"/anyOf/0".repeat(63)}`));
+
+  // An annotation is no schema, so the walk does not bound it; freezing a deep one still cannot overflow the stack.
+  const annotated = swatchPack(t, obj({ x: { type: "string", maxLength: 1, default: "DEEP" } }));
+  const manifest = path.join(annotated, "pack-manifest.json");
+  fs.writeFileSync(manifest, fs.readFileSync(manifest, "utf8")
+    .replace('"DEEP"', `${"[".repeat(100_000)}${"]".repeat(100_000)}`));
+  const loaded = loadPack(annotated);
+  assert.ok(Object.isFrozen(loaded.template("swatch").propsSchema.properties.x.default));
+  assert.deepEqual(loaded.validateProps("swatch", { x: "ab" }), { ok: false, paths: ["/x"] });
+});
+
+test("a number with const or a non-empty enum needs no bounds, and an enum counts only as a non-empty array", (t) => {
+  // zod 4 exports z.literal(5) as a const number, and z.enum as a string enum.
+  const literals = toJSONSchema(z.strictObject({ n: z.literal(5), e: z.enum(["a", "b"]) }));
+  assert.deepEqual(literals.properties, { n: { type: "number", const: 5 }, e: { type: "string", enum: ["a", "b"] } });
+  assert.deepEqual(checkSchemaVocabulary(literals), []);
+  assert.deepEqual(checkSchemaVocabulary(obj({ i: { type: "integer", const: 3 }, m: { type: "number", enum: [1, 2.5] } })), []);
+
+  // A null or empty enum is no enum: the bounds are required again.
+  assert.deepEqual(checkSchemaVocabulary(obj({ x: { type: "string", enum: null } })), ["/properties/x: maxLength required"]);
+  assert.deepEqual(checkSchemaVocabulary(obj({ x: { type: "string", enum: [] } })), ["/properties/x: maxLength required"]);
+  assert.deepEqual(checkSchemaVocabulary(obj({ x: { type: "number", enum: [] } })),
+    ["/properties/x: minimum or exclusiveMinimum required", "/properties/x: maximum or exclusiveMaximum required"]);
+  assert.deepEqual(checkSchemaVocabulary(obj({ x: { type: "integer", enum: null, maximum: 9 } })),
+    ["/properties/x: minimum or exclusiveMinimum required"]);
+
+  // At request time the literal still holds.
+  const pack = loadPack(swatchPack(t, literals));
+  assert.deepEqual(pack.validateProps("swatch", { n: 5, e: "a" }), { ok: true });
+  assert.deepEqual(pack.validateProps("swatch", { n: 6, e: "a" }), { ok: false, paths: ["/n"] });
 });
 
 test("the zod 4 toJSONSchema export of the realistic template passes the gate", () => {
@@ -387,11 +534,57 @@ test("the manifest's own fields are checked, so a hole cannot slip past the pixe
   assert.equal("note" in edge.template("scoreboard"), false);
 });
 
+test("compositionId keeps to Remotion's composition id rule and never starts with '-'", (t) => {
+  // The id reaches the Remotion CLI as a positional argument: a leading '-' would read as a flag.
+  const rule = "/templates/0/compositionId: only a-z, A-Z, 0-9, CJK and '-' allowed, and no leading '-'";
+  const withId = (id) => tempPack(t, (m) => { m.templates[0].compositionId = id; });
+  for (const id of ["-Scoreboard", "--props=x", "Score board", "Score_board", "Score.board", "a/b", "Şenol", "x\n"]) {
+    assert.deepEqual(refusal(withId(id)).problems, [rule], JSON.stringify(id));
+  }
+  // Positive controls: Remotion's own charset, CJK and an inner '-' included.
+  for (const id of ["Score-board-2", "比分", "S"]) assert.equal(loadPack(withId(id)).template("scoreboard").compositionId, id);
+});
+
+test("bundle/index.html is 'file required' only when it is missing; any other stat failure is named", (t) => {
+  // A bundle that is a file: ENOTDIR on Linux, ENOENT on Windows. Either way there is no index.html.
+  const fileBundle = tempPack(t);
+  fs.rmSync(path.join(fileBundle, "bundle"), { recursive: true });
+  fs.writeFileSync(path.join(fileBundle, "bundle"), "not a directory");
+  assert.deepEqual(refusal(fileBundle).problems, ["bundle/index.html: file required"]);
+
+  // A NUL byte fails every fs call with ERR_INVALID_ARG_VALUE, on every platform.
+  assert.deepEqual(refusal(path.join(GOOD, "a\0b")).problems, [
+    "pack-manifest.json: cannot be read (ERR_INVALID_ARG_VALUE)",
+    "bundle/index.html: cannot be read (ERR_INVALID_ARG_VALUE)",
+  ]);
+
+  // Codes no portable setup produces are injected: templates.js calls statSync on this same node:fs object.
+  const dir = tempPack(t);
+  const realStat = fs.statSync;
+  for (const [code, rule] of [["EACCES", "cannot be read (EACCES)"], ["ELOOP", "cannot be read (ELOOP)"],
+    ["EIO", "cannot be read (EIO)"], ["ENOTDIR", "file required"], ["ENOENT", "file required"]]) {
+    let calls = 0;
+    fs.statSync = (file, ...rest) => {
+      if (path.basename(String(file)) !== "index.html") return realStat(file, ...rest);
+      calls += 1;
+      throw Object.assign(new Error(`injected ${code}`), { code });
+    };
+    let problems;
+    try {
+      problems = refusal(dir).problems;
+    } finally {
+      fs.statSync = realStat;
+    }
+    assert.equal(calls, 1, `${code}: the injected statSync was not the one called`);
+    assert.deepEqual(problems, [`bundle/index.html: ${rule}`], code);
+  }
+});
+
 test("a schema ajv's strict mode refuses is a PackError, never a raw throw", (t) => {
+  // ajv's own wording is not pinned: only that the walker passed it, and that the refusal is one located problem.
   const missingRequired = (m) => { m.templates[1].propsSchema.required.push("missing"); };
   const badPattern = (m) => { m.templates[1].propsSchema.properties.color.pattern = "("; };
-  for (const [edit, rule] of [[missingRequired, /strict mode: required property "missing" is not defined/],
-    [badPattern, /Invalid regular expression/]]) {
+  for (const edit of [missingRequired, badPattern]) {
     const dir = tempPack(t, edit);
     const schema = JSON.parse(fs.readFileSync(path.join(dir, "pack-manifest.json"), "utf8")).templates[1].propsSchema;
     assert.deepEqual(checkSchemaVocabulary(schema), [], "the walker passes it; ajv is what refuses");
@@ -399,8 +592,7 @@ test("a schema ajv's strict mode refuses is a PackError, never a raw throw", (t)
     assert.ok(err instanceof PackError, String(err));
     assert.equal(err.problems.length, 1);
     assert.match(err.problems[0], /^: ajv refused the schema: /);
-    assert.match(err.problems[0], rule);
-    assert.match(err.message, /\/templates\/1\/propsSchema: ajv refused the schema: /);
+    assert.match(err.message, /^template pack refused: \/templates\/1\/propsSchema: ajv refused the schema: /);
   }
 });
 
