@@ -82,15 +82,14 @@ no puppeteer (ADR-5 keeps `raster.ts` out of `dist-service/`). And a crash
 inside the CLI or Chrome becomes a `render_failed` tool error. The native code a
 render runs is in the CLI and Chrome, which are already separate processes.
 
-**Why "completes" and not "supersedes".** Nothing in ADR-3 is reversed. Option 2
-sits inside ADR-3's own Decision, conditioned on it being "still warranted", and
-the service profile is the warrant. In a long-lived service shared by tenants, a
-crash, hang or runaway render costs every tenant's in-flight work, not one
-desktop client's restart.
-
-ADR-3 justified Option 2 by protecting the main process from unknown crashes,
-and that reasoning applies here at a higher stake. This is defence against the
-unknown, not a fix for a known path.
+**Why "completes" and not "supersedes".** Nothing in ADR-3 is reversed.
+Local-dev keeps ADR-3's decision and its accepted residual risk (see Scope).
+ADR-3 makes Option 2 conditional on "if it is still warranted" (`:35`). Its
+table records that the Remotion CLI and Chrome already run as separate processes
+(`:13-14`), and its rationale gives Option 2's gain as protecting the main
+process from unknown native crashes (`:43-45`). The service process never loads
+resvg (design §5.6). What this ADR adds for the service profile is the guarantee
+that a render's processes are all killed (owner ruling 1, design §3 goal 3).
 
 ## Decision
 
@@ -328,9 +327,9 @@ implemented, a frame budget refuses those renders up front:
 resvg stays in the stdio server's process, for both `viz_render_svg` and
 multi-frame stills.
 
-ADR-3's rejection of Docker (`:28-30`) concerns the desktop `.mcpb`, and it
-stands for local-dev. The service runs in a container because it is a deployed
-service, which is a different artifact.
+ADR-3's rejection of Docker (the option at `:28-30`, the rejection at `:36`)
+concerns the desktop `.mcpb`, and it stands for local-dev. The service profile
+ships as a container image (owner ruling 3, design §5.9).
 
 **Reversal cost: low,** as ADR-3 said. The spawner is one module,
 `src/service/render-process.ts`, and the image's `setpriv` and `tini` are
