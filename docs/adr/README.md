@@ -15,6 +15,6 @@ Accepted ADRs are never edited.
 | [0002](0002-no-gateway.md) | No gateway | Accepted | Partly superseded by 0006: a gateway fronts the service profile |
 | [0003](0003-isolation-boundary.md) | Isolate the in-process native code, no container | Accepted | Completed by 0007, for the service profile |
 | [0004](0004-http-transport-for-the-service-profile.md) | HTTP transport for the service profile; the `.mcpb` stays stdio only | Accepted | Partly supersedes 0001 |
-| [0005](0005-tool-profiles-and-template-packs.md) | Two tool profiles, separated structurally; the service renders only a baked template pack | Proposed. Accepted when `ISE304-project/docs/CHARTER.md` exists and confirms that tenants do not supply their own Remotion projects | Builds on 0004 |
-| [0006](0006-gateway-for-the-service-profile.md) | A gateway fronts the service profile | Accepted | Partly supersedes 0002 |
-| [0007](0007-process-isolation-for-rendering.md) | Each service-profile render runs in a forked child | Accepted | Completes 0003 |
+| [0005](0005-tool-profiles-and-template-packs.md) | Two tool profiles, separated structurally; the service renders only a baked template pack | Accepted | Builds on 0004 |
+| [0006](0006-gateway-for-the-service-profile.md) | The service profile trusts only the owner's gateway | Accepted | Partly supersedes 0002 |
+| [0007](0007-process-isolation-for-rendering.md) | Spawn the Remotion CLI directly and kill every process group it creates | Accepted | Completes 0003 |

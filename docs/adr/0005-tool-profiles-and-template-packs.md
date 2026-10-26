@@ -1,12 +1,16 @@
 # ADR-5: Tool profiles and template packs
 
-**Status:** Proposed. Accepted when `ISE304-project/docs/CHARTER.md` exists and
-confirms that tenants do not supply their own Remotion projects.
+**Status:** Accepted
 
 **Relation:** New ground; supersedes nothing. Builds on
 [ADR-4](0004-http-transport-for-the-service-profile.md).
 
 ## Context
+
+This ADR follows the owner's rulings of 2026-10-26, which are §1 of the
+[v2 design](../superpowers/specs/2026-10-26-service-profile-v2-design.md), cited
+here by number: ruling 2 (output), ruling 3 (distribution), ruling 6 (egress)
+and ruling 7 (the boundary of a pack).
 
 Two of the owner's fixed constraints of 2026-10-17, quoted because they are not
 committed anywhere else:
@@ -22,6 +26,10 @@ committed anywhere else:
 >    deploy time. Props validated by each template's zod schema. The engine stays
 >    domain-agnostic: football templates live in the ISE304-project repo, NOT in
 >    remotion-viz-mcp.
+
+Constraint 3 names zod as the validator. The pack author still writes zod, and
+the contract that crosses the wire is the JSON Schema exported from it (see
+Decision).
 
 Nothing in the repository can select a subset of tools today:
 
@@ -41,11 +49,13 @@ Nothing in the repository can select a subset of tools today:
   - `viz_render_html`: screenshots caller HTML in headless Chrome (`:46`).
 
 tsc emits the whole import closure of an entry point, so reusing a module drags
-in what it imports. Two such edges matter:
+in what it imports. Two such edges mattered:
 
-- `src/tools/render.ts:29` value-imports `requireEntryPoint` from
-  `src/tools/project.ts:50`. That module registers `remotion_init_project`
-  (`:103-104`) and `remotion_list_compositions` (`:218-219`).
+- `src/tools/render.ts` value-imported `requireEntryPoint` from
+  `src/tools/project.ts`, which registers `remotion_init_project` (`:81-82`) and
+  `remotion_list_compositions` (`:196-197`). PR #20 lifted it into a leaf,
+  `src/services/entrypoint.ts`. `render.ts:29` now imports it from there, and
+  `project.ts:50` re-exports it.
 - `src/tools/render.ts:27` imports `tilePanels` from `src/services/tile.ts`.
   `tile.ts:5` imports `rasterizeSvg` from `src/services/raster.ts`, which does
   three things:
@@ -61,154 +71,234 @@ A flag would leave the dangerous handlers compiled, shipped, and one bad branch
 from reachable, so the profiles are separated structurally instead. The service
 profile has a different entry point, compile closure, output directory and
 artifact (ADR-4). It registers exactly four tools from **one** `registerTool(`
-site: a loop over a frozen `SERVICE_TOOLS` array in `src/service/registry.ts`
-(plan Task 7).
+site: a loop over a frozen `SERVICE_TOOLS` array in `src/service/registry.ts`.
 
 ### The four forbidden tools are absent from the closure, not denied
 
-That puts four requirements on the tasks that build the closure:
+That puts four requirements on the build. Spikes of 2026-10-25 (design §2)
+established the first and the fourth:
 
-1. **`tsconfig.service.json` sets `"include": []`.** A config that extends
-   `tsconfig.json` and sets only `files` inherits `include: ["src/**/*"]`,
-   which `tsc --showConfig` confirms. Its program would then contain every
-   module under `src/`, `src/tools/project.ts` included. **This amends plan
-   Task 6 Step 3.**
-2. **`requireEntryPoint` moves to a leaf, `src/services/entrypoint.ts`** (plan
-   Task 3). It is a leaf with respect to `src/tools/` only. It still calls
-   `findEntryPoint` from `src/services/environment.ts`, which imports
-   `browser.ts` (`environment.ts:7`). That is discovery code, not native code.
-   Moving the project-shape helpers into a leaf `project-shape.ts` is
-   recommended before the image is built. No plan task does it yet.
-3. **`src/services/render-core.ts` (plan Task 5) must not import `tile.ts`.**
-   The service's `render_still` takes one frame, so it has nothing to tile. If
-   render-core imported `tile.ts`, resvg, `network.ts` and a `puppeteer-core`
-   import would enter `dist-service/`.
-4. **The absence suite checks modules, not just names.** Plan Task 7 greps
-   `dist-service/` for the four forbidden names. It must also fail on any
-   module from `src/tools/`, and on `raster.js`, `tile.js` or `network.js`.
-   The name grep alone would pass a closure that reached resvg.
+1. **`tsconfig.service.json` sets `"include": []`.** Its other settings are
+   `files: ["src/service/index.ts"]`, `noEmitOnError: true` and
+   `outDir: dist-service`, and the entry lands at
+   `dist-service/service/index.js`. A config that extends `tsconfig.json` and
+   sets only `files` inherits `include: ["src/**/*"]`, which `tsc --showConfig`
+   confirms. Its program would then contain every module under `src/`,
+   `src/tools/project.ts` included, and the spike saw every tool module compile
+   in.
+2. **`requireEntryPoint` lives in a leaf, and the service needs neither
+   `environment.ts` nor `browser.ts`.** The leaf is
+   `src/services/entrypoint.ts` (PR #20). `test/profiles.test.mjs` asserts that
+   nothing in its import closure is under `src/tools/`, and that `render.ts`
+   reaches no other tool module. The leaf still calls `findEntryPoint` from
+   `src/services/environment.ts`, which imports `browser.ts`
+   (`environment.ts:7`), and `browser.ts` makes a non-literal `import(...)`
+   (`browser.ts:105`). A service that renders a prebuilt bundle needs no
+   entry-point discovery, so `src/service/` must import neither `environment.ts`
+   nor `browser.ts` (design §5.7). The dependency check below is what proves it.
+3. **The service never reaches `tile.ts`.** The service's `render_still` takes
+   one frame through its own spawner (`src/service/render-process.ts`, ADR-7),
+   so it has nothing to tile. If the service imported `tile.ts`, resvg,
+   `network.ts` and a `puppeteer-core` import would enter `dist-service/`.
+4. **The absence suite reads the compiled output, not just names.** A grep of
+   `dist-service/` for the four forbidden names fails on a correct closure,
+   because shared hint strings name local-dev tools. It would also pass a
+   closure that reached resvg. Type-only imports still emit their target
+   modules. So the suite is built from checks that tell a correct closure from a
+   poisoned one:
+   - **AST check.** It reads every `registerTool` and `.tool` call site in the
+     emitted syntax tree. It allows only the one loop in `service/registry.js`.
+     It flags any non-literal name, and any non-call reference to
+     `registerTool`, such as an alias, `.bind` or destructuring. It requires
+     zero forbidden names.
+   - **Module check.** No file from `tools/*`, `raster`, `tile`, `network`,
+     `visualize`, `studio` or `compare` is present.
+   - **Dependency check.** There is no `@resvg/resvg-js` or `puppeteer-core`
+     specifier, and no non-literal `import()`.
+   - **Live check.** A live `tools/list` returns exactly the four tools.
+   - **Poisoned build control.** A type-only import of `tools/project.js` must
+     fail the AST check and the module check.
+   - **Poisoned registry control.** A fifth tool must fail the registry check
+     and the live check.
 
 ### The service schemas delete arguments rather than validate them
 
-- All four input schemas are `.strict()`.
+- All four input schemas are strict. `render_still` takes
+  `{ template_id, frame?, props }`.
 - None has a tenant, team, path, output-name, entry-point or scale field.
-- No service tool accepts a string that reaches a path join.
-  `src/services/paths.ts` freezes its root at import (`:8-14`), and with no
-  such string it needs no tenant parameter.
-- No service response carries a filesystem path.
-- `render_job_status` looks up `(tenant from the verified identity, job_id)`
-  in the job store (plan Task 11). A job owned by another tenant returns the
-  same `job_not_found` as one that does not exist.
+- No service tool accepts a string that reaches a path join. The service mints
+  the render's output path itself.
+- No service response carries a filesystem path. Every error a caller sees is a
+  category and a fixed message, never a path, a local-dev tool name or a raw zod
+  or ajv message.
+- `render_video_start` and `render_job_status` are registered and return a
+  documented `not_implemented`. When `render_job_status` is implemented, it
+  looks up `(tenant from the verified identity, job_id)`. A job owned by another
+  tenant returns the same `job_not_found` as one that does not exist.
 
 ### Template packs
 
-The service renders only compositions from a pack baked into the image at build
-time. The pack emits `pack-manifest.json`:
+The service renders only compositions from a template pack. A deployer bakes the
+pack into a derived image that builds on the published service image (owner
+ruling 3). This repository contains no pack except a fixture.
 
-```
-{ packHash, templates: [{ id, compositionId, schemaName, defaultFps, maxFrames }] }
-```
+**What the derived image contains** (design §5.4):
+- `pack-manifest.json`:
 
-Props are validated against the named template's zod schema on every
-`render_still` call, and on every `render_video_start` call once it is
-implemented (ADR-7). Validation happens before the frame budget is computed, a
-render slot is taken or a child is forked. Plan Task 7 Step 3 builds it in
-`src/service/templates.ts`. A failure is a `ToolInputError` of category
-`invalid_props`. The audit records that category, not zod's message, which can
-echo a caller's value (ADR-6).
+  ```
+  { packHash, remotionVersion,
+    templates: [{ id, compositionId, width, height, defaultFps, maxFrames,
+                  propsSchema }] }
+  ```
 
-This repository develops and benchmarks against a domain-agnostic fixture pack
-(`Swatch` and `Ticker`, plan Task 20). The football pack belongs to the group,
-lives in `ISE304-project`, and must emit the same shape.
+  `propsSchema` is a JSON Schema (draft 2020-12), exported with the pack's own
+  zod 4 `z.toJSONSchema`.
+- `bundle/`, a prebuilt Remotion bundle, so a still never pays for bundling.
+- `package.json` and the lockfile. A Linux build stage of the derived image runs
+  `npm ci --omit=dev`, so native packages match the image. The runtime stage
+  receives the resulting `node_modules` and has no `npm`. A pack never ships a
+  `node_modules` built on Windows or macOS.
+- Chrome Headless Shell, installed at a fixed path with `remotion browser
+  ensure` in that same Linux stage, so the service never downloads a browser at
+  runtime.
 
-### Template zod schemas are the backend contract
+Each pack image brings its own Remotion CLI and Chrome, and the base image pins
+no Remotion version (design §8, call 5). The service checks the installed
+renderer when it starts (ADR-7).
 
-Until a backend contract exists, the template zod schemas are the contract, and
-the backend conforms to them. They are held to a vocabulary that both sides can
-implement and that carries no explicit fetch target. The gate reads each schema
-node's definition rather than constructor names. In zod 3 that is `_def.typeName`
-plus, for bounds, `_def.checks`, `_def.maxLength` and `_def.unknownKeys`.
+**`scripts/build-pack.mjs`** runs in a Remotion project. It bundles the project,
+loads the schemas through the project's own esbuild, and discovers the
+compositions, failing if it finds none. It then runs the zod gate, writes the
+manifest, and checks that every bound the gate accepted appears in the exported
+JSON Schema, failing if one is missing. Its discovery limits are untested:
+`<Folder>`, hooks, module-scope font loading and pnpm layouts.
 
+**The fixture pack.** This repository develops against a domain-agnostic fixture
+pack, `Swatch`: a still with a text label, including a Turkish-glyph prop. Its
+build runs in a Linux CI job. The football pack belongs to the group, lives in
+`ISE304-project`, and must emit the same manifest shape.
+
+### Two gates hold the pack to a vocabulary both sides can implement
+
+The vocabulary carries no explicit fetch target. It has two gates, because the
+service cannot trust that a deployer ran the first.
+
+**The zod gate runs in `build-pack`.** It accepts only zod 4 schemas, which is
+what Remotion 4 projects resolve (4.4.3 and 4.5.4 were observed). A zod 3 schema
+is refused with a clear message. The gate reads the checks of every node type:
 - **Allowed:**
-  - `ZodObject` with `strict` unknown keys
-  - `ZodString` with a `max` check, optionally with a `regex`
-  - `ZodNumber` with both bounds
-  - `ZodBoolean`, `ZodEnum` and `ZodLiteral`
-  - `ZodArray` with a maximum length
-  - `ZodOptional` of any of these
+  - strict objects
+  - strings with a max, optionally with a regex
+  - numbers with both bounds, inclusive or exclusive
+  - booleans, enums and literals
+  - arrays with a max
+  - optional of any of these
 - **Refused:**
-  - a `ZodString` with a `url` check
-  - an unbounded string, number or array
-  - `ZodEffects`: `.refine`, `.superRefine`, `.transform` and `.preprocess`
-  - `ZodAny`, `ZodUnknown` and `ZodRecord`
+  - url and email formats
+  - anything unbounded
+  - `custom` checks (refine and superRefine) and `overwrite` checks, on any type
+  - pipe and transform
+  - any, unknown, record and every other type
 
-A template references any asset it needs by an id from a baked set, never by a
-URL. The gate must run in the image build against whichever pack is baked, not
-only against the fixture pack.
+On zod 4, `.refine` is a check inside a field, not a wrapper. The prototype gate
+still let `.refine` through on enum, literal and optional nodes, and an
+independent re-check caught it. That is why the gate reads checks, not wrapper
+types.
 
-**This amends plan Task 20 Steps 1-2.** Those steps allowlist eight
-constructors, with no requirement for bounds or strictness. `.url()` is a check
-on an allowlisted constructor, not a construct outside the allowlist, so as
-written the steps would accept `z.string().url()`. Task 20's intentionally bad
-schema must include one.
+Remotion's own `zColor`, `zTextarea` and `zMatrix` helpers fail the gate, and
+the authoring guide gives replacements. The export uses zod 4's own
+`z.toJSONSchema`, because the SDK's helper and `zod-to-json-schema` silently
+drop every bound. Build-pack's last step is what catches a bound that goes
+missing anyway.
 
-**The vocabulary does not keep URLs out of strings.** A bounded string can
-still hold one. Whether a string is ever fetched depends on the template's own
-code, which the gate cannot see. The vocabulary removes the explicit markers.
-Egress deny is the control that actually binds; see below.
+**The JSON Schema gate runs at service startup,** on every `propsSchema` the
+service loads. The service refuses to start on a pack that fails it:
+- every object has `additionalProperties: false`
+- every array has `maxItems`
+- no `format` is `uri` or `email`
+- every string has `maxLength`, unless it is an `enum` or a `const`
+- every number has a lower bound and an upper bound. `exclusiveMinimum` and
+  `exclusiveMaximum` count.
 
-## Why this is Proposed
+### Props are validated with ajv, against the published schema
 
-**The pack is trusted code.** `render_still` bundles the template project and
-runs it in headless Chrome, which is the very reason
-`remotion_list_compositions` is excluded. So the honest statement of this
-boundary is that the service executes only code its operators chose to bake.
+At request time the service validates props with ajv (`ajv/dist/2020`) against
+the template's `propsSchema`. No zod runs inside the service. `list_templates`
+returns each template's `propsSchema`, and the backend validates against that
+same published JSON Schema, so there is one contract. Remotion's own render path
+does not appear to validate props. That was inferred from its code, not tested
+with a render, so ajv is the validation.
 
-That rests on one claim the owner has made and no committed requirement states:
-**tenants do not supply their own Remotion projects.** Fixed constraint 3 says
-the pack is "bundled at deploy time", but a constraint is an owner assertion.
-`ISE304-project` has no charter: it is empty as of 2026-10-17. If the charter
-says otherwise, this boundary collapses.
+Validation happens before a render slot is taken or a process is spawned. A
+failure is a refusal of category `invalid_props`. The audit records that
+category, not ajv's message, which can echo a caller's value (ADR-6).
 
-The boundary also rests on two controls that no in-scope plan task builds:
-- **Container egress deny-by-default,** with cloud metadata endpoints blocked
-  at the network namespace. It is the only control that binds Chrome's own
-  fetches, and no plan task builds it.
-- **Review governance of the football pack.** Plan Task 2 Steps 3-4 describe
-  it: `CODEOWNERS` for `packages/templates/**`, and branch protection on
-  `main`. But Task 2 is out of scope, and is left for the `ISE304-project`
-  group to pick up.
+A composition may compute its size at render time with `calculateMetadata`. The
+service always passes the manifest's width, height and frame to the CLI
+explicitly, so its pre-render checks hold whatever the composition computes.
+
+**The vocabulary does not keep URLs out of strings.** A bounded string can still
+hold one. Whether a string is ever fetched depends on the template's own code,
+which the gates cannot see. The vocabulary removes the explicit markers. Egress
+deny is the control that actually binds, and it is the deployer's (see below).
+Templates must also be self-contained: fonts and images live inside the pack,
+and there are no web fonts.
+
+## Why this is Accepted
+
+**The pack is trusted code, and the boundary is stated by owner ruling 7.**
+`render_still` runs the pack's bundle in headless Chrome, which is the very
+reason `remotion_list_compositions` is excluded. The ruling restates the
+boundary:
+- A pack is code that a deployment's operator bakes into their own image.
+- No tool accepts code with a request.
+- A pack's risk belongs to the operator of the deployment that runs it.
+
+So the service executes only code that its own deployment's operator chose to
+bake. This ADR first stood as Proposed, behind a gate: a charter in
+`ISE304-project` had to confirm that tenants do not supply their own Remotion
+projects. Ruling 7 drops that gate. The claim no longer rests on a document in
+another repository. It rests on what the service accepts, and the structural
+separation above is what makes it checkable that no tool takes code with a
+request.
+
+**Egress is the deployer's control (ruling 6), and this ADR's security claim is
+conditional on it.** `docs/DEPLOY.md` makes it mandatory: the container has no
+outbound route, and cloud metadata is blocked. It is the only control that binds
+Chrome's own fetches. This repository cannot enforce it, because egress
+enforcement is outside the repository (design §3). A deployer who does not deny
+egress leaves a pack that fetches a URL from a prop free to reach whatever the
+container can reach.
+
+**Review of a pack belongs to its operator.** Who may change a pack, through
+which review, is the operator's to govern, because the risk is theirs.
 
 ## Consequences
 
 - **Absence is claimed for the registration closure and the compiled artifact,
   not for the image.**
   - `puppeteer-core` and `@resvg/resvg-js` are production dependencies of this
-    package, so a plain `npm ci --omit=dev` puts them in the image's
-    `node_modules`.
-  - No plan task narrows the image's dependency set, or builds a poisoned image
-    to prove a capability check. Plan Task 7's "POISONED CONTROL (image)" is a
-    poisoned registry.
-  - Until both exist, this ADR does not claim the dangerous capabilities are
-    absent from the image.
+    package, so the image's `node_modules` holds them after a production
+    install.
+  - The poisoned-registry control proves the registry, not the image.
+  - Until the image's dependency set is narrowed and a capability check proves
+    it, this ADR does not claim the dangerous capabilities are absent from the
+    image.
 - **The service has no second manifest.** It is not packaged as an `.mcpb`.
   Agreement between the registry and what the service advertises is asserted
-  by a live `tools/list` (plan Task 7).
-- **Not yet in any plan task:**
-  - the schema-reflection test for `.strict()` and no path join
-  - the identical-`job_not_found` assertion at the tool response
-  - a test that no service response carries a filesystem path
-  - closure requirement 1, which amends plan Task 6 Step 3
-  - the `project-shape.ts` split recommended in closure requirement 2
-  - closure requirements 3 and 4
-  - check-level enforcement in the vocabulary gate
-  - running the gate in the image build
-  - container egress deny
-- **How a caller retrieves an artifact is undecided.** The design's candidate
-  is a tenant-scoped, single-use download token. Until retrieval is decided,
-  `render_job_status`, once implemented (ADR-7), returns status and digest
-  fields only.
+  by a live `tools/list` (the absence suite's live check).
+- **How a caller retrieves a still is decided; a video is not.** Owner ruling 2:
+  `render_still` returns the PNG inside the MCP response, under a size cap.
+  There is no storage and no download token. For video, `render_video_start` and
+  `render_job_status` return `not_implemented` until they are built, and
+  retrieval is decided then.
+- **Some gaps remain and are named, not hidden:**
+  - `build-pack`'s discovery limits (`<Folder>`, hooks, module-scope font
+    loading, pnpm layouts) are untested.
+  - That Remotion's render path does not validate props is inferred, not
+    tested.
+  - Egress deny and the review of a pack are the deployer's.
 
 **Reversal cost: low for the mechanism, high for the boundary.** Collapsing to
-one profile deletes a directory. Widening the service profile means re-arguing
-why the pack is trusted.
+one profile deletes a directory. Widening the service profile to accept code
+with a request means re-arguing ruling 7.
