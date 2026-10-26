@@ -12,12 +12,27 @@ below have a recorded moment where they caught a deliberately planted defect.
 
 | Job | Needs | What it is for |
 | --- | --- | --- |
-| `build-and-test` | — | 3 OS × Node 22/24/26 = 9 legs. Type-check, build, browser-presence assertion, the suite, coverage on one leg, MCP conformance, lint, `npm audit`. |
+| `build-and-test` | — | 3 OS × Node 22/24/26 = 9 legs. Type-check, build, service build, browser-presence assertion, the suite, coverage on one leg, MCP conformance, lint, `npm audit`. |
 | `sbom` | — | CycloneDX and SPDX SBOMs, plus a Trivy filesystem scan (advisory). |
 | `bundle` | `build-and-test` | Builds the `.mcpb`, enforces the size ceiling, runs the bundle assertions. |
 | `verify-bundle` | `bundle` | 6 platforms. Extracts the shipped artifact and *runs* it. |
 | `lint-workflows` | — | `actionlint` over `.github/workflows/`. |
 | `ci-ok` | all of the above | One aggregate check, so branch protection has a single required status instead of 15 that change name whenever the matrix does. |
+
+### The service build runs before the suite
+
+`npm run build:service` compiles `tsconfig.service.json`, whose only root is
+`src/service/index.ts`, into `dist-service/`. The service profile's tests import
+their modules from `dist-service/service/*.js`, not from `dist/`, so the
+`Build service` step sits straight after `Build` and before every test step, in
+both `ci.yml` and `release.yml`. Locally, run
+`npm run build && npm run build:service` before `npm test`; without
+`dist-service/` the service tests fail rather than skip.
+
+It is also the only type-check `src/service/` gets: `tsconfig.json`, which
+`npm run typecheck` uses, excludes that tree so the stdio build never ships it.
+The `bundle` job skips it: the `.mcpb` is built from `dist/` alone, and
+`test/bundle.test.mjs` never imports `dist-service/`.
 
 ### The browser-presence assertion is not decoration
 
@@ -75,9 +90,9 @@ signature before the job ends.
 Three things worth knowing:
 
 - **The gate runs before `npx semantic-release`,** so a failure leaves no tag.
-  It covers type-check, build, the browser assertion and the suite on
-  ubuntu/Node 24 — *not* the full matrix, not `verify-bundle`, not the
-  conformance check. A green release is not a green matrix.
+  It covers type-check, build, the service build, the browser assertion and
+  the suite on ubuntu/Node 24 — *not* the full matrix, not `verify-bundle`,
+  not the conformance check. A green release is not a green matrix.
 - **A downgrade guard refuses any computed version at or below the one in
   `package.json`.** It exists because with no tags in the repository
   semantic-release restarts at `1.0.0` and would have published a downgrade,

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "files": ["src/service/index.ts"],
+  "include": [],
+  "compilerOptions": {
+    "outDir": "./dist-service",
+    "noEmitOnError": true
+  }
+}

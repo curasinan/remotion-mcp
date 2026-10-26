@@ -8,3 +8,7 @@ build
 /extracted/
 /tmp-verify/
 /tmp-broken/
+
+# Output of `npm run build:service`, and scratch trees service tests create inside the repo.
+/dist-service/
+/tmp-poison-*/
