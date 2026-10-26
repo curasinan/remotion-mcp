@@ -2,3 +2,5 @@
 export * from "./constants.js";
 export * from "./identity.js";
 export * from "./templates.js";
+export * from "./render-process.js";
+export * from "./slots.js";

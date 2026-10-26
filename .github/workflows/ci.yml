@@ -58,12 +58,15 @@ jobs:
         env:
           # Shared runners are slow to start Chrome; raise the 45 s page deadline.
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+          # test/render-process.test.mjs fails instead of skipping its Linux-only cases. Never "1" off ubuntu.
+          REQUIRE_LINUX_PROCESS_TESTS: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
       - name: Test (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run test:coverage
         env:
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+          REQUIRE_LINUX_PROCESS_TESTS: "1"
 
       # Check tools/list with an independent client (pinned); update the count when adding a tool.
       - name: MCP conformance (independent client)
