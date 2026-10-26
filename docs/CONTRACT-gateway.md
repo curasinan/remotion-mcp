@@ -23,10 +23,13 @@ signature = base64url(HMAC-SHA256(key, claims))
 ```
 
 - **base64url** is RFC 4648 §5: `A-Z a-z 0-9 - _`, with no padding and no
-  whitespace. The header has exactly one dot.
+  whitespace. The header has exactly one dot. A part with `=` padding or any
+  other character is `malformed`, even when the HMAC was computed over that
+  padded text.
 - **The signature is always 43 characters**, the canonical encoding of the
   32-byte digest. Every standard encoder produces it; a hand-made spelling
-  whose last character carries non-zero spare bits is refused.
+  whose last character carries non-zero spare bits is `malformed`, although
+  it decodes to the same bytes.
 - **The HMAC covers the claims part exactly as sent,** the base64url string
   itself, not the decoded JSON. There is no canonical JSON step. Serialise the
   claims however you like, then sign the string you send. Re-encoding the
@@ -93,6 +96,13 @@ not close the window entirely: the new process accepts any header signed no
 earlier than `startedAt - skew`, so a request the old process accepted in its
 last seconds can be accepted once more when the restart is quick.
 
+**Within one process the service's time never moves backward.** The verifier
+judges every request at the latest clock reading it has seen, so if the
+deployment's clock steps back, `now` stays at that reading until the clock
+passes it again. A backward step larger than skew can therefore refuse
+requests (`not_yet_valid` or `expired`) until the clock catches up. It never
+re-admits an id the replay set has already dropped.
+
 ## The replay set
 
 - **Entry.** A `request_id` enters the set only after checks 1 to 14 pass. A
@@ -144,8 +154,15 @@ signs any JSON object, so it can also make headers the service refuses.
 
 `test/vectors/identity-v1.json` holds the exact bytes of every case. Running
 `node scripts/make-identity-vectors.mjs test/vectors/identity-v1.json`
-rewrites it byte for byte. The script imports nothing from the
+rewrites it byte for byte, and the test suite fails when the committed file
+differs from the script's output. The script imports nothing from the
 implementation, and every expected verdict is declared by hand in it.
+
+Besides one or more cases per verdict, the vectors pin the encoding rules
+above (a padded claims part signed over the padded text, and a non-canonical
+signature spelling) and the check order: for each pair of neighbouring checks
+from 3 to 10, for checks 8 and 10, and for checks 10 and 11, one vector breaks
+exactly those two and expects the earlier.
 
 **The key** is the published throwaway `Buffer.alloc(32, 7)`, 32 bytes of
 `0x07`, given in the file as `key_base64url`. It protects nothing. Never

@@ -262,6 +262,48 @@
       ]
     },
     {
+      "name": "malformed: padded claims part, correctly signed over the padded text",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xMDAiLCJ0ZW5hbnQiOiJ0LTEiLCJhdWQiOiJkZXAtYSIsInRvb2wiOiJyZW5kZXJfc3RpbGwiLCJib2R5X3NoYTI1NiI6ImFkMjFkOWJmZTAwZWM5ZWM5YzNjNmVhZDA0N2JkYWUzNDgzZTEzZWRlYjM2YzdhMzBkOTVhNDUzZmM3YjllYjIiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDA2MH0=.Oo5Ro2ezWYU_xwsdFCiERkGbM1LxGonpyjTAFgAmRuc",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "malformed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "malformed: non-canonical signature spelling",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdf",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "malformed"
+          }
+        }
+      ]
+    },
+    {
       "name": "unsupported_version: v 2",
       "options": {
         "audience": "dep-a",
@@ -441,7 +483,7 @@
       "steps": [
         {
           "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdc",
-          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQjOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InJjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
           "expected": {
             "ok": false,
             "status": 401,
@@ -616,6 +658,195 @@
             "ok": false,
             "status": 400,
             "reason": "batch"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unsupported_version: v 2 under a forged signature",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoyLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.B_E_wAzJQ5q2cLNJRUr-FeM0D9dWjK0MwiJtyMIQLZ0",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "unsupported_version"
+          }
+        }
+      ]
+    },
+    {
+      "name": "bad_signature: aud dep-b under a forged signature",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWIiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.CootVonGEvfJOU5F7OOrxIIq8-5b8BOpt9atpBMEcc0",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "bad_signature"
+          }
+        }
+      ]
+    },
+    {
+      "name": "wrong_audience: aud dep-b, signed 31 s in the future",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWIiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDMxLCJleHAiOjE4MDAwMDAwOTB9.yOagujoebCqbVAPBe9yKrQ6jAEG67TadycXbJyC_O6o",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "wrong_audience"
+          }
+        }
+      ]
+    },
+    {
+      "name": "not_yet_valid: signed 31 s in the future, expired 31 s ago",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDMxLCJleHAiOjE3OTk5OTk5Njl9.jue1FshMe9gl0OqxD1fQ8cctEb49VEgMw_y9Q6bFwWM",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "not_yet_valid"
+          }
+        }
+      ]
+    },
+    {
+      "name": "expired: expired 31 s ago, exp - iat of 169 s",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxNzk5OTk5ODAwLCJleHAiOjE3OTk5OTk5Njl9.SRw9B3_j2ToCKeRs6IJwrxg2VGQDxRta42Us5vaWmgI",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "expired"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ttl_too_long: exp - iat of 121 s, signed before a restart",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999990
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxNzk5OTk5OTU5LCJleHAiOjE4MDAwMDAwODB9.eRjSZUyutVgWdPxd9hpZweWMWkBYH2AiMUye8fuK1HI",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "ttl_too_long"
+          }
+        }
+      ]
+    },
+    {
+      "name": "signed_before_start: signed before a restart, one body byte changed",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999990
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxNzk5OTk5OTU5LCJleHAiOjE4MDAwMDAwNjB9.LthuP37ZSiQj8A6SqsWyJdiWJBAMOjlbQbJ5xUycLLE",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InJjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "signed_before_start"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ttl_too_long: exp - iat of 121 s, one body byte changed",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAxMjF9.Cjwm97Cnj4CFVNLzox7NorhkEe36o0VeOCXjZjFY0-E",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InJjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "ttl_too_long"
+          }
+        }
+      ]
+    },
+    {
+      "name": "body_mismatch: the signed body replaced by one that is not JSON",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdc",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiw=",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "body_mismatch"
           }
         }
       ]

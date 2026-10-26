@@ -39,6 +39,9 @@ type Shaped = Omit<IdentityClaims, "v"> & { v: number };
 
 const refuse = (reason: IdentityRefusal): VerifyResult => ({ ok: false, reason });
 
+/** A time option or clock reading: a whole number of seconds. NaN, undefined, Infinity, 1.5 and "30" are not. */
+const isWholeSeconds = (value: unknown): value is number => Number.isSafeInteger(value);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -88,11 +91,14 @@ export function verifyIdentityHeader(header: string | undefined, rawBody: Buffer
   // The signature covers the claims part exactly as received; there is no canonical JSON step.
   if (!timingSafeEqual(hmac(claimsPart, o.key), signature)) return refuse("bad_signature");
   if (c.aud !== o.audience) return refuse("wrong_audience");
-  if (o.nowS < c.iat - o.skewS) return refuse("not_yet_valid");
-  if (o.nowS > c.exp + o.skewS) return refuse("expired");
-  if (c.exp - c.iat > o.maxTtlS) return refuse("ttl_too_long");
+  // Each time rule is written in its accepting form and also requires the options it reads to be whole
+  // seconds (the skew non-negative, the TTL cap positive), so a bad option fails its rule instead of passing.
+  const clockOk = isWholeSeconds(o.nowS) && isWholeSeconds(o.skewS) && o.skewS >= 0;
+  if (!(clockOk && o.nowS >= c.iat - o.skewS)) return refuse("not_yet_valid");
+  if (!(o.nowS <= c.exp + o.skewS)) return refuse("expired");
+  if (!(isWholeSeconds(o.maxTtlS) && o.maxTtlS > 0 && c.exp - c.iat <= o.maxTtlS)) return refuse("ttl_too_long");
   // The replay set lives in memory, so a header signed before this process started could be a replay.
-  if (c.iat < o.startedAtS - o.skewS) return refuse("signed_before_start");
+  if (!(isWholeSeconds(o.startedAtS) && c.iat >= o.startedAtS - o.skewS)) return refuse("signed_before_start");
   if (createHash("sha256").update(rawBody).digest("hex") !== c.body_sha256) return refuse("body_mismatch");
 
   return { ok: true, claims: { ...c, v: 1 } };
@@ -120,19 +126,48 @@ export function checkClaimsAgainstMessage(claims: IdentityClaims, message: unkno
 export class ReplayCache {
   readonly #skewS: number;
   readonly #expiry = new Map<string, number>();
+  /** The largest clock reading this cache has been given. */
+  #highWaterS: number | undefined;
 
   constructor(skewS: number) {
+    if (!isWholeSeconds(skewS) || skewS < 0) {
+      throw new RangeError(`ReplayCache: skewS must be a non-negative whole number of seconds, got ${String(skewS)}`);
+    }
     this.#skewS = skewS;
   }
 
-  /** True while `nowS <= exp + skew`, the last second the remembered header still verifies. */
+  /** The skew this cache keeps ids for. verifyRequest requires it to equal the verifier's own. */
+  get skewS(): number {
+    return this.#skewS;
+  }
+
+  /**
+   * Records a clock reading and returns the cache's time, the largest reading it has been given. A reading
+   * that is not whole seconds is returned unchanged and not recorded, so every check it feeds refuses.
+   */
+  advance(nowS: number): number {
+    if (!isWholeSeconds(nowS)) return nowS;
+    if (this.#highWaterS === undefined || nowS > this.#highWaterS) this.#highWaterS = nowS;
+    return this.#highWaterS;
+  }
+
+  /**
+   * True while `nowS <= exp + skew`, the last second the remembered header still verifies.
+   * Fails closed: a clock reading that is not whole seconds counts every id as seen.
+   */
   seen(requestId: string, nowS: number): boolean {
+    if (!isWholeSeconds(nowS)) return true;
+    this.advance(nowS);
     const exp = this.#expiry.get(requestId);
     return exp !== undefined && nowS <= exp + this.#skewS;
   }
 
   /** Records an accepted id, first dropping every entry whose header can no longer verify. */
   remember(requestId: string, expS: number, nowS: number): void {
+    if (!isWholeSeconds(expS) || !isWholeSeconds(nowS)) {
+      throw new RangeError("ReplayCache.remember: expS and nowS must be whole numbers of seconds");
+    }
+    this.advance(nowS);
     for (const [id, exp] of this.#expiry) {
       if (nowS > exp + this.#skewS) this.#expiry.delete(id);
     }
@@ -140,9 +175,21 @@ export class ReplayCache {
   }
 }
 
-/** Design 5.2 steps 3-6: identity, parse, identity against the body, then replay. */
-export function verifyRequest(header: string | undefined, rawBody: Buffer, o: VerifyOptions,
+/**
+ * Design 5.2 steps 3-6: identity, parse, identity against the body, then replay.
+ * Throws, before any check, when the cache's skew is not the options' skew: that is a wiring bug, not a
+ * request outcome, and it would drop ids from the replay set while their headers still verify.
+ */
+export function verifyRequest(header: string | undefined, rawBody: Buffer, options: VerifyOptions,
   cache: ReplayCache): RequestVerdict {
+  if (cache.skewS !== options.skewS) {
+    throw new Error(`verifyRequest: the replay cache keeps ids for a skew of ${cache.skewS} s, but the options `
+      + `give skewS ${String(options.skewS)}; build both from one setting`);
+  }
+  // Within one process the verifier's time never moves backward: after a backward clock step it stays at
+  // the latest reading, so an id the cache has already dropped cannot verify again (docs/CONTRACT-gateway.md).
+  const o: VerifyOptions = { ...options, nowS: cache.advance(options.nowS) };
+
   const identity = verifyIdentityHeader(header, rawBody, o);
   if (!identity.ok) return { ok: false, status: 401, reason: identity.reason };
 

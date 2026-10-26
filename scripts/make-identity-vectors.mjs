@@ -57,15 +57,34 @@ const vector = (name, steps, options = {}) => ({ name, options: { ...OPTIONS, ..
 const VALID = header({});
 const [VALID_P, VALID_SIG] = VALID.split(".");
 
-// A forgery made without any key: the valid signature with one bit changed.
-const forgedSig = Buffer.from(VALID_SIG, "base64url");
-forgedSig[0] ^= 0x01;
+/** A forgery made without any key: a header's own valid signature with one bit changed. */
+function forge(signedHeader) {
+  const [p, sig] = signedHeader.split(".");
+  const bytes = Buffer.from(sig, "base64url");
+  bytes[0] ^= 0x01;
+  return `${p}.${bytes.toString("base64url")}`;
+}
 
 // The same claims value, spelled with whitespace, under the compact spelling's signature.
 const SPACED = JSON.stringify(claims(), null, 2);
 
+// One letter of "scoreboard" changed after signing. The body stays valid JSON, so only the body hash breaks.
 const FLIPPED = Buffer.from(CALL);
-FLIPPED[20] ^= 0x01;
+FLIPPED[CALL.indexOf("scoreboard")] ^= 0x01;
+JSON.parse(FLIPPED.toString("utf8")); // throws if an edit above ever makes this body invalid JSON
+
+// Principal k-100 makes the claims JSON 212 bytes, so standard base64 pads its encoding with exactly one "=".
+// The HMAC covers the padded text; Node's decoder reads it as the unpadded claims.
+const PADDED_P = `${b64url(JSON.stringify(claims({ principal: "k-100" })))}=`;
+if (PADDED_P.length % 4 !== 0) throw new Error("PADDED_P is not a standard one-'=' padding");
+
+// The same 32 bytes as VALID_SIG, spelled with the last character's two unused low bits set.
+const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const NON_CANONICAL_SIG = VALID_SIG.slice(0, 42) + B64URL[B64URL.indexOf(VALID_SIG[42]) | 3];
+if (NON_CANONICAL_SIG === VALID_SIG
+  || !Buffer.from(NON_CANONICAL_SIG, "base64url").equals(Buffer.from(VALID_SIG, "base64url"))) {
+  throw new Error("NON_CANONICAL_SIG is not a second spelling of VALID_SIG's bytes");
+}
 
 const LIST = body("tools/list", { _meta: { [META_KEY]: "r-1" } });
 const R2 = call({ requestId: "r-2" });
@@ -93,9 +112,12 @@ const vectors = [
   vector("malformed: claims that are a JSON array", [step(signText(JSON.stringify([claims()])), CALL,
     refused(401, "malformed"))]),
   vector("malformed: iat as a string", [step(header({ iat: String(NOW) }), CALL, refused(401, "malformed"))]),
+  vector("malformed: padded claims part, correctly signed over the padded text", [step(signPart(PADDED_P), CALL,
+    refused(401, "malformed"))]),
+  vector("malformed: non-canonical signature spelling", [step(`${VALID_P}.${NON_CANONICAL_SIG}`, CALL,
+    refused(401, "malformed"))]),
   vector("unsupported_version: v 2", [step(header({ v: 2 }), CALL, refused(401, "unsupported_version"))]),
-  vector("bad_signature: a forged signature", [step(`${VALID_P}.${forgedSig.toString("base64url")}`, CALL,
-    refused(401, "bad_signature"))]),
+  vector("bad_signature: a forged signature", [step(forge(VALID), CALL, refused(401, "bad_signature"))]),
   vector("bad_signature: the claims re-encoded after signing", [step(`${b64url(SPACED)}.${VALID_SIG}`, CALL,
     refused(401, "bad_signature"))]),
   vector("wrong_audience: aud dep-b", [step(header({ aud: "dep-b" }), CALL, refused(401, "wrong_audience"))]),
@@ -122,6 +144,29 @@ const vectors = [
   vector("parse: a body that is not JSON, validly signed", [step(header({}, NOT_JSON), NOT_JSON,
     refused(400, "parse"))]),
   vector("batch: an array body, validly signed", [step(header({}, BATCH), BATCH, refused(400, "batch"))]),
+
+  // Two-rule cases. Each breaks exactly two checks, adjacent in the contract's order unless noted, and
+  // expects the earlier one. test/identity.test.mjs PAIR_CASES holds the same cases.
+  vector("unsupported_version: v 2 under a forged signature", [step(forge(header({ v: 2 })), CALL,
+    refused(401, "unsupported_version"))]),
+  vector("bad_signature: aud dep-b under a forged signature", [step(forge(header({ aud: "dep-b" })), CALL,
+    refused(401, "bad_signature"))]),
+  vector("wrong_audience: aud dep-b, signed 31 s in the future", [step(header({ aud: "dep-b", iat: NOW + 31,
+    exp: NOW + 90 }), CALL, refused(401, "wrong_audience"))]),
+  vector("not_yet_valid: signed 31 s in the future, expired 31 s ago", [step(header({ iat: NOW + 31,
+    exp: NOW - 31 }), CALL, refused(401, "not_yet_valid"))]),
+  vector("expired: expired 31 s ago, exp - iat of 169 s", [step(header({ iat: NOW - 200, exp: NOW - 31 }), CALL,
+    refused(401, "expired"))]),
+  vector("ttl_too_long: exp - iat of 121 s, signed before a restart", [step(header({ iat: NOW - 41,
+    exp: NOW + 80 }), CALL, refused(401, "ttl_too_long"))], { startedAtS: NOW - 10 }),
+  vector("signed_before_start: signed before a restart, one body byte changed", [step(header({ iat: NOW - 41,
+    exp: NOW + 60 }), FLIPPED, refused(401, "signed_before_start"))], { startedAtS: NOW - 10 }),
+  // Not adjacent: the body hash also runs after ttl_too_long, not just after signed_before_start.
+  vector("ttl_too_long: exp - iat of 121 s, one body byte changed", [step(header({ exp: NOW + 121 }), FLIPPED,
+    refused(401, "ttl_too_long"))]),
+  // The body hash runs on the raw bytes, before the body is parsed.
+  vector("body_mismatch: the signed body replaced by one that is not JSON", [step(VALID, NOT_JSON,
+    refused(401, "body_mismatch"))]),
 ];
 
 const names = new Set(vectors.map((v) => v.name));
