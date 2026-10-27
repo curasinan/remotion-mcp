@@ -180,7 +180,10 @@ property whose name is not an identifier, and `[]` into an array's elements.
 **After the export**, build-pack checks that every bound the gate accepted is
 still in the JSON Schema, and fails if one is missing. The bounds are lengths,
 item counts, patterns, number bounds, strict objects, required fields, enums
-and literals. An exported bound at least as tight still counts.
+and literals. An exported bound at least as tight still counts. For an enum or
+a literal, the export's `enum` and `const` must name at least one value, and
+only values zod accepts: an export that admits another value fails with
+`<path>: the export admits <values>, which zod refuses`.
 
 ## The JSON Schema gate (service startup)
 

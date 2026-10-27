@@ -182,6 +182,41 @@ function numberBoundsSurvived(checks, json, at, out) {
   }
 }
 
+/**
+ * The values an enum or literal accepts, as zod reads them. For an enum that is zod's own getEnumValues: a
+ * TypeScript numeric enum also maps each number back to its name, and zod drops those reverse entries.
+ */
+function zodValues(def) {
+  if (def.type === "literal") return Array.isArray(def.values) ? def.values : [];
+  const entries = Object.entries(isObject(def.entries) ? def.entries : {});
+  const numbers = entries.map(([, value]) => value).filter((value) => typeof value === "number");
+  return entries.filter(([key]) => numbers.indexOf(Number(key)) === -1).map(([, value]) => value);
+}
+
+/**
+ * Every value an exported node names in `enum` and `const`, or undefined when it names none (no `const`, and no
+ * `enum` or an empty one) or carries an `enum` that is not an array. A value either keyword names counts. JSON Schema
+ * admits only the values both name, so a node carrying both is never read as tighter than it is.
+ */
+function exportedValues(json) {
+  const named = [];
+  if (Object.hasOwn(json, "enum")) {
+    if (!Array.isArray(json.enum)) return undefined;
+    named.push(...json.enum);
+  }
+  if (Object.hasOwn(json, "const")) named.push(json.const);
+  return named.length > 0 ? named : undefined;
+}
+
+/** A value for a message: a string quoted, a number, boolean or null as written, and only the kind of anything else. */
+const showValue = (value) => {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return "an array";
+  if (isObject(value)) return "an object";
+  if (typeof value === "function" || typeof value === "symbol") return `a ${typeof value}`;
+  return String(value);
+};
+
 /** Appends to `out` each bound of `schema` that its exported `json` node lost. */
 function survivedNode(schema, jsonNode, at, depth, defs, out) {
   if (depth > MAX_DEPTH || zodMajor(schema) !== 4) return;
@@ -232,9 +267,15 @@ function survivedNode(schema, jsonNode, at, depth, defs, out) {
     }
     case "enum":
     case "literal": {
-      const values = def.type === "enum" ? Object.values(def.entries ?? {}) : (def.values ?? []);
-      const allowed = Array.isArray(json.enum) ? json.enum : Object.hasOwn(json, "const") ? [json.const] : [];
-      if (!values.every((value) => allowed.includes(value))) out.push(`${at}: ${def.type === "enum" ? "enum" : "const"} missing from the export`);
+      // The bound is lost when the export admits a value zod refuses. Naming fewer values is tighter, and counts.
+      const named = exportedValues(json);
+      if (named === undefined) {
+        out.push(`${at}: ${def.type === "enum" ? "enum" : "const"} missing from the export`);
+        break;
+      }
+      const accepted = zodValues(def);
+      const refused = named.filter((value) => !accepted.includes(value));
+      if (refused.length > 0) out.push(`${at}: the export admits ${refused.map(showValue).join(", ")}, which zod refuses`);
       break;
     }
     default:
@@ -245,7 +286,8 @@ function survivedNode(schema, jsonNode, at, depth, defs, out) {
 /**
  * Every bound the gate accepted that `jsonSchema`, the schema's export, does not carry: `[]` when all survived.
  * It checks lengths, item counts, patterns, number bounds, strict objects, required fields, enums and literals. An
- * exported bound at least as tight as zod's counts, and a `$ref` into the export's `$defs` is followed.
+ * exported bound at least as tight as zod's counts: for an enum or literal, an `enum` or `const` that names only
+ * values zod accepts. A `$ref` into the export's `$defs` is followed.
  */
 export function boundsSurvived(schema, jsonSchema) {
   const defs = isObject(jsonSchema) && isObject(jsonSchema.$defs) ? jsonSchema.$defs : {};

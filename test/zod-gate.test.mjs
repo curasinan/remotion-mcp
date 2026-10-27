@@ -175,6 +175,60 @@ test("boundsSurvived follows a $ref into $defs, and accepts a tighter bound", ()
   assert.deepEqual(boundsSurvived(schema, exported), ["<root>.title: maxLength 80 missing from the export"]);
 });
 
+// An enum or literal loses its bound when the export admits a value zod refuses: the backend validates against the
+// export, so the template would receive a value its own zod type excludes. Admitting fewer values is tighter.
+test("boundsSurvived reports an enum or literal the export widened, and accepts one it narrowed", () => {
+  const wider = z.strictObject({ theme: z.enum(["light", "dark"]).meta({ enum: ["light", "dark", "neon"] }) });
+  assert.deepEqual(gateSchema(wider), []);
+  assert.deepEqual(boundsSurvived(wider, toJSONSchema(wider)), ['<root>.theme: the export admits "neon", which zod refuses']);
+
+  const widerLiteral = z.strictObject({ kind: z.literal("card").meta({ const: undefined, enum: ["card", "poster"] }) });
+  assert.deepEqual(gateSchema(widerLiteral), []);
+  assert.deepEqual(boundsSurvived(widerLiteral, toJSONSchema(widerLiteral)), [
+    '<root>.kind: the export admits "poster", which zod refuses',
+  ]);
+
+  // A const and an enum are both read, and a value either one names counts. JSON Schema would admit only "card"
+  // here; reading every named value means a node carrying both is never read as tighter than it is.
+  const both = z.strictObject({ kind: z.literal("card") });
+  assert.deepEqual(boundsSurvived(both, { ...toJSONSchema(both), properties: { kind: { const: "card", enum: ["card", 7] } } }), [
+    "<root>.kind: the export admits 7, which zod refuses",
+  ]);
+
+  const narrower = z.strictObject({ theme: z.enum(["light", "dark"]).meta({ enum: ["light"] }) });
+  assert.deepEqual(boundsSurvived(narrower, toJSONSchema(narrower)), []);
+  const narrowerLiteral = z.strictObject({ kind: z.literal(["card", "poster"]) });
+  const narrowed = toJSONSchema(narrowerLiteral);
+  assert.deepEqual(narrowed.properties.kind.enum, ["card", "poster"]);
+  narrowed.properties.kind = { type: "string", const: "card" };
+  assert.deepEqual(boundsSurvived(narrowerLiteral, narrowed), []);
+});
+
+test("boundsSurvived refuses an empty or malformed enum, and reads a numeric enum's values as zod does", () => {
+  const schema = z.strictObject({ theme: z.enum(["light", "dark"]) });
+  const exported = toJSONSchema(schema);
+  exported.properties.theme.enum = [];
+  assert.deepEqual(boundsSurvived(schema, exported), ["<root>.theme: enum missing from the export"]);
+  // A malformed enum is not read past to a const beside it.
+  exported.properties.theme = { type: "string", enum: "light", const: "light" };
+  assert.deepEqual(boundsSurvived(schema, exported), ["<root>.theme: enum missing from the export"]);
+  // A value that is not a string, number, boolean or null is named by its kind only.
+  exported.properties.theme = { enum: ["light", ["dark"], { dark: 1 }, Symbol("dark"), null] };
+  assert.deepEqual(boundsSurvived(schema, exported), [
+    "<root>.theme: the export admits an array, an object, a symbol, null, which zod refuses",
+  ]);
+
+  // A TypeScript numeric enum carries its reverse mapping: zod accepts 0 and refuses "Up".
+  const numeric = z.enum({ Up: 0, 0: "Up" });
+  assert.equal(numeric.safeParse("Up").success, false);
+  const direction = z.strictObject({ dir: numeric });
+  assert.deepEqual(boundsSurvived(direction, toJSONSchema(direction)), []);
+  const widerNumeric = z.strictObject({ dir: z.enum({ Up: 0, 0: "Up" }).meta({ type: ["number", "string"], enum: [0, "Up"] }) });
+  assert.deepEqual(boundsSurvived(widerNumeric, toJSONSchema(widerNumeric)), [
+    '<root>.dir: the export admits "Up", which zod refuses',
+  ]);
+});
+
 test("zod 3 schemas are refused with the clear message", () => {
   const schema = z3.object({ a: z3.string().max(10) }).strict();
   assert.equal(zodMajor(schema), 3);
