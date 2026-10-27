@@ -302,8 +302,21 @@ test("defaultPreflightDeps scans a PATH value in-process and runs --version", TI
   assert.equal(which("fake-setpriv", empty), null);
   assert.equal(which("fake-setpriv", ""), null);
   assert.equal(which("a-directory", bin), null, "a directory is not a command");
-  // A relative entry would resolve against the cwd; it is skipped.
-  assert.equal(which("fake-setpriv", path.relative(process.cwd(), bin)), null);
+  // A relative entry would resolve against the cwd; it is skipped. path.relative cannot build one: across drives
+  // (windows-latest checks out on D:, its TEMP is on C:) it returns the absolute target. So the entries are relative
+  // by construction, from a cwd inside `bin`, and each is checked to be relative and to reach the tool from there.
+  // The window between the two chdir calls is synchronous, so no other test sees the changed cwd.
+  const cwd = process.cwd();
+  process.chdir(bin);
+  try {
+    for (const entry of [".", path.join("..", path.basename(bin))]) {
+      assert.equal(path.isAbsolute(entry), false, `${entry} is a relative entry`);
+      assert.equal(fs.statSync(path.join(entry, "fake-setpriv")).isFile(), true, `${entry} reaches the tool from the cwd`);
+      assert.equal(which("fake-setpriv", entry), null, `the relative entry ${entry} is skipped`);
+    }
+  } finally {
+    process.chdir(cwd);
+  }
   if (POSIX) {
     fs.writeFileSync(path.join(bin, "not-executable"), "#!/bin/sh\n", { mode: 0o644 });
     assert.equal(which("not-executable", bin), null, "a file without the execute bit is not a command");
