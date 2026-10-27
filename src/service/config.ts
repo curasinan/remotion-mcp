@@ -43,7 +43,7 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 
 /**
  * A whole number in `min..max`, written as plain digits, or `fallback` when unset. NaN, 1.5, 1e3, 0x50 and " 80"
- * are refused: Task 3 found that a NaN skew turned the verifier's expiry checks off.
+ * are refused: a NaN skew would turn the verifier's expiry checks off.
  */
 function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
   const value = read(env, name);
