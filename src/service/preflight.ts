@@ -6,6 +6,7 @@
 
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
@@ -89,17 +90,33 @@ function atLeast(version: unknown, min: string): boolean {
   return true;
 }
 
-/** The installed `@remotion/renderer` is at least MIN_REMOTION_RENDERER and has the setpriv wrapper. */
+/**
+ * The package.json of the `@remotion/renderer` the CLI loads, or undefined when none resolves. It is resolved from the
+ * CLI's own package.json, as the CLI's require resolves it, so a copy nested under the CLI comes before the hoisted one.
+ */
+function rendererPackageJson(packDir: string): string | undefined {
+  try {
+    // createRequire needs an absolute path, and PACK_DIR may be relative.
+    return createRequire(path.resolve(packDir, "node_modules", "@remotion", "cli", "package.json"))
+      .resolve("@remotion/renderer/package.json");
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `@remotion/renderer` the CLI loads is at least MIN_REMOTION_RENDERER and has the setpriv wrapper. */
 function checkRenderer(packDir: string): void {
-  const dir = path.join(packDir, "node_modules", "@remotion", "renderer");
-  const pkg = readJsonObject(path.join(dir, "package.json"));
-  if (pkg === undefined || typeof pkg.version !== "string") {
+  const pkgPath = rendererPackageJson(packDir);
+  const pkg = pkgPath === undefined ? undefined : readJsonObject(pkgPath);
+  if (pkgPath === undefined || pkg === undefined || typeof pkg.version !== "string") {
     throw fail("@remotion/renderer", "no installed package with a version under PACK_DIR/node_modules");
   }
   if (!atLeast(pkg.version, MIN_REMOTION_RENDERER)) {
     throw fail("@remotion/renderer", `the installed version is below ${MIN_REMOTION_RENDERER}, or is not x.y.z`);
   }
-  if (!isFile(path.join(dir, "dist", "linux", "wrap-with-setpriv.js"))) {
+  // A file check, not require(): the package's exports do not expose this path, and loading it would run the
+  // renderer's code in the service.
+  if (!isFile(path.join(path.dirname(pkgPath), "dist", "linux", "wrap-with-setpriv.js"))) {
     throw fail("@remotion/renderer", "dist/linux/wrap-with-setpriv.js is missing");
   }
 }
@@ -126,8 +143,11 @@ function checkPack(packDir: string): LoadedPack {
   try {
     return loadPack(packDir);
   } catch (err) {
-    // The PackError's own message is the pack's text; only the check is named.
-    if (err instanceof PackError) throw fail("pack", "PACK_DIR's template pack was refused by the JSON Schema gate");
+    // The PackError's own message is the pack's text, so it is never shown, and one fixed message covers every check
+    // loadPack runs, so it never blames one that passed.
+    if (err instanceof PackError) {
+      throw fail("PACK_DIR", "the template pack failed its checks (manifest, bundle or JSON Schema gate)");
+    }
     throw err;
   }
 }

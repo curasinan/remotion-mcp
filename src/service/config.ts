@@ -70,27 +70,46 @@ function key(env: NodeJS.ProcessEnv, name: string): Buffer {
 }
 
 /**
- * The directory renders work in. startService empties it at every start, so it must be absolute (a relative one
- * would follow the cwd) and never a filesystem root.
+ * Whether `inner` is `outer` or lies inside it. Both are resolved first, and path.relative compares them whole
+ * segment by whole segment, so `/pack2` is not inside `/pack`.
  */
-function tempRoot(env: NodeJS.ProcessEnv): string {
+function within(outer: string, inner: string): boolean {
+  const relative = path.relative(path.resolve(outer), path.resolve(inner));
+  return relative === ""
+    || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/**
+ * The directory renders work in. startService empties it at every start, and an unverified cleanup empties it again,
+ * so it must be absolute (a relative one would follow the cwd), never a filesystem root, and never the same as, above
+ * or inside PACK_DIR or the audit log's directory: emptying it would delete the pack or the audit log.
+ */
+function tempRoot(env: NodeJS.ProcessEnv, packDir: string, auditLogPath: string): string {
   const value = read(env, "RENDER_TEMP_ROOT") ?? path.join(os.tmpdir(), "remotion-viz-service");
   if (!path.isAbsolute(value) || path.parse(value).root === path.resolve(value)) {
     throw new ConfigError("RENDER_TEMP_ROOT must be an absolute path that is not a filesystem root");
+  }
+  const guarded = [["PACK_DIR", packDir], ["the directory of AUDIT_LOG_PATH", path.dirname(auditLogPath)]] as const;
+  for (const [name, dir] of guarded) {
+    if (within(value, dir) || within(dir, value)) {
+      throw new ConfigError(`RENDER_TEMP_ROOT must not be, contain or lie inside ${name}`);
+    }
   }
   return value;
 }
 
 /** Reads the configuration, or throws a ConfigError naming the first variable that is missing or bad. */
 export function parseServiceConfig(env: NodeJS.ProcessEnv): ServiceConfig {
+  const auditLogPath = read(env, "AUDIT_LOG_PATH") ?? "/var/log/remotion-viz/service-audit.jsonl";
+  const packDir = read(env, "PACK_DIR") ?? "/pack";
   return {
     host: read(env, "SERVICE_HOST") ?? "0.0.0.0",
     port: integer(env, "SERVICE_PORT", 8080, 0, 65_535),
     audience: required(env, "SERVICE_AUDIENCE"),
     identityKey: key(env, "IDENTITY_HMAC_KEY"),
     auditKey: key(env, "AUDIT_HMAC_KEY"),
-    auditLogPath: read(env, "AUDIT_LOG_PATH") ?? "/var/log/remotion-viz/service-audit.jsonl",
-    packDir: read(env, "PACK_DIR") ?? "/pack",
+    auditLogPath,
+    packDir,
     browserExecutable: required(env, "BROWSER_EXECUTABLE"),
     slots: integer(env, "RENDER_SLOTS", RENDER_SLOTS_DEFAULT, 1, MAX_SLOTS),
     // Never above the TTL cap: the replay set keeps an id for exp + skew, and the verifier needs a whole number.
@@ -100,6 +119,6 @@ export function parseServiceConfig(env: NodeJS.ProcessEnv): ServiceConfig {
     bodyCapBytes: SERVICE_BODY_CAP_BYTES,
     stillDeadlineMs: RENDER_STILL_DEADLINE_MS,
     pngCapBytes: SERVICE_PNG_CAP_BYTES,
-    tempRoot: tempRoot(env),
+    tempRoot: tempRoot(env, packDir, auditLogPath),
   };
 }

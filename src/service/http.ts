@@ -13,6 +13,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { SERVER_VERSION } from "../constants.js";
 import type { ServiceAuditEvent } from "./audit.js";
+import { wallClockS } from "./clock.js";
 import type { ServiceConfig } from "./config.js";
 import { IDENTITY_HEADER, IDENTITY_MAX_TTL_S } from "./constants.js";
 import { ReplayCache, verifyRequest } from "./identity.js";
@@ -31,9 +32,6 @@ type BodyRead = { kind: "ok"; body: Buffer } | { kind: "too_large"; drained: boo
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** Whole seconds of the wall clock, as the gateway signs `iat` and `exp`. */
-const wallClockS = (): number => Math.floor(Date.now() / 1000);
 
 /**
  * The raw body, read under `cap` and counted as it arrives, so a chunked body without a Content-Length is capped too.
@@ -82,9 +80,10 @@ function ignoredFieldsOf(message: unknown): string[] {
 }
 
 /**
- * The request handler. Refusals answer with an empty body and are audited as `refused`, with the reason as the
- * category and the status, and no claims fields: none were verified. It never rejects; an unexpected error is logged
- * for the operator and answered with 500.
+ * The request handler. Refusals answer with an empty body. A 400, a 401 or a 413 is audited as `refused`, with the
+ * reason as the category and the status, and no claims fields: none were verified. A 404 or a 405 is not audited:
+ * it carries no identity, and a healthcheck's GET or an SDK client's GET stream would write a line every time. It
+ * never rejects; an unexpected error is logged for the operator and answered with 500.
  */
 export function createServiceHandler(ctx: ServiceContext, cfg: ServiceConfig,
   deps: ServiceHandlerDeps = {}): (req: IncomingMessage, res: ServerResponse) => void {
@@ -100,10 +99,16 @@ export function createServiceHandler(ctx: ServiceContext, cfg: ServiceConfig,
     }
   };
 
-  const refuse = (res: ServerResponse, status: number, category: string, headers: Record<string, string> = {}): void => {
-    record({ outcome: "refused", category, http_status: status });
+  /** An empty answer, never audited. */
+  const answer = (res: ServerResponse, status: number, headers: Record<string, string> = {}): void => {
     res.writeHead(status, { ...headers, "content-length": "0" });
     res.end();
+  };
+  /** An empty answer to a request whose body was read: audited, with the reason as the category. */
+  const refuse = (res: ServerResponse, status: 400 | 401 | 413, category: string,
+    headers: Record<string, string> = {}): void => {
+    record({ outcome: "refused", category, http_status: status });
+    answer(res, status, headers);
   };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -114,10 +119,11 @@ export function createServiceHandler(ctx: ServiceContext, cfg: ServiceConfig,
       response.onClose?.();
     });
 
-    // 1. Route and method. The path is compared as sent: no URL parsing, so `//host/mcp` is not `/mcp`.
+    // 1. Route and method. The path is compared as sent: no URL parsing, so `//host/mcp` is not `/mcp`. Neither
+    // refusal is audited.
     const pathOnly = (req.url ?? "").split("?", 1)[0];
-    if (pathOnly !== MCP_PATH) return refuse(res, 404, "not_found");
-    if (req.method !== "POST") return refuse(res, 405, "method_not_allowed", { allow: "POST" });
+    if (pathOnly !== MCP_PATH) return answer(res, 404);
+    if (req.method !== "POST") return answer(res, 405, { allow: "POST" });
 
     // 2. The raw body, under the cap.
     const read = await readBody(req, cfg.bodyCapBytes);
@@ -149,10 +155,15 @@ export function createServiceHandler(ctx: ServiceContext, cfg: ServiceConfig,
     const server = deps.createServer?.() ?? new McpServer({ name: "remotion-viz-service", version: SERVER_VERSION });
     registerServiceTools(server, ctx);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    // 10. A closed response, finished or cut off, closes both. Closing aborts every in-flight tool's signal.
+    // 10. A closed response, finished or cut off, closes both. Closing aborts every in-flight tool's signal. A close
+    // that fails is the operator's to see; the request has already been answered.
     response.onClose = () => {
-      transport.close().catch(() => {});
-      server.close().catch(() => {});
+      transport.close().catch((err: unknown) => {
+        serviceLog(ctx, undefined, "http", "internal", `transport close failed: ${errorText(err)}`);
+      });
+      server.close().catch((err: unknown) => {
+        serviceLog(ctx, undefined, "http", "internal", `server close failed: ${errorText(err)}`);
+      });
     };
     if (response.closed) return response.onClose();
     await server.connect(transport);

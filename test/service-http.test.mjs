@@ -85,7 +85,8 @@ function latch() {
  * The handler on 127.0.0.1:0 with the good pack, a fake runner and the fixed clock. Servers are counted through
  * `createServer`. Each release of a render slot is counted, so a test can show a slot frees exactly once.
  */
-async function setup(t, { clock = { nowS: () => NOW, startedAtS: NOW - 600 } } = {}) {
+async function setup(t, { clock = { nowS: () => NOW, startedAtS: NOW - 600 },
+  makeServer = () => new McpServer({ name: "service-http-test", version: "0.0.0" }) } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "service-http-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const tempRoot = path.join(root, "renders");
@@ -131,7 +132,7 @@ async function setup(t, { clock = { nowS: () => NOW, startedAtS: NOW - 600 } } =
     clock,
     createServer: () => {
       servers += 1;
-      return new McpServer({ name: "service-http-test", version: "0.0.0" });
+      return makeServer();
     },
   });
   const server = http.createServer(handler);
@@ -271,7 +272,8 @@ test("GET and DELETE get 405, any other path gets 404, and the SDK client still 
   }
   assertEmptyRefusal(await rawRequest(s, { method: "GET", urlPath: "/other" }), 404, "GET /other: the path decides first");
   assert.equal(s.servers(), 0, "no refused request created a server");
-  assert.equal(s.auditLines().filter((e) => e.outcome !== "refused").length, 0);
+  // A 404 or a 405 carries no identity, so it is not audited: a healthcheck's GET cannot grow the audit log.
+  assert.deepEqual(s.auditLines(), []);
 
   // The SDK client opens a GET stream after initialize, takes the 405, and carries on.
   const client = await connectClient(t, s);
@@ -483,9 +485,19 @@ test("HTTP-level refusals are audited with outcome refused, the reason as catego
     const batchBody = Buffer.from(JSON.stringify([rpc("tools/list"), rpc("tools/list")]), "utf8");
     const parseBody = Buffer.from("{\"jsonrpc\":\"2.0\",", "utf8");
     const sentFor = (body) => signIdentity({ ...claimsFor(rpc("tools/list"), body) }, KEY);
+    // A 404 and a 405 are answered but never audited: they carry no identity, and a healthcheck or an SDK client's
+    // GET stream would otherwise write a line each time, as an unauthenticated client could without bound.
+    const unaudited = [
+      [{ urlPath: "/other", ...list() }, 404],
+      [{ method: "GET" }, 405],
+      [{ method: "DELETE" }, 405],
+    ];
+    for (const [request, status] of unaudited) {
+      assertEmptyRefusal(await rawRequest(s, request), status, `HTTP ${status}`);
+      assert.deepEqual(s.auditLines(), [], `HTTP ${status} wrote an audit line`);
+    }
+    // Every identity-bearing refusal writes exactly one line: 400, 401 for each identity reason, and 413.
     const requests = [
-      [{ urlPath: "/other", ...list() }, 404, "not_found"],
-      [{ method: "GET" }, 405, "method_not_allowed"],
       [paddedList(SERVICE_BODY_CAP_BYTES + 1), 413, "body_too_large"],
       [{ ...list(), header: undefined }, 401, "missing"],
       [signed(rpc("tools/list"), {}, randomBytes(32)), 401, "bad_signature"],
@@ -508,3 +520,111 @@ test("HTTP-level refusals are audited with outcome refused, the reason as catego
     });
     assert.equal(s.servers(), 0);
   });
+
+test("a chunked body that never ends gets its 413 once it passes twice the cap, on a connection that then closes",
+  TIMED, async (t) => {
+    const s = await setup(t);
+    const cap = SERVICE_BODY_CAP_BYTES;
+    // The client streams up to this much and then waits with the body still open: it never calls end(). A server
+    // that answered only at the body's end would never answer, and the poll below would fail.
+    const limit = 8 * cap;
+    const { header } = signed(rpc("tools/list"));
+    const chunk = Buffer.alloc(16_384, 0x61);
+    // A keep-alive client, so only the server's own Connection: close can end the connection. (`agent: false` would
+    // send Connection: close itself, and the server would close whatever it answered.)
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    t.after(() => agent.destroy());
+    const req = http.request({ host: "127.0.0.1", port: s.port, method: "POST", path: "/mcp", agent, headers: {
+      accept: "application/json, text/event-stream", "content-type": "application/json",
+      "transfer-encoding": "chunked", [IDENTITY_HEADER]: header,
+    } });
+    t.after(() => req.destroy());
+    let written = 0;
+    let outcome;
+    let closed = false;
+    req.on("response", (res) => {
+      outcome ??= { kind: "response", status: res.statusCode, connection: res.headers.connection, written };
+      res.on("error", () => {});
+      res.resume();
+    });
+    // On Windows the reset that follows the close overtakes the response, and the client's pending writes are
+    // cancelled (ECANCELED): a close counts too. On Linux the 413 arrives.
+    req.on("error", (err) => { outcome ??= { kind: "closed", code: err.code, written }; });
+    req.on("close", () => {
+      closed = true;
+      outcome ??= { kind: "closed", code: undefined, written };
+    });
+    const writable = () => new Promise((resolve) => {
+      const done = () => {
+        req.off("drain", done);
+        req.off("close", done);
+        resolve();
+      };
+      req.on("drain", done);
+      req.on("close", done);
+    });
+    while (outcome === undefined && written < limit) {
+      written += chunk.length;
+      if (!req.write(chunk)) await writable();
+    }
+    const got = await pollFor(() => outcome, `nothing came back after ${written} bytes with the body left open`);
+    assert.equal(req.writableEnded, false, "the client never finished its body");
+    assert.ok(got.written > 2 * cap, `the answer came after ${got.written} bytes: only past twice the cap`);
+    if (got.kind === "response") {
+      assert.equal(got.status, 413);
+      assert.equal(got.connection, "close", "the 413 goes out on a connection that then closes");
+    } else {
+      assert.ok([undefined, "ECONNRESET", "EPIPE", "ECANCELED"].includes(got.code), `the connection closed with ${got.code}`);
+    }
+    // The server closes the connection: the rest of a body that never ends is never read.
+    await pollFor(() => (closed ? true : undefined), "the connection stayed open after the 413");
+    const audited = await pollFor(() => s.auditLines().find((e) => e.category === "body_too_large"),
+      "the early 413 was never audited");
+    assert.deepEqual([audited.outcome, audited.http_status], ["refused", 413]);
+    assert.equal(s.auditLines().length, 1);
+    assert.equal(s.servers(), 0, "no server was created");
+  });
+
+test("an unexpected error gets an empty 500, one internal audit line, and a log line without the body or the header",
+  TIMED, async (t) => {
+    const s = await setup(t, { makeServer: () => { throw new Error("boom"); } });
+    const MARKER = "body-marker-5d1e0c";
+    const request = signed(rpc("tools/list", { _meta: { pad: MARKER } }));
+    assertEmptyRefusal(await rawRequest(s, request), 500, "an unexpected error");
+    assert.equal(s.servers(), 1, "the request got as far as the server factory, which threw");
+
+    const events = s.auditLines();
+    assert.equal(events.length, 1, `exactly one audit line: ${JSON.stringify(events)}`);
+    const { ts, ...event } = events[0];
+    assert.match(ts, /^\d{4}-\d\d-\d\dT/);
+    assert.deepEqual(event, { outcome: "error", category: "internal", http_status: 500 });
+
+    assert.deepEqual(s.logLines, ["service: http internal request_id=-: boom"]);
+    const [claimsPart, signature] = request.header.split(".");
+    for (const line of s.logLines) {
+      assert.equal(line.includes(MARKER), false, "the log carries the request body");
+      for (const part of [request.header, claimsPart, signature]) {
+        assert.equal(line.includes(part), false, "the log carries the identity header");
+      }
+    }
+  });
+
+test("a transport or server close that rejects is logged through ctx.log, never swallowed", TIMED, async (t) => {
+  const s = await setup(t, { makeServer: () => {
+    const server = new McpServer({ name: "service-http-test", version: "0.0.0" });
+    // transport.close() runs the protocol's onclose, which runs this one, so a throw here makes it reject.
+    server.server.onclose = () => { throw new Error("transport-close-boom"); };
+    server.close = async () => { throw new Error("server-close-boom"); };
+    return server;
+  } });
+  const response = await rawRequest(s, signed(rpc("tools/list")));
+  assert.equal(response.status, 200);
+  const [reply] = sseMessages(response.body);
+  assert.deepEqual(reply.result.tools.map((tool) => tool.name), TOOL_NAMES, "the request itself still succeeded");
+  await pollFor(() => (s.logLines.length >= 2 ? true : undefined),
+    () => `both close failures were not logged: ${JSON.stringify(s.logLines)}`);
+  assert.deepEqual(s.logLines.toSorted(), [
+    "service: http internal request_id=-: server close failed: server-close-boom",
+    "service: http internal request_id=-: transport close failed: transport-close-boom",
+  ]);
+});

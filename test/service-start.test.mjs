@@ -188,12 +188,50 @@ test("parseServiceConfig names the missing variable and never prints a key", () 
   }
 });
 
+test("parseServiceConfig refuses a RENDER_TEMP_ROOT that is, contains or lies inside PACK_DIR or the audit log's directory",
+  () => {
+    // Two separate trees, so each shape overlaps exactly one of the two.
+    const pack = path.resolve("/srv/rv-a/pack");
+    const logDir = path.resolve("/var/rv-b/log");
+    const envFor = ({ tempRoot, packDir = pack, auditLogPath = path.join(logDir, "service-audit.jsonl") }) =>
+      baseEnv({ PACK_DIR: packDir, AUDIT_LOG_PATH: auditLogPath, RENDER_TEMP_ROOT: tempRoot });
+    const overlaps = [
+      ["PACK_DIR", "is PACK_DIR", { tempRoot: pack }],
+      ["PACK_DIR", "contains PACK_DIR", { tempRoot: path.dirname(pack) }],
+      ["PACK_DIR", "lies inside PACK_DIR", { tempRoot: path.join(pack, "renders") }],
+      ["AUDIT_LOG_PATH", "is the audit log's directory", { tempRoot: logDir }],
+      ["AUDIT_LOG_PATH", "contains the audit log's directory", { tempRoot: path.dirname(logDir) }],
+      ["AUDIT_LOG_PATH", "lies inside the audit log's directory", { tempRoot: path.join(logDir, "renders") }],
+      // The same directories spelled differently: the comparison is on resolved paths.
+      ["PACK_DIR", "is PACK_DIR, with a trailing separator and a dot segment", { tempRoot: `${pack}${path.sep}.${path.sep}` }],
+      ["AUDIT_LOG_PATH", "is the audit log's directory, through a `..`",
+        { tempRoot: `${logDir}${path.sep}..${path.sep}${path.basename(logDir)}` }],
+      ["PACK_DIR", "is a relative PACK_DIR, resolved against the cwd",
+        { tempRoot: path.resolve("rv-relative-pack"), packDir: "rv-relative-pack" }],
+    ];
+    for (const [name, what, paths] of overlaps) {
+      const bad = envFor(paths);
+      const error = assertConfigError(() => parseServiceConfig(bad), "RENDER_TEMP_ROOT", bad, `RENDER_TEMP_ROOT ${what}`);
+      assert.ok(error.message.includes(name), `RENDER_TEMP_ROOT ${what}: the message names ${name}: ${error.message}`);
+      // The variables are named, never their values.
+      for (const value of [pack, logDir, paths.tempRoot, "rv-a", "rv-b", "rv-relative-pack"]) {
+        assert.equal(error.message.includes(value), false, `RENDER_TEMP_ROOT ${what}: the message prints ${value}`);
+      }
+    }
+
+    // A separator boundary: a sibling whose name merely starts with the other's is accepted.
+    for (const tempRoot of [`${pack}2`, `${pack}-renders`, path.join(path.dirname(pack), "renders"), `${logDir}2`,
+      path.join(path.dirname(logDir), "renders")]) {
+      assert.equal(parseServiceConfig(envFor({ tempRoot })).tempRoot, tempRoot, `${tempRoot} is a sibling, not an overlap`);
+    }
+  });
+
 /**
  * A pack built at test time from the good fixture, with a stand-in CLI and renderer under node_modules. Never
  * committed: the root .gitignore's unanchored `node_modules` and `dist` would drop them on checkout.
  */
 function buildPack(t, { renderer = "4.0.458", wrapper = true, cli = true, cliBin = { remotion: "cli.js" },
-  cliScript = true, manifest } = {}) {
+  cliScript = true, manifest, nested, mutate } = {}) {
   const dir = tmpDir(t, "preflight-");
   fs.cpSync(GOOD, dir, { recursive: true });
   if (manifest !== undefined) fs.writeFileSync(path.join(dir, "pack-manifest.json"), JSON.stringify(manifest));
@@ -203,15 +241,20 @@ function buildPack(t, { renderer = "4.0.458", wrapper = true, cli = true, cliBin
     fs.writeFileSync(path.join(cliDir, "package.json"), JSON.stringify({ bin: cliBin }));
     if (cliScript) fs.writeFileSync(path.join(cliDir, "cli.js"), "// a stand-in for the Remotion CLI\n");
   }
-  const rendererDir = path.join(dir, "node_modules", "@remotion", "renderer");
-  if (renderer !== null) {
+  const writeRenderer = (rendererDir, version, withWrapper) => {
     fs.mkdirSync(rendererDir, { recursive: true });
-    fs.writeFileSync(path.join(rendererDir, "package.json"), JSON.stringify({ version: renderer }));
-    if (wrapper) {
+    fs.writeFileSync(path.join(rendererDir, "package.json"), JSON.stringify({ version }));
+    if (withWrapper) {
       fs.mkdirSync(path.join(rendererDir, "dist", "linux"), { recursive: true });
       fs.writeFileSync(path.join(rendererDir, "dist", "linux", "wrap-with-setpriv.js"), "// a stand-in\n");
     }
+  };
+  // The hoisted copy, and optionally a nested one under the CLI, which is the copy the CLI itself loads.
+  if (renderer !== null) writeRenderer(path.join(dir, "node_modules", "@remotion", "renderer"), renderer, wrapper);
+  if (nested !== undefined) {
+    writeRenderer(path.join(cliDir, "node_modules", "@remotion", "renderer"), nested.version, nested.wrapper ?? true);
   }
+  mutate?.(dir);
   return { dir, cliScriptPath: path.join(cliDir, "cli.js") };
 }
 
@@ -231,6 +274,9 @@ function passingDeps(calls = []) {
 
 const configFor = (packDir, auditLogPath) => parseServiceConfig(baseEnv({ PACK_DIR: packDir, AUDIT_LOG_PATH: auditLogPath }));
 
+/** The one message for a pack that fails loadPack, whichever of its checks failed. */
+const PACK_REFUSED = /^preflight: PACK_DIR: the template pack failed its checks \(manifest, bundle or JSON Schema gate\)$/;
+
 test("preflight refuses each failed check, naming it", TIMED, async (t) => {
   const renderer = /^preflight: @remotion\/renderer: /;
   const cases = [
@@ -245,8 +291,13 @@ test("preflight refuses each failed check, naming it", TIMED, async (t) => {
     ["a missing CLI package", { cli: false }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
     ["a CLI package without its script", { cliScript: false }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
     ["a CLI package without a bin", { cliBin: {} }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
-    ["a failing pack", { manifest: { packHash: "h", remotionVersion: "4.0.458", templates: [] } }, {},
-      /^preflight: pack: /],
+    // One neutral message for every way the pack can fail: it never blames a check that did not fail.
+    ["a pack refused by the JSON Schema gate", { manifest: { packHash: "h", remotionVersion: "4.0.458", templates: [] } },
+      {}, PACK_REFUSED],
+    ["a pack without its manifest", { mutate: (dir) => fs.rmSync(path.join(dir, "pack-manifest.json")) }, {},
+      PACK_REFUSED],
+    ["a pack without bundle/index.html", { mutate: (dir) => fs.rmSync(path.join(dir, "bundle", "index.html")) }, {},
+      PACK_REFUSED],
   ];
   for (const [what, packOptions, depOverrides, expected] of cases) {
     const { dir } = buildPack(t, packOptions);
@@ -267,6 +318,30 @@ test("preflight refuses each failed check, naming it", TIMED, async (t) => {
   await assert.rejects(preflight(configFor(dir, path.join(blocker, "service-audit.jsonl")), passingDeps()),
     { message: "preflight: AUDIT_LOG_PATH is not writable" });
 });
+
+test("preflight checks the @remotion/renderer the CLI resolves: a nested copy under the CLI before the hoisted one",
+  TIMED, async (t) => {
+    const refusals = [
+      ["a nested 4.0.400 beside a hoisted 4.0.458", { renderer: "4.0.458", nested: { version: "4.0.400" } },
+        /^preflight: @remotion\/renderer: .*below 4\.0\.458/],
+      ["a nested 4.0.458 without the wrapper beside a hoisted 4.0.458 with it",
+        { renderer: "4.0.458", nested: { version: "4.0.458", wrapper: false } },
+        /^preflight: @remotion\/renderer: .*wrap-with-setpriv\.js/],
+    ];
+    for (const [what, packOptions, expected] of refusals) {
+      const { dir } = buildPack(t, packOptions);
+      await assert.rejects(preflight(configFor(dir, path.join(dir, "log", "a.jsonl")), passingDeps()), (err) => {
+        assert.match(err.message, expected, what);
+        assert.equal(err.message.includes(dir), false, `${what}: the pack's path is echoed`);
+        return true;
+      }, what);
+    }
+    // The positive control: the nested copy decides, so a good nested copy passes over a hoisted 4.0.400 without
+    // its wrapper.
+    const { dir, cliScriptPath } = buildPack(t, { renderer: "4.0.400", wrapper: false, nested: { version: "4.0.458" } });
+    const result = await preflight(configFor(dir, path.join(dir, "log", "a.jsonl")), passingDeps());
+    assert.deepEqual(result.cli.prefixArgs, [cliScriptPath]);
+  });
 
 test("preflight passes with renderer 4.0.458 and 4.1.0 and resolves the CLI's absolute path", TIMED, async (t) => {
   for (const version of ["4.0.458", "4.1.0", "10.0.0"]) {
@@ -414,13 +489,76 @@ test("startService empties and recreates RENDER_TEMP_ROOT at mode 0700 before it
   if (POSIX) assert.equal(fs.statSync(absent).mode & 0o777, 0o700);
 });
 
+/** The one message for a RENDER_TEMP_ROOT that exists but is not a plain directory. */
+const TEMP_ROOT_REFUSED = "start: RENDER_TEMP_ROOT is a symbolic link or not a directory";
+
+/** Starts the service with `tempRoot`, an injected preflight that counts its calls, and a captured log. */
+function startWithTempRoot(t, tempRoot) {
+  const root = tmpDir(t, "service-tempcheck-");
+  const calls = { preflight: 0 };
+  const env = baseEnv({ SERVICE_HOST: "127.0.0.1", SERVICE_PORT: "0", RENDER_TEMP_ROOT: tempRoot,
+    AUDIT_LOG_PATH: path.join(root, "log", "service-audit.jsonl") });
+  const started = startService(env, { preflight: async () => {
+    calls.preflight += 1;
+    return { pack: PACK, cli: { file: process.execPath, prefixArgs: [CLI_SCRIPT] } };
+  }, log: () => {} });
+  // Should the start succeed after all, the test fails, and its server still closes.
+  t.after(async () => (await started.catch(() => undefined))?.shutdown());
+  return { started, calls };
+}
+
+test("startService refuses a RENDER_TEMP_ROOT that is a regular file, and leaves the file alone", TIMED, async (t) => {
+  const file = path.join(tmpDir(t, "service-tempfile-"), "renders");
+  fs.writeFileSync(file, "not a directory\n");
+  const { started, calls } = startWithTempRoot(t, file);
+  await assert.rejects(started, { message: TEMP_ROOT_REFUSED });
+  assert.equal(calls.preflight, 0, "the start was refused before the startup checks");
+  assert.equal(fs.readFileSync(file, "utf8"), "not a directory\n");
+});
+
+test("startService refuses a symlinked RENDER_TEMP_ROOT, and its target's contents survive",
+  { ...TIMED, skip: POSIX ? false : "a symlink needs privileges on Windows; this runs in WSL" }, async (t) => {
+    const root = tmpDir(t, "service-templink-");
+    const target = path.join(root, "someone-elses-dir");
+    fs.mkdirSync(path.join(target, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(target, "keep.txt"), "not the service's to delete\n");
+    fs.chmodSync(target, 0o755);
+    const link = path.join(root, "renders");
+    fs.symlinkSync(target, link);
+    const { started, calls } = startWithTempRoot(t, link);
+    await assert.rejects(started, { message: TEMP_ROOT_REFUSED });
+    assert.equal(calls.preflight, 0, "the start was refused before the startup checks");
+    assert.deepEqual(fs.readdirSync(target).sort(), ["keep.txt", "sub"], "the target's contents survive");
+    assert.equal(fs.readFileSync(path.join(target, "keep.txt"), "utf8"), "not the service's to delete\n");
+    assert.equal(fs.statSync(target).mode & 0o777, 0o755, "the target's mode is untouched");
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+
+    // A dangling link is refused the same way.
+    const dangling = path.join(root, "dangling");
+    fs.symlinkSync(path.join(root, "nowhere"), dangling);
+    const second = startWithTempRoot(t, dangling);
+    await assert.rejects(second.started, { message: TEMP_ROOT_REFUSED });
+    assert.equal(fs.existsSync(path.join(root, "nowhere")), false, "nothing was created at the link's target");
+  });
+
+test("startService names only the error code when RENDER_TEMP_ROOT cannot be created", TIMED, async (t) => {
+  const blocker = path.join(tmpDir(t, "service-tempcode-"), "blocker");
+  fs.writeFileSync(blocker, "a regular file\n");
+  const { started, calls } = startWithTempRoot(t, path.join(blocker, "renders"));
+  await assert.rejects(started, (err) => {
+    assert.equal(err.message, "start: RENDER_TEMP_ROOT could not be emptied and recreated (ENOTDIR)");
+    return true;
+  });
+  assert.equal(calls.preflight, 0);
+});
+
 test("startService refuses to start on a bad configuration or a failed preflight", TIMED, async (t) => {
   let preflights = 0;
   await assert.rejects(startService({}, { preflight: async () => { preflights += 1; } }), ConfigError);
   assert.equal(preflights, 0, "the configuration is checked first");
   const root = tmpDir(t, "service-refuse-");
   const env = baseEnv({ SERVICE_HOST: "127.0.0.1", SERVICE_PORT: "0", RENDER_TEMP_ROOT: path.join(root, "renders"),
-    AUDIT_LOG_PATH: path.join(root, "audit.jsonl") });
+    AUDIT_LOG_PATH: path.join(root, "log", "audit.jsonl") });
   await assert.rejects(startService(env, { preflight: async () => { throw new Error("preflight: setpriv: not found on PATH"); } }),
     { message: "preflight: setpriv: not found on PATH" });
 });
@@ -439,9 +577,9 @@ test("startService takes its start time once, and refuses a header signed more t
       stale.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.service.port}/mcp`), { fetch })),
       (err) => /\b401\b/.test(String(err?.message)) || String(err?.code) === "401");
     const auditPath = path.join(path.dirname(s.tempRoot), "log", "service-audit.jsonl");
+    // The SDK clients' own GET streams get a 405, which carries no identity and is not audited.
     const refused = fs.readFileSync(auditPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
-      // The SDK client's own GET stream gets a 405, which is audited too.
-      .filter((e) => e.outcome === "refused" && e.category !== "method_not_allowed");
+      .filter((e) => e.outcome === "refused");
     assert.deepEqual(refused.map((e) => e.category), ["signed_before_start"]);
   });
 
@@ -513,7 +651,8 @@ test("shutdown aborts in-flight renders, waits for slots to drain, then closes",
     await abortOf(options.signal);
     return { exitCode: null, signal: null, timedOut: false, aborted: true, outputTail: "", cleanup: cleanup.promise };
   };
-  const s = await startFor(t, { run });
+  const exits = [];
+  const s = await startFor(t, { run, exit: (code) => exits.push(code) });
   const pending = s.client.callTool(stillCall());
   await entered.promise;
 
@@ -537,27 +676,59 @@ test("shutdown aborts in-flight renders, waits for slots to drain, then closes",
   cleanup.resolve({ verified: true, survivors: [] });
   await done;
   assert.equal(closed, true, "the server closed before shutdown resolved");
+  assert.deepEqual(exits, [], "a drain in time never calls exit: the runner exits 0 once shutdown resolves");
   assert.equal(s.service.shutdown(), s.service.shutdown(), "shutdown runs once");
 });
 
-test("shutdown stops waiting for the slots after graceMs + verifyDeadlineMs", { timeout: 60_000 }, async (t) => {
+test("shutdown exits 70 when a slot is still held graceMs + verifyDeadlineMs + 2000 ms after it began", TIMED, async (t) => {
+  // Small kill timings, so the bound elapses in about two seconds rather than seventeen. The 2000 ms margin is
+  // fixed: it lets the kill's own unverified verdict, which lands after its grace and verification, come first.
+  const killTiming = { graceMs: 40, verifyDeadlineMs: 60 };
+  const bound = killTiming.graceMs + killTiming.verifyDeadlineMs + 2_000;
   const entered = latch();
   const run = async (_file, _args, options) => {
     entered.resolve();
     await abortOf(options.signal);
-    // A cleanup that never settles: the slot is never released.
+    // A cleanup that never settles: the slot is never released, so the render is never verified gone.
     return { exitCode: null, signal: null, timedOut: false, aborted: true, outputTail: "", cleanup: new Promise(() => {}) };
   };
-  const s = await startFor(t, { run });
+  let resolved = false;
+  let started;
+  const exits = [];
+  const exit = (code) => exits.push({ code, resolved, afterMs: performance.now() - started, logged: [...s.logs] });
+  const s = await startFor(t, { run, exit, killTiming });
   const pending = s.client.callTool(stillCall());
   await entered.promise;
-  const started = performance.now();
-  await s.service.shutdown();
-  const elapsed = performance.now() - started;
-  const bound = RENDER_KILL_GRACE_MS + RENDER_VERIFY_DEADLINE_MS;
-  assert.ok(elapsed >= bound - 50, `shutdown resolved after ${Math.round(elapsed)} ms, before the ${bound} ms bound`);
-  assert.ok(elapsed < bound + 5_000, `shutdown took ${Math.round(elapsed)} ms`);
+  started = performance.now();
+  const done = s.service.shutdown().then(() => { resolved = true; });
+  await pollFor(() => (exits.length > 0 ? true : undefined), "shutdown never called exit with a slot still held");
+  const [at] = exits;
+  assert.equal(at.code, 70, "an unverified render is never an exit 0");
+  assert.equal(at.resolved, false, "exit(70) came before shutdown resolved, so the runner never reaches its exit(0)");
+  assert.ok(at.afterMs >= bound - 50, `exit came ${Math.round(at.afterMs)} ms after shutdown began, before the ${bound} ms bound`);
+  assert.ok(at.logged.some((line) => /1 render slot\(s\) still held after 2100 ms/.test(line)),
+    `the stuck slot was logged before the exit: ${at.logged.join(" | ")}`);
+  await done;
+  assert.equal(exits.length, 1);
   assert.equal(s.service.server.listening, false);
-  assert.ok(s.logs.some((line) => /still held/.test(line)), `the stuck slot was logged: ${s.logs.join(" | ")}`);
   assert.equal((await pending).structuredContent?.category, "render_failed");
+});
+
+test("renders get the kill's grace and verification deadline that the shutdown bound is built from", TIMED, async (t) => {
+  // Without an injection, the constants; with one, the injected values. Either way the bound tracks the kill.
+  for (const [killTiming, expected] of [
+    [undefined, { graceMs: RENDER_KILL_GRACE_MS, verifyDeadlineMs: RENDER_VERIFY_DEADLINE_MS }],
+    [{ graceMs: 40, verifyDeadlineMs: 60 }, { graceMs: 40, verifyDeadlineMs: 60 }],
+  ]) {
+    const seen = [];
+    const inner = fakeRun();
+    const run = (file, args, options) => {
+      seen.push({ graceMs: options.graceMs, verifyDeadlineMs: options.verifyDeadlineMs });
+      return inner(file, args, options);
+    };
+    const s = await startFor(t, killTiming === undefined ? { run } : { run, killTiming });
+    const result = await s.client.callTool(stillCall());
+    assert.deepEqual(Buffer.from(result.content[0].data, "base64"), makePng(256));
+    assert.deepEqual(seen, [expected]);
+  }
 });
