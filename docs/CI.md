@@ -122,6 +122,13 @@ ordinary code. Plain `.tool` reads are allowed for the claims. The live
 `tools/list` (T2) is the backstop: a fifth tool shows up there however it was
 registered, as T6 shows.
 
+The specifier rules read `import`, `export ... from`, `import()` and calls of a
+function named `require`. A `require` under another name is not read, such as
+`const r = require`, or a function made by `createRequire` (which
+`service/preflight.js` uses to resolve the renderer's `package.json`). No other
+test covers that gap. The file-name rules still catch the local-dev modules that
+load those packages, such as `services/raster.js` and `services/browser.js`.
+
 ### The browser-presence assertion is not decoration
 
 `test/html.test.mjs` gates all seven of its tests on `locateBrowser()` evaluated
