@@ -1,10 +1,12 @@
-// Placeholder entry for the service build; it re-exports every service module that exists.
-export * from "./constants.js";
-export * from "./identity.js";
-export * from "./templates.js";
-export * from "./render-process.js";
-export * from "./slots.js";
-export * from "./registry.js";
-export * from "./tools.js";
-export * from "./errors.js";
-export * from "./audit.js";
+// The service's runner: starts it, and on SIGTERM drains it and exits 0. It exports nothing; tests and later tasks
+// import each module directly.
+import { startService } from "./start.js";
+
+startService(process.env).then((s) => {
+  process.on("SIGTERM", () => {
+    void s.shutdown().then(() => process.exit(0));
+  });
+}, (e: unknown) => {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exit(1);
+});

@@ -15,15 +15,20 @@ import { connectWithClaims, fakeRun, makePng } from "./helpers/service-harness.m
 
 const REPO = path.join(import.meta.dirname, "..");
 const SERVICE = path.join(REPO, "dist-service", "service");
-if (!fs.existsSync(path.join(SERVICE, "index.js"))) {
-  throw new Error("dist-service/service/index.js does not exist. Run `npm run build:service` first; "
+if (!fs.existsSync(path.join(SERVICE, "registry.js"))) {
+  throw new Error("dist-service/service/registry.js does not exist. Run `npm run build:service` first; "
     + "the service tests import the compiled service build, not dist/.");
 }
+// Each module directly: index.js is the service's runner, and importing it would start the service.
 // pathToFileURL, not a bare path: import() of a Windows absolute path throws.
+const load = (name) => import(pathToFileURL(path.join(SERVICE, name)).href);
+const { SERVICE_TOOLS, registerServiceTools } = await load("registry.js");
+const { createAuditSink } = await load("audit.js");
+const { loadPack } = await load("templates.js");
+const { RenderSlots } = await load("slots.js");
 const {
-  SERVICE_TOOLS, registerServiceTools, createAuditSink, loadPack, RenderSlots,
   SERVICE_PNG_CAP_BYTES, RENDER_STILL_DEADLINE_MS, RENDER_CLI_TIMEOUT_MS, RENDER_KILL_GRACE_MS, RENDER_VERIFY_DEADLINE_MS,
-} = await import(pathToFileURL(path.join(SERVICE, "index.js")).href);
+} = await load("constants.js");
 
 const GOOD = path.join(REPO, "test", "fixtures", "packs", "good");
 const PACK = loadPack(GOOD);

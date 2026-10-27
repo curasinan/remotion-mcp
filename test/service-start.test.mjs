@@ -1,0 +1,550 @@
+// The service's configuration, its startup checks, and startService's lifecycle (design 5.6, global constraints).
+// Preflight packs are built at test time and every check is driven through injected PreflightDeps, so these run on
+// any platform; the file-mode and environment assertions run on POSIX only.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { fakeRun, makePng } from "./helpers/service-harness.mjs";
+import { makeSigningFetch } from "./helpers/signing-client.mjs";
+
+const REPO = path.join(import.meta.dirname, "..");
+const SERVICE = path.join(REPO, "dist-service", "service");
+if (!fs.existsSync(path.join(SERVICE, "start.js"))) {
+  throw new Error("dist-service/service/start.js does not exist. Run `npm run build:service` first; "
+    + "the service tests import the compiled service build, not dist/.");
+}
+// pathToFileURL, not a bare path: import() of a Windows absolute path throws.
+const load = (name) => import(pathToFileURL(path.join(SERVICE, name)).href);
+const { parseServiceConfig, ConfigError } = await load("config.js");
+const { preflight, defaultPreflightDeps } = await load("preflight.js");
+const { startService } = await load("start.js");
+const { loadPack } = await load("templates.js");
+const {
+  SERVICE_BODY_CAP_BYTES, SERVICE_PNG_CAP_BYTES, RENDER_STILL_DEADLINE_MS, RENDER_KILL_GRACE_MS,
+  RENDER_VERIFY_DEADLINE_MS,
+} = await load("constants.js");
+
+const GOOD = path.join(REPO, "test", "fixtures", "packs", "good");
+const PACK = loadPack(GOOD);
+const POSIX = process.platform !== "win32";
+const BROWSER = "/opt/chrome-headless-shell/chrome-headless-shell";
+const CLI_SCRIPT = "/pack/node_modules/@remotion/cli/remotion-cli.js";
+/** Every test has this timeout, so a start or a shutdown that never settles fails with the test's name. */
+const TIMED = { timeout: 30_000 };
+/** Canonical unpadded base64url, but only 18 bytes: too short. Neither may appear in any error. */
+const SENTINELS = { IDENTITY_HMAC_KEY: "SENTINEL-IDENTITY-3b7e00", AUDIT_HMAC_KEY: "SENTINEL-AUDIT-9c2d00000" };
+const KEY_NAMES = ["IDENTITY_HMAC_KEY", "AUDIT_HMAC_KEY"];
+
+/** Every wait polls its condition to this deadline. None sleeps a guessed duration. */
+const WAIT_MS = 10_000;
+const POLL_MS = 10;
+
+async function pollFor(probe, message) {
+  const deadline = performance.now() + WAIT_MS;
+  for (;;) {
+    const value = probe();
+    if (value !== undefined) return value;
+    if (performance.now() >= deadline) return assert.fail(typeof message === "function" ? message() : message);
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+}
+
+async function ioTurns() {
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+function latch() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** Resolves when `signal` aborts, at once if it already has. */
+const abortOf = (signal) => new Promise((resolve) => {
+  if (signal.aborted) resolve();
+  else signal.addEventListener("abort", resolve, { once: true });
+});
+
+const freshKey = () => randomBytes(32).toString("base64url");
+function baseEnv(extra = {}) {
+  return {
+    SERVICE_AUDIENCE: "deploy-test", IDENTITY_HMAC_KEY: freshKey(), AUDIT_HMAC_KEY: freshKey(),
+    BROWSER_EXECUTABLE: BROWSER, ...extra,
+  };
+}
+
+function tmpDir(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** Asserts `fn` throws a ConfigError naming `name`, and that no key value in `env` appears in its message. */
+function assertConfigError(fn, name, env, what = name) {
+  let error;
+  try {
+    fn();
+  } catch (err) {
+    error = err;
+  }
+  assert.ok(error instanceof ConfigError, `${what}: expected a ConfigError, got ${error}`);
+  assert.equal(error.name, "ConfigError");
+  assert.ok(error.message.includes(name), `${what}: the message names ${name}: ${error.message}`);
+  for (const key of KEY_NAMES) {
+    const value = env[key];
+    if (typeof value === "string" && value !== "") {
+      assert.equal(error.message.includes(value), false, `${what}: the message prints ${key}'s value`);
+    }
+  }
+  return error;
+}
+
+test("parseServiceConfig names the missing variable and never prints a key", () => {
+  const env = baseEnv();
+  const cfg = parseServiceConfig(env);
+  assert.deepEqual({ ...cfg, identityKey: null, auditKey: null }, {
+    host: "0.0.0.0", port: 8080, audience: "deploy-test", identityKey: null, auditKey: null,
+    auditLogPath: "/var/log/remotion-viz/service-audit.jsonl", packDir: "/pack", browserExecutable: BROWSER,
+    slots: 2, skewS: 30, bodyCapBytes: SERVICE_BODY_CAP_BYTES, stillDeadlineMs: RENDER_STILL_DEADLINE_MS,
+    pngCapBytes: SERVICE_PNG_CAP_BYTES, tempRoot: path.join(os.tmpdir(), "remotion-viz-service"),
+  });
+  assert.deepEqual(cfg.identityKey, Buffer.from(env.IDENTITY_HMAC_KEY, "base64url"));
+  assert.deepEqual(cfg.auditKey, Buffer.from(env.AUDIT_HMAC_KEY, "base64url"));
+
+  const tempRoot = path.join(os.tmpdir(), "rv-config-test");
+  const set = parseServiceConfig(baseEnv({
+    SERVICE_HOST: "127.0.0.1", SERVICE_PORT: "65535", AUDIT_LOG_PATH: "/data/audit.jsonl", PACK_DIR: "/srv/pack",
+    RENDER_SLOTS: "64", IDENTITY_SKEW_S: "120", RENDER_TEMP_ROOT: tempRoot,
+  }));
+  assert.deepEqual([set.host, set.port, set.auditLogPath, set.packDir, set.slots, set.skewS, set.tempRoot],
+    ["127.0.0.1", 65535, "/data/audit.jsonl", "/srv/pack", 64, 120, tempRoot]);
+  const low = parseServiceConfig(baseEnv({ SERVICE_PORT: "0", RENDER_SLOTS: "1", IDENTITY_SKEW_S: "0" }));
+  assert.deepEqual([low.port, low.slots, low.skewS], [0, 1, 0]);
+  // An empty optional variable counts as unset, as `docker run -e NAME=` leaves it.
+  const empty = parseServiceConfig(baseEnv({ SERVICE_HOST: "", SERVICE_PORT: "", RENDER_SLOTS: "", IDENTITY_SKEW_S: "" }));
+  assert.deepEqual([empty.host, empty.port, empty.slots, empty.skewS], ["0.0.0.0", 8080, 2, 30]);
+  // The caps and the deadline are constants, never read from the environment.
+  const ignored = parseServiceConfig(baseEnv({
+    SERVICE_BODY_CAP_BYTES: "1", RENDER_STILL_DEADLINE_MS: "999999", SERVICE_PNG_CAP_BYTES: "1",
+  }));
+  assert.deepEqual([ignored.bodyCapBytes, ignored.stillDeadlineMs, ignored.pngCapBytes],
+    [SERVICE_BODY_CAP_BYTES, RENDER_STILL_DEADLINE_MS, SERVICE_PNG_CAP_BYTES]);
+
+  for (const name of ["SERVICE_AUDIENCE", "IDENTITY_HMAC_KEY", "AUDIT_HMAC_KEY", "BROWSER_EXECUTABLE"]) {
+    const missing = baseEnv();
+    delete missing[name];
+    assertConfigError(() => parseServiceConfig(missing), name, missing, `${name} unset`);
+    const blank = baseEnv({ [name]: "" });
+    assertConfigError(() => parseServiceConfig(blank), name, blank, `${name} empty`);
+  }
+
+  for (const name of KEY_NAMES) {
+    const sentinel = SENTINELS[name];
+    // The sentinel is valid unpadded base64url, so it is refused for its length alone.
+    assert.equal(Buffer.from(sentinel, "base64url").toString("base64url"), sentinel);
+    assert.ok(Buffer.from(sentinel, "base64url").length < 32);
+    const short = baseEnv({ [name]: sentinel });
+    const error = assertConfigError(() => parseServiceConfig(short), name, short, `${name} too short`);
+    assert.equal(error.message.includes(sentinel), false);
+    assert.match(error.message, /32/);
+
+    const thirtyTwo = Buffer.alloc(32, 0xfb);
+    const spellings = {
+      "padded": `${thirtyTwo.toString("base64url")}=`,
+      "standard base64": thirtyTwo.toString("base64"),
+      "non-canonical": `${Buffer.alloc(32).toString("base64url").slice(0, -1)}B`,
+      "with whitespace": ` ${thirtyTwo.toString("base64url")}`,
+    };
+    for (const [what, value] of Object.entries(spellings)) {
+      const bad = baseEnv({ [name]: value });
+      assertConfigError(() => parseServiceConfig(bad), name, bad, `${name} ${what}`);
+    }
+    // Exactly 32 bytes is enough.
+    const exact = parseServiceConfig(baseEnv({ [name]: thirtyTwo.toString("base64url") }));
+    assert.deepEqual(name === "IDENTITY_HMAC_KEY" ? exact.identityKey : exact.auditKey, thirtyTwo);
+  }
+
+  const badNumbers = {
+    SERVICE_PORT: ["65536", "-1", "80.5", "8080abc", "0x50", " 80", "1e3", "NaN"],
+    RENDER_SLOTS: ["0", "65", "1.5", "-1", "two", "Infinity"],
+    IDENTITY_SKEW_S: ["121", "-1", "NaN", "1.5", "3e1", "30s"],
+  };
+  for (const [name, values] of Object.entries(badNumbers)) {
+    for (const value of values) {
+      const bad = baseEnv({ [name]: value });
+      assertConfigError(() => parseServiceConfig(bad), name, bad, `${name}=${JSON.stringify(value)}`);
+    }
+  }
+  for (const value of ["relative/renders", path.parse(os.tmpdir()).root]) {
+    const bad = baseEnv({ RENDER_TEMP_ROOT: value });
+    assertConfigError(() => parseServiceConfig(bad), "RENDER_TEMP_ROOT", bad, `RENDER_TEMP_ROOT=${value}`);
+  }
+});
+
+/**
+ * A pack built at test time from the good fixture, with a stand-in CLI and renderer under node_modules. Never
+ * committed: the root .gitignore's unanchored `node_modules` and `dist` would drop them on checkout.
+ */
+function buildPack(t, { renderer = "4.0.458", wrapper = true, cli = true, cliBin = { remotion: "cli.js" },
+  cliScript = true, manifest } = {}) {
+  const dir = tmpDir(t, "preflight-");
+  fs.cpSync(GOOD, dir, { recursive: true });
+  if (manifest !== undefined) fs.writeFileSync(path.join(dir, "pack-manifest.json"), JSON.stringify(manifest));
+  const cliDir = path.join(dir, "node_modules", "@remotion", "cli");
+  if (cli) {
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.writeFileSync(path.join(cliDir, "package.json"), JSON.stringify({ bin: cliBin }));
+    if (cliScript) fs.writeFileSync(path.join(cliDir, "cli.js"), "// a stand-in for the Remotion CLI\n");
+  }
+  const rendererDir = path.join(dir, "node_modules", "@remotion", "renderer");
+  if (renderer !== null) {
+    fs.mkdirSync(rendererDir, { recursive: true });
+    fs.writeFileSync(path.join(rendererDir, "package.json"), JSON.stringify({ version: renderer }));
+    if (wrapper) {
+      fs.mkdirSync(path.join(rendererDir, "dist", "linux"), { recursive: true });
+      fs.writeFileSync(path.join(rendererDir, "dist", "linux", "wrap-with-setpriv.js"), "// a stand-in\n");
+    }
+  }
+  return { dir, cliScriptPath: path.join(cliDir, "cli.js") };
+}
+
+/** PreflightDeps whose every check passes, recording each call. */
+function passingDeps(calls = []) {
+  return {
+    which: (cmd, pathVar) => {
+      calls.push(["which", cmd, pathVar]);
+      return cmd === "setpriv" ? "/usr/bin/setpriv" : null;
+    },
+    runVersion: async (file) => {
+      calls.push(["runVersion", file]);
+      return true;
+    },
+  };
+}
+
+const configFor = (packDir, auditLogPath) => parseServiceConfig(baseEnv({ PACK_DIR: packDir, AUDIT_LOG_PATH: auditLogPath }));
+
+test("preflight refuses each failed check, naming it", TIMED, async (t) => {
+  const renderer = /^preflight: @remotion\/renderer: /;
+  const cases = [
+    ["no setpriv", {}, { which: () => null }, /^preflight: setpriv: not found on PATH$/],
+    ["renderer 4.0.457", { renderer: "4.0.457" }, {}, /^preflight: @remotion\/renderer: .*below 4\.0\.458/],
+    ["renderer 4.0.99", { renderer: "4.0.99" }, {}, /^preflight: @remotion\/renderer: .*below 4\.0\.458/],
+    ["renderer 3.9.999", { renderer: "3.9.999" }, {}, renderer],
+    ["a renderer pre-release", { renderer: "4.0.458-rc.1" }, {}, renderer],
+    ["no renderer", { renderer: null }, {}, renderer],
+    ["no wrap-with-setpriv.js", { wrapper: false }, {}, /^preflight: @remotion\/renderer: .*wrap-with-setpriv\.js/],
+    ["a browser that will not run", {}, { runVersion: async () => false }, /^preflight: browser: /],
+    ["a missing CLI package", { cli: false }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
+    ["a CLI package without its script", { cliScript: false }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
+    ["a CLI package without a bin", { cliBin: {} }, {}, /^preflight: @remotion\/cli: .*no npx fallback/],
+    ["a failing pack", { manifest: { packHash: "h", remotionVersion: "4.0.458", templates: [] } }, {},
+      /^preflight: pack: /],
+  ];
+  for (const [what, packOptions, depOverrides, expected] of cases) {
+    const { dir } = buildPack(t, packOptions);
+    const cfg = configFor(dir, path.join(dir, "log", "service-audit.jsonl"));
+    await assert.rejects(preflight(cfg, { ...passingDeps(), ...depOverrides }), (err) => {
+      assert.match(err.message, expected, what);
+      // Only the check's name: never the pack's own text.
+      assert.equal(err.message.includes("/templates"), false, `${what}: the pack's text is echoed`);
+      assert.equal(err.message.includes(dir), false, `${what}: the pack's path is echoed`);
+      return true;
+    }, what);
+  }
+
+  // AUDIT_LOG_PATH under a regular file.
+  const { dir } = buildPack(t);
+  const blocker = path.join(dir, "blocker");
+  fs.writeFileSync(blocker, "a regular file\n");
+  await assert.rejects(preflight(configFor(dir, path.join(blocker, "service-audit.jsonl")), passingDeps()),
+    { message: "preflight: AUDIT_LOG_PATH is not writable" });
+});
+
+test("preflight passes with renderer 4.0.458 and 4.1.0 and resolves the CLI's absolute path", TIMED, async (t) => {
+  for (const version of ["4.0.458", "4.1.0", "10.0.0"]) {
+    const { dir, cliScriptPath } = buildPack(t, { renderer: version });
+    const auditLogPath = path.join(dir, "log", "service-audit.jsonl");
+    const cfg = configFor(dir, auditLogPath);
+    const calls = [];
+    const result = await preflight(cfg, passingDeps(calls));
+    assert.deepEqual(result.cli, { file: process.execPath, prefixArgs: [cliScriptPath] }, version);
+    assert.ok(path.isAbsolute(result.cli.prefixArgs[0]));
+    assert.deepEqual(result.pack.manifest.templates.map((tpl) => tpl.id), PACK.manifest.templates.map((tpl) => tpl.id));
+    assert.deepEqual(calls, [["which", "setpriv", process.env.PATH ?? ""], ["runVersion", BROWSER]], version);
+    assert.equal(fs.existsSync(auditLogPath), true, "the audit check opened the file for appending");
+    if (POSIX) assert.equal(fs.statSync(auditLogPath).mode & 0o777, 0o600, "the audit file is created 0600");
+  }
+  // `bin` may be a string.
+  const { dir, cliScriptPath } = buildPack(t, { cliBin: "cli.js" });
+  const result = await preflight(configFor(dir, path.join(dir, "log", "a.jsonl")), passingDeps());
+  assert.deepEqual(result.cli.prefixArgs, [cliScriptPath]);
+  // It never resolves the CLI through resolveRemotionCli, which falls back to npx: neither imported nor called.
+  const compiled = fs.readFileSync(path.join(SERVICE, "preflight.js"), "utf8");
+  assert.doesNotMatch(compiled, /\bimport\b[^;]*\bresolveRemotionCli\b|\bresolveRemotionCli\s*\(/);
+});
+
+test("defaultPreflightDeps scans a PATH value in-process and runs --version", TIMED, async (t) => {
+  const { which, runVersion } = defaultPreflightDeps;
+  const bin = tmpDir(t, "preflight-bin-");
+  const empty = tmpDir(t, "preflight-empty-");
+  const tool = path.join(bin, "fake-setpriv");
+  fs.writeFileSync(tool, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.mkdirSync(path.join(bin, "a-directory"));
+  assert.equal(which("fake-setpriv", [empty, bin].join(path.delimiter)), tool);
+  assert.equal(which("fake-setpriv", empty), null);
+  assert.equal(which("fake-setpriv", ""), null);
+  assert.equal(which("a-directory", bin), null, "a directory is not a command");
+  // A relative entry would resolve against the cwd; it is skipped.
+  assert.equal(which("fake-setpriv", path.relative(process.cwd(), bin)), null);
+  if (POSIX) {
+    fs.writeFileSync(path.join(bin, "not-executable"), "#!/bin/sh\n", { mode: 0o644 });
+    assert.equal(which("not-executable", bin), null, "a file without the execute bit is not a command");
+  }
+  assert.equal(await runVersion(process.execPath), true);
+  assert.equal(await runVersion(path.join(empty, "no-such-browser")), false);
+});
+
+test("runVersion gives the browser the allowlisted environment, never a key",
+  { ...TIMED, skip: POSIX ? false : "needs a shell script as the browser; this runs in WSL" }, async (t) => {
+    const dir = tmpDir(t, "preflight-env-");
+    const out = path.join(dir, "env.txt");
+    const browser = path.join(dir, "browser");
+    fs.writeFileSync(browser, `#!/bin/sh\nenv > '${out}'\n[ "$1" = "--version" ] || exit 3\n`, { mode: 0o755 });
+    const saved = { IDENTITY_HMAC_KEY: process.env.IDENTITY_HMAC_KEY, AUDIT_HMAC_KEY: process.env.AUDIT_HMAC_KEY };
+    t.after(() => {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
+    process.env.IDENTITY_HMAC_KEY = SENTINELS.IDENTITY_HMAC_KEY;
+    process.env.AUDIT_HMAC_KEY = SENTINELS.AUDIT_HMAC_KEY;
+    assert.equal(await defaultPreflightDeps.runVersion(browser), true);
+    const names = fs.readFileSync(out, "utf8").split("\n").filter((line) => line.includes("="))
+      .map((line) => line.slice(0, line.indexOf("=")));
+    const allowed = new Set(["PATH", "HOME", "LANG", "NODE_ENV", "TMPDIR", "PWD", "SHLVL", "_"]);
+    for (const name of names) assert.ok(allowed.has(name) || name.startsWith("REMOTION_"), `${name} reached the browser`);
+    const text = fs.readFileSync(out, "utf8");
+    assert.equal(text.includes("SENTINEL"), false);
+    assert.ok(text.includes(`TMPDIR=${os.tmpdir()}`));
+  });
+
+/**
+ * startService on 127.0.0.1:0 with throwaway keys, an injected preflight (the good pack and a stand-in CLI) and a
+ * captured log, plus a signed SDK client. `shutdown()` runs after the test.
+ */
+async function startFor(t, deps = {}, { tempRoot } = {}) {
+  const root = tmpDir(t, "service-start-");
+  const renders = tempRoot ?? path.join(root, "renders");
+  const env = baseEnv({
+    SERVICE_HOST: "127.0.0.1", SERVICE_PORT: "0", PACK_DIR: GOOD, RENDER_TEMP_ROOT: renders,
+    AUDIT_LOG_PATH: path.join(root, "log", "service-audit.jsonl"),
+  });
+  const logs = [];
+  const service = await startService(env, {
+    preflight: async () => ({ pack: PACK, cli: { file: process.execPath, prefixArgs: [CLI_SCRIPT] } }),
+    log: (line) => logs.push(line),
+    ...deps,
+  });
+  t.after(async () => {
+    await service.shutdown();
+    // Should shutdown leave the server open, the test fails, and this still lets the test process exit.
+    service.server.closeAllConnections();
+    if (service.server.listening) service.server.close();
+  });
+  const fetch = makeSigningFetch({ key: Buffer.from(env.IDENTITY_HMAC_KEY, "base64url"), audience: env.SERVICE_AUDIENCE,
+    principal: "principal-a", tenant: "tenant-a" });
+  const client = new Client({ name: "service-start-test", version: "0.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${service.port}/mcp`), { fetch }));
+  t.after(() => client.close());
+  return { service, env, logs, client, tempRoot: renders };
+}
+
+const stillCall = () => ({ name: "render_still", arguments: {
+  template_id: "scoreboard",
+  props: { label: "Final", color: "#1A2B3C", players: [{ name: "Ada", number: 10 }], theme: "dark", opacity: 0.5 },
+} });
+
+test("startService empties and recreates RENDER_TEMP_ROOT at mode 0700 before it listens", TIMED, async (t) => {
+  const root = tmpDir(t, "service-temp-");
+  const stale = path.join(root, "renders");
+  fs.mkdirSync(path.join(stale, "r-earlier-run"), { recursive: true });
+  fs.writeFileSync(path.join(stale, "r-earlier-run", "props.json"), "{\"label\":\"an earlier caller's props\"}");
+  fs.writeFileSync(path.join(stale, "stray"), "x");
+  if (POSIX) fs.chmodSync(stale, 0o755);
+  // The reset happens before the startup checks, so before the listen: a service that fails a check and restarts
+  // in a loop still clears an earlier run's props.
+  let atPreflight;
+  const s = await startFor(t, {
+    preflight: async () => {
+      atPreflight = { entries: fs.readdirSync(stale), mode: fs.statSync(stale).mode & 0o777 };
+      return { pack: PACK, cli: { file: process.execPath, prefixArgs: [CLI_SCRIPT] } };
+    },
+  }, { tempRoot: stale });
+  assert.equal(s.service.server.listening, true);
+  assert.deepEqual(atPreflight.entries, [], "the temp root was emptied before the startup checks and the listen");
+  if (POSIX) assert.equal(atPreflight.mode, 0o700);
+  assert.deepEqual(fs.readdirSync(stale), [], "no earlier run's props survive a restart");
+  if (POSIX) assert.equal(fs.statSync(stale).mode & 0o777, 0o700);
+
+  const absent = path.join(root, "not", "yet", "there");
+  await startFor(t, {}, { tempRoot: absent });
+  assert.deepEqual(fs.readdirSync(absent), []);
+  if (POSIX) assert.equal(fs.statSync(absent).mode & 0o777, 0o700);
+});
+
+test("startService refuses to start on a bad configuration or a failed preflight", TIMED, async (t) => {
+  let preflights = 0;
+  await assert.rejects(startService({}, { preflight: async () => { preflights += 1; } }), ConfigError);
+  assert.equal(preflights, 0, "the configuration is checked first");
+  const root = tmpDir(t, "service-refuse-");
+  const env = baseEnv({ SERVICE_HOST: "127.0.0.1", SERVICE_PORT: "0", RENDER_TEMP_ROOT: path.join(root, "renders"),
+    AUDIT_LOG_PATH: path.join(root, "audit.jsonl") });
+  await assert.rejects(startService(env, { preflight: async () => { throw new Error("preflight: setpriv: not found on PATH"); } }),
+    { message: "preflight: setpriv: not found on PATH" });
+});
+
+test("startService takes its start time once, and refuses a header signed more than one skew before it", TIMED,
+  async (t) => {
+    const before = Math.floor(Date.now() / 1000);
+    const s = await startFor(t);
+    // The client connected with headers signed now, so a current header verifies.
+    assert.equal((await s.client.listTools()).tools.length, 4);
+    const stale = new Client({ name: "service-start-stale", version: "0.0.0" });
+    t.after(() => stale.close());
+    const fetch = makeSigningFetch({ key: Buffer.from(s.env.IDENTITY_HMAC_KEY, "base64url"),
+      audience: s.env.SERVICE_AUDIENCE, principal: "principal-a", tenant: "tenant-a", nowS: before - 31 });
+    await assert.rejects(
+      stale.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.service.port}/mcp`), { fetch })),
+      (err) => /\b401\b/.test(String(err?.message)) || String(err?.code) === "401");
+    const auditPath = path.join(path.dirname(s.tempRoot), "log", "service-audit.jsonl");
+    const refused = fs.readFileSync(auditPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+      // The SDK client's own GET stream gets a 405, which is audited too.
+      .filter((e) => e.outcome === "refused" && e.category !== "method_not_allowed");
+    assert.deepEqual(refused.map((e) => e.category), ["signed_before_start"]);
+  });
+
+test("the runner prints a configuration error without the key and exits 1", TIMED, async () => {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(process.execPath, [path.join(SERVICE, "index.js")], {
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, SERVICE_AUDIENCE: "deploy-test",
+      IDENTITY_HMAC_KEY: SENTINELS.IDENTITY_HMAC_KEY },
+    encoding: "utf8", timeout: 20_000,
+  });
+  assert.equal(result.status, 1, `exit status: ${result.status}; stderr: ${result.stderr}`);
+  assert.equal(result.stderr.trim(), "IDENTITY_HMAC_KEY must decode to at least 32 bytes");
+  assert.equal(result.stderr.includes(SENTINELS.IDENTITY_HMAC_KEY), false);
+  assert.equal(result.stdout, "");
+});
+
+test("startService exits 70 when a cleanup is unverified", TIMED, async (t) => {
+  const exits = [];
+  const heldEntered = latch();
+  let held;
+  let calls = 0;
+  const unverified = fakeRun({
+    cleanup: Promise.resolve({ verified: false, survivors: [4242], cause: "recorded processes still alive: 4242" }),
+  });
+  const run = async (file, args, options) => {
+    calls += 1;
+    if (calls > 1) return unverified(file, args, options);
+    // The first render stays in flight until something aborts it.
+    held = { signal: options.signal, dir: options.cwd };
+    heldEntered.resolve();
+    await abortOf(options.signal);
+    return { exitCode: null, signal: null, timedOut: false, aborted: true, outputTail: "",
+      cleanup: Promise.resolve({ verified: true, survivors: [] }) };
+  };
+  const tempRoot = path.join(tmpDir(t, "service-exit-"), "renders");
+  const logs = [];
+  const exit = (code) => exits.push({
+    code, heldAborted: held.signal.aborted, left: fs.readdirSync(tempRoot), logged: [...logs],
+  });
+  const s = await startFor(t, { run, exit, log: (line) => logs.push(line) }, { tempRoot });
+
+  const pendingHeld = s.client.callTool(stillCall());
+  await heldEntered.promise;
+  assert.equal(fs.existsSync(path.join(held.dir, "props.json")), true, "the held render's props are on disk");
+  fs.writeFileSync(path.join(tempRoot, "stray"), "x");
+
+  const result = await s.client.callTool(stillCall());
+  assert.deepEqual(Buffer.from(result.content[0].data, "base64"), makePng(256));
+  await pollFor(() => (exits.length > 0 ? true : undefined), "exit was never called");
+  assert.equal(exits.length, 1);
+  const [at] = exits;
+  assert.equal(at.code, 70);
+  assert.equal(at.heldAborted, true, "the other in-flight render was aborted before the exit");
+  assert.deepEqual(at.left, [], "RENDER_TEMP_ROOT was emptied before the exit, the held render's props included");
+  assert.ok(at.logged.some((line) => line.includes("cleanup unverified: recorded processes still alive: 4242")),
+    `the cause was logged: ${at.logged.join(" | ")}`);
+  assert.ok(at.logged.some((line) => /exiting with code 70/.test(line)), `the exit was logged: ${at.logged.join(" | ")}`);
+  const held2 = await pendingHeld;
+  assert.equal(held2.structuredContent?.category, "render_failed");
+});
+
+test("shutdown aborts in-flight renders, waits for slots to drain, then closes", TIMED, async (t) => {
+  const entered = latch();
+  const cleanup = latch();
+  let signal;
+  const run = async (_file, _args, options) => {
+    signal = options.signal;
+    entered.resolve();
+    await abortOf(options.signal);
+    return { exitCode: null, signal: null, timedOut: false, aborted: true, outputTail: "", cleanup: cleanup.promise };
+  };
+  const s = await startFor(t, { run });
+  const pending = s.client.callTool(stillCall());
+  await entered.promise;
+
+  let closed = false;
+  s.service.server.once("close", () => { closed = true; });
+  let resolved = false;
+  const done = s.service.shutdown().then(() => { resolved = true; });
+  assert.equal(signal.aborted, true, "shutdown aborts the in-flight render at once");
+  assert.equal(s.service.server.listening, false, "no new connection is accepted once shutdown starts");
+  await assert.rejects(new Promise((resolve, reject) => {
+    const socket = net.connect(s.service.port, "127.0.0.1", () => { socket.destroy(); resolve(); });
+    socket.on("error", reject);
+  }), { code: "ECONNREFUSED" });
+  // The render's processes are not yet verified gone, so its slot is held and shutdown waits.
+  await ioTurns();
+  assert.equal(resolved, false, "shutdown resolved before the slots drained");
+  // The open connection still carries the aborted call's result.
+  assert.equal((await pending).structuredContent?.category, "render_failed", "the aborted call still gets its result");
+  await ioTurns();
+  assert.equal(resolved, false, "shutdown resolved before the slots drained");
+  cleanup.resolve({ verified: true, survivors: [] });
+  await done;
+  assert.equal(closed, true, "the server closed before shutdown resolved");
+  assert.equal(s.service.shutdown(), s.service.shutdown(), "shutdown runs once");
+});
+
+test("shutdown stops waiting for the slots after graceMs + verifyDeadlineMs", { timeout: 60_000 }, async (t) => {
+  const entered = latch();
+  const run = async (_file, _args, options) => {
+    entered.resolve();
+    await abortOf(options.signal);
+    // A cleanup that never settles: the slot is never released.
+    return { exitCode: null, signal: null, timedOut: false, aborted: true, outputTail: "", cleanup: new Promise(() => {}) };
+  };
+  const s = await startFor(t, { run });
+  const pending = s.client.callTool(stillCall());
+  await entered.promise;
+  const started = performance.now();
+  await s.service.shutdown();
+  const elapsed = performance.now() - started;
+  const bound = RENDER_KILL_GRACE_MS + RENDER_VERIFY_DEADLINE_MS;
+  assert.ok(elapsed >= bound - 50, `shutdown resolved after ${Math.round(elapsed)} ms, before the ${bound} ms bound`);
+  assert.ok(elapsed < bound + 5_000, `shutdown took ${Math.round(elapsed)} ms`);
+  assert.equal(s.service.server.listening, false);
+  assert.ok(s.logs.some((line) => /still held/.test(line)), `the stuck slot was logged: ${s.logs.join(" | ")}`);
+  assert.equal((await pending).structuredContent?.category, "render_failed");
+});
