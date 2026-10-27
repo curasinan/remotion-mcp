@@ -34,6 +34,94 @@ It is also the only type-check `src/service/` gets: `tsconfig.json`, which
 The `bundle` job skips it: the `.mcpb` is built from `dist/` alone, and
 `test/bundle.test.mjs` never imports `dist-service/`.
 
+### The absence suite: four tools missing, not refused
+
+`viz_render_html`, `remotion_list_compositions`, `remotion_init_project` and
+`remotion_start_studio` must be missing from the compiled service closure
+itself, not refused at runtime (design §5.7, ADR-5). `test/absence.test.mjs`
+proves it on every leg as part of `npm test`; `npm run test:absence` runs it
+alone. Like the other service tests it needs `npm run build:service` first, and
+fails rather than skips without `dist-service/service/index.js`.
+
+The static half is `scripts/check-service-closure.mjs`. `analyzeClosure` reads
+every `.js`, `.mjs` and `.cjs` file under the dist dir as syntax, with the
+repo's own `typescript` parser and binder, and `verdict` turns that into a list
+of problems; an empty list is a pass. It also runs on its own:
+`node scripts/check-service-closure.mjs [distDir]` exits 1 on any problem, or
+when the dir holds no `service/index.js`.
+
+It reads syntax, never text. `services/exec.js` names
+`remotion_list_compositions` in a hint string, so a check that grepped the
+build for forbidden names would fail a correct closure.
+
+`verdict` reports:
+
+- **Registrations.** Any `.registerTool(` or `.tool(` call, including
+  `["registerTool"](` and `["tool"](`, outside `service/registry.js`. In the
+  registry, more than one call site, or a name that is neither a string literal
+  nor the `const` variable of its `for...of` loop. The loop must run over a
+  frozen list of string literals declared in the registry, which is how the
+  loop's names are known.
+- **Other uses.** Any use of `registerTool` other than a direct call: an alias,
+  an argument, an initializer, destructuring, `.bind`, `.call` or `.apply`. Also
+  any `.tool` used through `.bind`, `.call` or `.apply`. A plain read of a
+  `tool` property, such as `claims.tool`, is not reported, because the gateway
+  contract's claim is named `tool`.
+- **Names and files.** Any of the four forbidden names, registered as a literal
+  or through the loop's list. Any file under `tools/`. Any file or directory
+  named `raster`, `tile`, `network`, `visualize`, `studio`, `compare`,
+  `environment` or `browser`.
+- **Specifiers.** Any `@resvg/resvg-js` or `puppeteer-core` import, re-export,
+  `import()` or `require()`, subpaths included. Any non-literal `import()` or
+  `require()`.
+
+| Test | What it proves |
+| --- | --- |
+| T1 | `SERVICE_TOOLS` in `dist-service/service/registry.js` is exactly the four, in order, and frozen. |
+| T2 | A live `tools/list` returns exactly the four. It goes through the built `createServiceHandler` on 127.0.0.1, with the SDK client and every POST signed. |
+| T3 | `verdict` on `dist-service/` is empty, although `services/exec.js` names `remotion_list_compositions`. |
+| T4 | There is exactly one registration call site. It is in `service/registry.js`, inside its loop over `SERVICE_TOOLS`, and nothing else references `registerTool`. |
+| T5 | **Poisoned build.** A type-only `import type {} from` of `tools/project.js` and `services/entrypoint.js` is added to `src/service/tools.ts`. `verdict` must report `tools/project.js`, its `remotion_init_project`, `services/environment.js`, `services/browser.js`, and `browser.js`'s non-literal `import()`. |
+| T6 | **Poisoned registry.** `"viz_render_html"` is appended to `SERVICE_TOOLS`, with a matching `TOOL_DEFS` entry. T1's equality must fail, a live `tools/list` must return five, and `verdict` must report `viz_render_html` and nothing else. |
+| fixtures | Hand-written `.js` fixtures, one evasion each, must each yield exactly their one problem. They include an alias, `["registerTool"](`, `.tool.bind`, destructuring, a registration outside the registry, a shadowed loop variable, an unfrozen list, each forbidden name, module and package, and a non-literal `import()`. A positive control (`claims.tool !== toolOf(m)`, plus a string that names a forbidden tool) must yield none. |
+
+**The poisoned controls are the evidence that T1–T4 can fail.** A gate that
+has never been seen failing looks the same as one that is switched off. T5 and
+T6 plant real poison in every run and require the same checks to catch it.
+
+- **How each one is built.** It copies `src/`, `tsconfig.json` and
+  `tsconfig.service.json` into a fresh `tmp-poison-*` directory, applies the
+  poison by a text edit, and compiles with the repo's own `tsc`.
+- **A failed compile cannot pass.** The build must emit
+  `dist-service/service/index.js`, so a broken compile fails the test instead of
+  passing as "poison detected". A poison whose anchor text is missing or
+  repeated fails too, so a refactor cannot quietly turn it into a no-op.
+- **T5 is the case that matters most.** A type-only import emits no runtime
+  `import`, but tsc still puts its target in the program and emits it. Nothing
+  at runtime would ever load `tools/project.js`, yet it ships in the build. Only
+  a check that walks every emitted file catches it.
+- **Where the directories go.** They are made inside the repository, never in
+  `os.tmpdir()`, so that module resolution, `@types/node` and
+  `"type": "module"` find the repo's own copies as ancestors. Each is removed in
+  `after()`. If a run is killed first, `.gitignore` (`/tmp-poison-*/`) and the
+  ESLint ignore list (`tmp-*/**`) keep the leftovers out of commits and lint.
+
+**Recorded evidence.** When the check was written, an interface-only stub of
+`check-service-closure.mjs` failed 48 of the suite's 52 tests. The four that
+passed test the build rather than the script: T1, T2, and T6's runtime halves.
+Then 20 single-rule mutations each turned at least one test red. Nineteen
+disabled or loosened one rule, and one reported every `.tool` read. For
+example, matching the loop variable by name instead of by scope fails only the
+shadowed-variable fixture. Reporting every `.tool` read fails T3, T4 and the
+positive control.
+
+**What the syntax check cannot see, and what covers it.** A registration
+through a computed member name (`server[k](...)` with `k` not a literal), or a
+`.tool` read into a variable and called later, cannot be told apart from
+ordinary code. Plain `.tool` reads are allowed for the claims. The live
+`tools/list` (T2) is the backstop: a fifth tool shows up there however it was
+registered, as T6 shows.
+
 ### The browser-presence assertion is not decoration
 
 `test/html.test.mjs` gates all seven of its tests on `locateBrowser()` evaluated
