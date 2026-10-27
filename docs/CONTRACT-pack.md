@@ -33,7 +33,7 @@ node scripts/build-pack.mjs <project> [--out <dir>]
   `RemotionRoot`.
 
 **What build-pack does, in order.** Any failure exits 1 and prints every
-problem found. Each problem names its composition.
+problem found. A problem with a composition starts with its id.
 1. **Bundles** the project with the project's own `remotion bundle`, or with
    `@remotion/bundler`'s `bundle()` when the CLI has no `bundle` command.
 2. **Loads `RemotionRoot`** by bundling a generated entry with the project's
@@ -121,8 +121,12 @@ tree. It may sit inside fragments, arrays and `<Folder>`.
 **Module scope must be safe in Node.** Every module `src/Root` imports is
 loaded in Node. Do not call `loadFont`, `delayRender` or any browser API at
 module scope. Start the work on first render instead, as the fixture's
-`Swatch.tsx` does with its font. The design lists the limits of discovery as
-untested: `<Folder>`, hooks, module-scope font loading and pnpm layouts.
+`Swatch.tsx` does with its font.
+
+The design lists four discovery limits as untested: `<Folder>`, hooks,
+module-scope font loading and pnpm layouts. build-pack now walks `<Folder>`
+children, but only the unit tests' hand-built elements exercise that, not a
+real Remotion project.
 
 **Every composition must declare a static `width`, `height`, `fps` and
 `durationInFrames`.** The manifest records them, and `render_still` checks a
@@ -146,8 +150,7 @@ definition and the checks of every node type, so a `.refine` on an enum, a
 literal or an optional is still found.
 
 **Allowed:**
-- a strict object at the root (`z.strictObject`)
-- strict objects
+- strict objects (`z.strictObject`); the root must be one
 - strings with a max (`.max(N)` or `.length(N)`), optionally with regexes
   that have no flags
 - numbers with a lower bound and an upper bound, inclusive (`.min`, `.max`)
