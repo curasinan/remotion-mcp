@@ -221,10 +221,19 @@ trusted but the content is not**: the model may be steered by a shared project,
 a web page it read, or a file it was handed, so every control has to hold even
 when the model is fooled.
 
+This model covers the local-dev profile, meaning `dist/` and the `.mcpb` running
+over stdio on your own machine, and not the separate HTTP service profile that
+ADR-4 to ADR-7 decide for backends to deploy.
+
 **What it does not do**
 
-- No network transport. stdio only, so the only thing that can reach the server
-  is the process that launched it. See `docs/adr/0001-transport-stdio-only.md`.
+- No network transport. The local-dev profile is stdio only, so the only thing
+  that can reach the server is the process that launched it. See
+  `docs/adr/0001-transport-stdio-only.md`. HTTP belongs only to the separate
+  service profile, which never ships in the `.mcpb` and accepts only requests
+  that a gateway has signed: see
+  `docs/adr/0004-http-transport-for-the-service-profile.md` and
+  `docs/adr/0006-gateway-for-the-service-profile.md`.
 - No shell. Every command is spawned with an explicit argv array and
   `shell: false`, and tool arguments are validated so they cannot become CLI
   flags: a value like `--config=…` in an output path or composition id is
@@ -277,7 +286,7 @@ The architecture decisions behind this are recorded in `docs/adr/`, and the
 
 ## Auditing what the server does
 
-Every tool call to the server is logged locally — what ran, what it did, how long it took, and any security events that occurred. The audit log stays on your machine and is never sent anywhere. View it by asking your AI client to "show me the gateway", or build a self-contained dashboard with `npm run gateway` and open it in your browser. See [`docs/GATEWAY.md`](docs/GATEWAY.md) for details on what is logged and the design behind the audit trail.
+Every tool call to the server is logged locally — what ran, what it did, how long it took, and any security events that occurred. The audit log stays on your machine and is never sent anywhere. View it in the audit dashboard: ask your AI client to "show me the gateway", or build a self-contained copy with `npm run gateway` and open it in your browser. "Gateway" is the dashboard's legacy name here; it is not the network gateway that ADR-6 puts in front of the service profile. See [`docs/GATEWAY.md`](docs/GATEWAY.md) for details on what is logged and the design behind the audit trail.
 
 ```bash
 npm run gateway
