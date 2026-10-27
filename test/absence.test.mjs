@@ -47,9 +47,12 @@ const TIMED = { timeout: 30_000 };
 // pathToFileURL, not a bare path: import() of a Windows absolute path throws.
 const load = (distDir, name) => import(pathToFileURL(path.join(distDir, "service", name)).href);
 
+/** T1's equality message. T6 matches it, since the freeze check below throws an AssertionError too. */
+const NOT_THE_FOUR = "SERVICE_TOOLS is not exactly the four service tools, in order";
+
 /** T1's check, reused by T6 to show it fails on a poisoned registry. */
 function assertFrozenFour(serviceTools) {
-  assert.deepEqual([...serviceTools], FOUR, "SERVICE_TOOLS is not exactly the four service tools, in order");
+  assert.deepEqual([...serviceTools], FOUR, NOT_THE_FOUR);
   assert.ok(Object.isFrozen(serviceTools), "SERVICE_TOOLS is not frozen, so a module could push a fifth tool");
 }
 
@@ -71,7 +74,7 @@ async function liveToolNames(t, distDir) {
 
   // Scratch for the audit log and the render root, which a tools/list never touches.
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "absence-live-"));
-  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  t.after(() => removeRoot(scratch));
   const tempRoot = path.join(scratch, "renders");
   fs.mkdirSync(tempRoot);
   const auditPath = path.join(scratch, "audit", "service-audit.jsonl");
@@ -151,13 +154,74 @@ async function poisonedBuild(root, poison) {
   return dist;
 }
 
-/** Removes a tmp-poison-* dir, if before() got as far as making it. */
-function removeRoot(root) {
-  if (root !== undefined) fs.rmSync(root, { recursive: true, force: true });
+/** The codes fs.rm retries on. A virus scanner or a sync client holding a file open raises them on Windows. */
+const RETRIED = ["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"];
+/** fs.rm's own retries: up to 5 per entry, each 100 ms longer apart than the last. */
+const REMOVE = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
+/**
+ * Removes a scratch dir this suite made, if before() got as far as making it. Best-effort: OneDrive or Windows
+ * Defender can hold a file open past fs.rm's retries, and a leftover dir must not turn a passing run red, so that is
+ * logged instead. `.gitignore` (`/tmp-poison-*`) and the ESLint ignore list keep a leftover out of commits and lint.
+ * Any other error still fails. fs.promises.rm, not fs.rmSync: on Node 24 for Windows, rmSync gave up on a held dir
+ * at once, with EPERM and no retry, where fs.promises.rm retried. `rm` and `log` are seams for the teardown tests.
+ */
+async function removeRoot(root, { rm = fs.promises.rm, log = (line) => console.warn(line) } = {}) {
+  if (root === undefined) return;
+  try {
+    await rm(root, REMOVE);
+  } catch (error) {
+    if (!RETRIED.includes(error?.code)) throw error;
+    log(`absence suite: could not remove ${root} (${error.code}) after ${REMOVE.maxRetries} retries; `
+      + "remove it by hand");
+  }
 }
 
 /** Whether `problems` has one about `file` that contains `fragment`. */
 const reports = (problems, file, fragment) => problems.some((p) => p.startsWith(`${file}:`) && p.includes(fragment));
+
+describe("teardown is best-effort: a dir held open is retried, then logged, never a failure", () => {
+  // Never made, so a removeRoot that skips its rm seam and reaches the real fs removes nothing.
+  const target = path.join(os.tmpdir(), `absence-teardown-${randomBytes(8).toString("hex")}`);
+
+  for (const code of ["EBUSY", "EPERM"]) {
+    test(`${code} after fs.rm's own retries is logged, not thrown`, async () => {
+      const calls = [];
+      const logged = [];
+      const rm = async (dir, options) => {
+        calls.push({ dir, options });
+        throw Object.assign(new Error(`${code}: resource busy or locked, rmdir '${dir}'`), { code });
+      };
+      await removeRoot(target, { rm, log: (line) => logged.push(line) });
+      assert.equal(calls.length, 1, "removeRoot did not call its rm");
+      const [{ dir, options }] = calls;
+      assert.equal(dir, target);
+      assert.equal(options.recursive, true);
+      assert.equal(options.force, true);
+      assert.ok(Number.isInteger(options.maxRetries) && options.maxRetries >= 1,
+        `fs.rm is not asked to retry (maxRetries ${options.maxRetries})`);
+      assert.ok(options.retryDelay > 0, `fs.rm retries with no delay (retryDelay ${options.retryDelay})`);
+      assert.equal(logged.length, 1, "the dir that could not be removed was not logged");
+      assert.ok(logged[0].includes(target) && logged[0].includes(code), `the log line names neither: ${logged[0]}`);
+    });
+  }
+
+  test("an error that retrying cannot fix still fails the run", async () => {
+    const rm = async () => {
+      throw Object.assign(new Error("ENOTDIR: not a directory"), { code: "ENOTDIR" });
+    };
+    await assert.rejects(removeRoot(target, { rm, log: () => assert.fail("an ENOTDIR was logged, not thrown") }),
+      { code: "ENOTDIR" });
+  });
+
+  test("a real dir is removed, and an undefined root is a no-op", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "absence-teardown-"));
+    fs.writeFileSync(path.join(dir, "file.txt"), "x");
+    await removeRoot(dir, { log: () => assert.fail(`a removable dir was logged: ${dir}`) });
+    assert.equal(fs.existsSync(dir), false, `removeRoot left ${dir} behind`);
+    await removeRoot(undefined, { rm: () => assert.fail("removeRoot(undefined) called rm") });
+  });
+});
 
 test("T1: the registry exports exactly the frozen four, in order", async () => {
   const { SERVICE_TOOLS } = await load(DIST, "registry.js");
@@ -177,8 +241,9 @@ test("T3: verdict on dist-service is empty, even though services/exec.js names r
     + "syntax rather than text");
 
   const analysis = analyzeClosure(DIST);
-  // Positive control: the walk reached the registry and the file with the hint, so an empty verdict means something.
-  for (const file of [REGISTRY, "services/exec.js", "service/index.js"]) {
+  // Positive control: the walk reached the registry, the file with the hint, and preflight.js, whose createRequire
+  // resolves the renderer, so an empty verdict means something.
+  for (const file of [REGISTRY, "services/exec.js", "service/index.js", "service/preflight.js"]) {
     assert.ok(analysis.files.includes(file),
       `the analysis did not scan ${file} (scanned ${analysis.files.join(", ")})`);
   }
@@ -253,7 +318,10 @@ describe("T6 poisoned registry: a fifth tool", () => {
 
   test("T1's equality fails", async () => {
     const { SERVICE_TOOLS } = await load(dist, "registry.js");
-    assert.throws(() => assertFrozenFour(SERVICE_TOOLS), { name: "AssertionError" });
+    // The equality's own failure: a poison that only unfroze the list would fail the freeze check instead. Node 24
+    // appends the diff to a custom message, so this matches its first line.
+    assert.throws(() => assertFrozenFour(SERVICE_TOOLS),
+      { name: "AssertionError", message: new RegExp(`^${NOT_THE_FOUR}(\\n|$)`) });
   });
 
   test("a live tools/list from the poisoned build returns five", TIMED, async (t) => {
@@ -333,6 +401,10 @@ describe("verdict on hand-written fixtures", () => {
       ["import(variable)",
         "export const f = (variable) => import(variable);\n",
         `${EVASION}:1: a non-literal import()`],
+      // The SDK's third public registration API: it lists its tool in tools/list like registerTool.
+      ['server.experimental.tasks.registerToolTask("x", …) outside the registry',
+        'export function f(server, h) {\n  server.experimental.tasks.registerToolTask("x", {}, h);\n}\n',
+        `${EVASION}:2: a registerToolTask call outside ${REGISTRY}`],
     ];
     for (const [title, source, expected] of evasions) {
       test(title, () => assertOneProblem({ [EVASION]: source }, expected));
@@ -403,6 +475,107 @@ describe("verdict on hand-written fixtures", () => {
     }
   });
 
+  describe("verdict holds registerToolTask, the SDK's experimental registration API, to registerTool's rules", () => {
+    // server.experimental.tasks.registerToolTask calls the same internal _createRegisteredTool as registerTool, so
+    // its tool appears in tools/list.
+    const TASKS = "server.experimental.tasks";
+    const uses = [
+      ["tasks.registerToolTask(…) outside the registry",
+        `export const f = (server, h) => ${TASKS}.registerToolTask("x", {}, h);\n`,
+        `${EVASION}:1: a registerToolTask call outside ${REGISTRY}`],
+      ['tasks["registerToolTask"](…) outside the registry',
+        `export const f = (server, h) => ${TASKS}["registerToolTask"]("x", {}, h);\n`,
+        `${EVASION}:1: a registerToolTask call outside ${REGISTRY}`],
+      ["(tasks.registerToolTask)(…) outside the registry",
+        `export const f = (server, h) => (${TASKS}.registerToolTask)("x", {}, h);\n`,
+        `${EVASION}:1: a registerToolTask call outside ${REGISTRY}`],
+      ["const r = tasks.registerToolTask",
+        `export function f(server) {\n  const r = ${TASKS}.registerToolTask;\n  return r;\n}\n`,
+        `${EVASION}:2: a non-call reference to registerToolTask (alias)`],
+      ["const { registerToolTask } = tasks",
+        `export function f(server) {\n  const { registerToolTask } = ${TASKS};\n}\n`,
+        `${EVASION}:2: a non-call reference to registerToolTask (destructuring)`],
+      ["destructuring in an assignment: ({ registerToolTask: o.r } = tasks)",
+        `export function f(server, o) {\n  ({ registerToolTask: o.r } = ${TASKS});\n}\n`,
+        `${EVASION}:2: a non-call reference to registerToolTask (destructuring)`],
+      ["tasks.registerToolTask.bind(tasks)",
+        `export const f = (server) => ${TASKS}.registerToolTask.bind(${TASKS});\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (bind)`],
+      ["tasks.registerToolTask.call(tasks, …)",
+        `export const f = (server, h) => ${TASKS}.registerToolTask.call(${TASKS}, "x", {}, h);\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (call)`],
+      ["tasks.registerToolTask.apply(tasks, …)",
+        `export const f = (server, args) => ${TASKS}.registerToolTask.apply(${TASKS}, args);\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (apply)`],
+      ["registerToolTask as an argument",
+        `export const f = (server, register) => register(${TASKS}.registerToolTask);\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (argument)`],
+      ["registerToolTask as a property initializer",
+        `export const f = (server) => ({ register: ${TASKS}.registerToolTask });\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (initializer)`],
+      ['tasks["registerToolTask"] read but not called',
+        `export const f = (server) => ${TASKS}["registerToolTask"];\n`,
+        `${EVASION}:1: a non-call reference to registerToolTask (reference)`],
+      ['the name alone, as a string: const k = "registerToolTask"',
+        'export const k = "registerToolTask";\n',
+        `${EVASION}:1: a non-call reference to registerToolTask (string)`],
+      ["a bare registerToolTask, as an imported function would be",
+        "export const f = (server) => registerToolTask(server);\n",
+        `${EVASION}:1: a non-call reference to registerToolTask (identifier)`],
+    ];
+    for (const [title, source, expected] of uses) {
+      test(title, () => assertOneProblem({ [EVASION]: source }, expected));
+    }
+
+    test('the finding\'s repro: tasks.registerToolTask("viz_render_html", …) outside the registry', () => {
+      assert.deepEqual(check({ [EVASION]: [
+        "export function f(server, h) {",
+        `  ${TASKS}.registerToolTask("viz_render_html", {}, h);`,
+        "}",
+        "",
+      ].join("\n") }), [
+        `${EVASION}:2: a registerToolTask call outside ${REGISTRY}`,
+        `${EVASION}:2: registers the forbidden tool viz_render_html`,
+      ]);
+    });
+
+    for (const name of FORBIDDEN_TOOLS) {
+      test(`a literal ${name} in the registry`, () => {
+        assertOneProblem(registry("export function r(server, h) {",
+          `  ${TASKS}.registerToolTask("${name}", {}, h);`, "}"),
+        `${REGISTRY}:2: registers the forbidden tool ${name}`);
+      });
+    }
+
+    test("a loop over a frozen list that names a forbidden tool", () => {
+      assertOneProblem(registry(
+        'export const SERVICE_TOOLS = Object.freeze(["list_templates", "remotion_list_compositions"]);',
+        "export function r(server, h) {",
+        `  for (const name of SERVICE_TOOLS) ${TASKS}.registerToolTask(name, {}, h);`,
+        "}",
+      ), `${REGISTRY}:3: registers the forbidden tool remotion_list_compositions`);
+    });
+
+    test("a non-literal name outside a loop", () => {
+      assertOneProblem(registry(
+        "export function r(server, name, h) {",
+        `  ${TASKS}.registerToolTask(name, {}, h);`,
+        "}",
+      ), `${REGISTRY}:2: a registerToolTask call whose name is neither a string literal nor its for...of loop's `
+        + "variable");
+    });
+
+    test("a second call site beside the registerTool loop", () => {
+      assertOneProblem(registry(
+        'export const SERVICE_TOOLS = Object.freeze(["list_templates"]);',
+        "export function r(server, h) {",
+        "  for (const name of SERVICE_TOOLS) server.registerTool(name, {}, h);",
+        `  ${TASKS}.registerToolTask("render_still", {}, h);`,
+        "}",
+      ), `${REGISTRY}: 2 registration call sites, at lines 3, 4; only its one loop may register`);
+    });
+  });
+
   describe("verdict holds service/registry.js to its one loop over a frozen list", () => {
     test("two call sites", () => {
       assertOneProblem(registry(
@@ -433,6 +606,31 @@ describe("verdict on hand-written fixtures", () => {
         "  }",
         "}",
       ), `${REGISTRY}:6: ${NOT_LOOP_VARIABLE}`);
+    });
+
+    test("a loop whose variable is a let, reassigned before the call", () => {
+      // The loop variable must be a const: a let can hold any name by the time it is registered.
+      assertOneProblem(registry(
+        'export const SERVICE_TOOLS = Object.freeze(["list_templates"]);',
+        "export function r(server, h) {",
+        "  for (let name of SERVICE_TOOLS) {",
+        '    name = "viz_render_html";',
+        "    server.registerTool(name, {}, h);",
+        "  }",
+        "}",
+      ), `${REGISTRY}:5: ${NOT_LOOP_VARIABLE}`);
+    });
+
+    test("a loop over a frozen list declared with let, then reassigned", () => {
+      // The list must be a const: a let can be rebound to any list, frozen or not, before the loop runs.
+      assertOneProblem(registry(
+        'export let SERVICE_TOOLS = Object.freeze(["list_templates"]);',
+        'SERVICE_TOOLS = ["viz_render_html"];',
+        "export function r(server, h) {",
+        "  for (const name of SERVICE_TOOLS) server.registerTool(name, {}, h);",
+        "}",
+      ), `${REGISTRY}:4: a registerTool call looping over SERVICE_TOOLS, which is not a frozen list of string literals `
+        + `declared in ${REGISTRY}`);
     });
 
     test("a loop over a list that is not frozen", () => {
@@ -488,9 +686,36 @@ describe("verdict on hand-written fixtures", () => {
         `${EVASION}:1: imports puppeteer-core`],
       ["a non-literal require", "export const f = (require, x) => require(x);\n",
         `${EVASION}:1: a non-literal require()`],
+      // A require made by createRequire, or require under another name, is not a call of `require`. The package's
+      // name, as a string anywhere in the closure, is what gives it away.
+      ['createRequire(import.meta.url)("puppeteer-core")',
+        'import { createRequire } from "node:module";\n'
+        + 'export const f = () => createRequire(import.meta.url)("puppeteer-core");\n',
+        `${EVASION}:2: names the forbidden package puppeteer-core outside an import or require()`],
+      ['const req = createRequire(…); req("puppeteer-core")',
+        'import { createRequire } from "node:module";\nconst req = createRequire(import.meta.url);\n'
+        + 'export const f = () => req("puppeteer-core");\n',
+        `${EVASION}:3: names the forbidden package puppeteer-core outside an import or require()`],
+      ["a renamed require of a @resvg/resvg-js subpath, as a template literal",
+        "export function f(require) {\n  const load = require;\n  return load(`@resvg/resvg-js/index.js`);\n}\n",
+        `${EVASION}:3: names the forbidden package @resvg/resvg-js/index.js outside an import or require()`],
     ];
     for (const [title, source, expected] of specifiers) {
       test(title, () => assertOneProblem({ [EVASION]: source }, expected));
     }
+
+    test("positive control: preflight's createRequire(…).resolve of the renderer, and longer strings, are not reported",
+      () => {
+        assert.deepEqual(check({ "service/preflight.js": [
+          'import { createRequire } from "node:module";',
+          'import path from "node:path";',
+          "export const renderer = (packDir) => createRequire(",
+          '  path.resolve(packDir, "node_modules", "@remotion", "cli", "package.json"),',
+          ').resolve("@remotion/renderer/package.json");',
+          'export const hint = "Run `npm install puppeteer-core` first";',
+          'export const others = ["puppeteer-core-extra", "@resvg/resvg-js-wasm", "puppeteer"];',
+          "",
+        ].join("\n") }), []);
+      });
   });
 });

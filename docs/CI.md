@@ -56,16 +56,22 @@ build for forbidden names would fail a correct closure.
 
 `verdict` reports:
 
-- **Registrations.** Any `.registerTool(` or `.tool(` call, including
-  `["registerTool"](` and `["tool"](`, outside `service/registry.js`. In the
-  registry, more than one call site, or a name that is neither a string literal
-  nor the `const` variable of its `for...of` loop. The loop must run over a
-  frozen list of string literals declared in the registry, which is how the
+- **Registrations.** Any `.registerTool(`, `.registerToolTask(` or `.tool(`
+  call, including `["registerTool"](`, `["registerToolTask"](` and
+  `["tool"](`, outside `service/registry.js`. `registerToolTask` is the SDK's
+  experimental `server.experimental.tasks.registerToolTask`. It registers
+  through the same internal `_createRegisteredTool` as `registerTool`, and its
+  tool appears in `tools/list` the same way, so every rule here treats it
+  exactly like `registerTool`. In the registry, the check reports more than one
+  call site, or a name that is neither a string literal nor the `const`
+  variable of its `for...of` loop. The loop must run over a frozen list of
+  string literals, declared with `const` in the registry, which is how the
   loop's names are known.
-- **Other uses.** Any use of `registerTool` other than a direct call: an alias,
-  an argument, an initializer, destructuring, `.bind`, `.call` or `.apply`. Also
-  any `.tool` used through `.bind`, `.call` or `.apply`. A plain read of a
-  `tool` property, such as `claims.tool`, is not reported, because the gateway
+- **Other uses.** Any use of `registerTool` or `registerToolTask` other than a
+  direct call: an alias, an argument, an initializer, destructuring, `.bind`,
+  `.call` or `.apply`, a bare identifier, or the name as a string. Also any
+  `.tool` used through `.bind`, `.call` or `.apply`. A plain read of a `tool`
+  property, such as `claims.tool`, is not reported, because the gateway
   contract's claim is named `tool`.
 - **Names and files.** Any of the four forbidden names, registered as a literal
   or through the loop's list. Any file under `tools/`. Any file or directory
@@ -74,6 +80,16 @@ build for forbidden names would fail a correct closure.
 - **Specifiers.** Any `@resvg/resvg-js` or `puppeteer-core` import, re-export,
   `import()` or `require()`, subpaths included. Any non-literal `import()` or
   `require()`.
+- **Package names anywhere.** Any other string literal, a no-substitution
+  template literal included, whose whole value is `@resvg/resvg-js` or
+  `puppeteer-core`, or starts with `@resvg/resvg-js/` or `puppeteer-core/`.
+  This is what catches a package loaded without a call of `require`, such as
+  `createRequire(import.meta.url)("puppeteer-core")`. A literal that is already
+  an import's or a `require()`'s own specifier is reported once, as that
+  specifier. A longer string that merely mentions a package, such as
+  ``"Run `npm install puppeteer-core`"``, is not reported. Nor is
+  `service/preflight.js`'s
+  `createRequire(...).resolve("@remotion/renderer/package.json")`.
 
 | Test | What it proves |
 | --- | --- |
@@ -82,8 +98,9 @@ build for forbidden names would fail a correct closure.
 | T3 | `verdict` on `dist-service/` is empty, although `services/exec.js` names `remotion_list_compositions`. |
 | T4 | There is exactly one registration call site. It is in `service/registry.js`, inside its loop over `SERVICE_TOOLS`, and nothing else references `registerTool`. |
 | T5 | **Poisoned build.** A type-only `import type {} from` of `tools/project.js` and `services/entrypoint.js` is added to `src/service/tools.ts`. `verdict` must report `tools/project.js`, its `remotion_init_project`, `services/environment.js`, `services/browser.js`, and `browser.js`'s non-literal `import()`. |
-| T6 | **Poisoned registry.** `"viz_render_html"` is appended to `SERVICE_TOOLS`, with a matching `TOOL_DEFS` entry. T1's equality must fail, a live `tools/list` must return five, and `verdict` must report `viz_render_html` and nothing else. |
-| fixtures | Hand-written `.js` fixtures, one evasion each, must each yield exactly their one problem. They include an alias, `["registerTool"](`, `.tool.bind`, destructuring, a registration outside the registry, a shadowed loop variable, an unfrozen list, each forbidden name, module and package, and a non-literal `import()`. A positive control (`claims.tool !== toolOf(m)`, plus a string that names a forbidden tool) must yield none. |
+| T6 | **Poisoned registry.** `"viz_render_html"` is appended to `SERVICE_TOOLS`, with a matching `TOOL_DEFS` entry. T1's equality must fail, matched by its own message, since T1's freeze check throws an `AssertionError` too. A live `tools/list` must return five, and `verdict` must report `viz_render_html` and nothing else. |
+| fixtures | Hand-written `.js` fixtures, one evasion each, must each yield exactly their one problem. They include an alias, `["registerTool"](`, `.tool.bind`, destructuring, a registration outside the registry, and every one of those forms again for `registerToolTask`. They also include a shadowed loop variable, a `let` loop variable reassigned before the call, a `let` list reassigned before the loop, an unfrozen list, each forbidden name, module and package, a non-literal `import()`, and both `createRequire` forms. Positive controls must yield none: `claims.tool !== toolOf(m)`, a string that names a forbidden tool, and preflight's `createRequire(...).resolve`. |
+| teardown | Removing a scratch dir is best-effort. `fs.promises.rm` gets `maxRetries` and `retryDelay`. An `EBUSY` or `EPERM` that outlasts the retries is logged, not thrown, and any other error still fails the run. |
 
 **The poisoned controls are the evidence that T1–T4 can fail.** A gate that
 has never been seen failing looks the same as one that is switched off. T5 and
@@ -105,6 +122,12 @@ T6 plant real poison in every run and require the same checks to catch it.
   `"type": "module"` find the repo's own copies as ancestors. Each is removed in
   `after()`. If a run is killed first, `.gitignore` (`/tmp-poison-*/`) and the
   ESLint ignore list (`tmp-*/**`) keep the leftovers out of commits and lint.
+- **Removal is best-effort.** On Windows, OneDrive or Defender can hold a file
+  open. `fs.promises.rm` retries up to 5 times per entry, each wait 100 ms
+  longer. A dir still held after that (`EBUSY`, `EPERM`, `ENOTEMPTY`, `EMFILE`
+  or `ENFILE`) is logged with its path, and the run's result stands. It uses
+  `fs.promises.rm` because on Node 24 for Windows, `fs.rmSync` failed on a held
+  dir at once, with `EPERM` and no retry.
 
 **Recorded evidence.** When the check was written, an interface-only stub of
 `check-service-closure.mjs` failed 48 of the suite's 52 tests. The four that
@@ -115,19 +138,66 @@ example, matching the loop variable by name instead of by scope fails only the
 shadowed-variable fixture. Reporting every `.tool` read fails T3, T4 and the
 positive control.
 
-**What the syntax check cannot see, and what covers it.** A registration
-through a computed member name (`server[k](...)` with `k` not a literal), or a
-`.tool` read into a variable and called later, cannot be told apart from
-ordinary code. Plain `.tool` reads are allowed for the claims. The live
-`tools/list` (T2) is the backstop: a fifth tool shows up there however it was
-registered, as T6 shows.
+**Fix round 1.** Five review findings added rules and tests:
+- the `registerToolTask` API;
+- package names reached through `createRequire`;
+- the two `const` guards behind the loop's names, which no test had pinned;
+- T6's message match;
+- best-effort teardown.
 
-The specifier rules read `import`, `export ... from`, `import()` and calls of a
-function named `require`. A `require` under another name is not read, such as
-`const r = require`, or a function made by `createRequire` (which
-`service/preflight.js` uses to resolve the renderer's `package.json`). No other
-test covers that gap. The file-name rules still catch the local-dev modules that
-load those packages, such as `services/raster.js` and `services/browser.js`.
+Each new guard was proved both ways with single mutations, 18 in all, and each
+turned at least one test red. One more stays green: making `fs.rmSync` the
+default again. That difference shows only on a held dir on Windows, so it was
+measured by hand rather than in the suite.
+
+**What the check covers, and what it does not.** The check exists to stop the
+repo's own reviewed sources from carrying a local-dev tool or package into the
+service build by accident. A gap that only a deliberate evasion could reach is
+a documented limit, not a defect. The live `tools/list` (T2) is the backstop for
+registrations: a fifth tool shows up there however it was registered, as T6
+shows.
+
+Covered:
+
+- Every direct registration, through `registerTool`, `registerToolTask` or
+  `.tool`, by dot or by a literal bracket key, parenthesised or not.
+- Every other use of `registerTool` or `registerToolTask`, including through a
+  comma, a conditional or `Reflect.apply`, since any non-call reference to
+  either name is reported.
+- Every import, re-export, `import()` and `require()` of a forbidden package,
+  by its specifier.
+- Every string literal, or template literal without substitutions, whose
+  whole value names a forbidden package or a subpath of one. This catches a
+  `require` under another name (`const r = require; r("puppeteer-core")`), a
+  `createRequire(import.meta.url)("puppeteer-core")`, and
+  `const req = createRequire(...); req("puppeteer-core")`.
+- Every non-literal `import()`, and every non-literal call of a function named
+  `require`.
+
+Not covered:
+
+- A registration through a computed member name, such as `server[k](...)` with
+  `k` not a literal.
+- A `.tool` read into a variable and called later. Plain `.tool` reads are
+  allowed for the claims.
+- A `.tool` callee reached through a comma, `(0, server.tool)(...)`, a
+  conditional, `(c ? server.tool : f)(...)`, or
+  `Reflect.apply(server.tool, ...)`. The check reports only a `.tool` used
+  through `.bind`, `.call` or `.apply`.
+- An `Object` shadowed in the registry. The frozen-list rule reads
+  `Object.freeze([...])` by its syntax, so a local `Object` whose `freeze`
+  returns another list would pass.
+- A non-literal argument to a `require` under another name, such as
+  `req(name)` where `req` came from `createRequire`. Only `import()` and calls
+  of a function named `require` are checked for a non-literal argument.
+- A package name built at runtime, such as `"puppeteer" + "-core"`, a template
+  literal with substitutions, or `String.fromCharCode(...)`.
+- Calling the SDK's private `_createRegisteredTool`, or replacing the
+  `tools/list` handler through the low-level `server.server.setRequestHandler`.
+- Any other deliberate obfuscation.
+
+The file-name rules still catch the local-dev modules that load the forbidden
+packages, such as `services/raster.js` and `services/browser.js`.
 
 ### The browser-presence assertion is not decoration
 

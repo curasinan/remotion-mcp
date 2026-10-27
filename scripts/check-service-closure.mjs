@@ -21,8 +21,17 @@ const FORBIDDEN_MODULES = ["raster", "tile", "network", "visualize", "studio", "
 const FORBIDDEN_PACKAGES = ["@resvg/resvg-js", "puppeteer-core"];
 /** What tsc can emit: .js, and .mjs and .cjs from .mts and .cts sources. */
 const SCRIPT = /\.[cm]?js$/;
-/** The method names that register a tool on an McpServer. */
-const REGISTER_METHODS = ["registerTool", "tool"];
+/**
+ * The method names that register a tool: McpServer's registerTool and tool, and the SDK's experimental
+ * server.experimental.tasks.registerToolTask, which reaches the same internal _createRegisteredTool and lists its tool
+ * in tools/list the same way.
+ */
+const REGISTER_METHODS = ["registerTool", "registerToolTask", "tool"];
+/**
+ * The registration methods whose every use but a direct call is reported. Not `tool`: a plain read of a `tool`
+ * property is the gateway claim's, so only a `.tool` used through .bind, .call or .apply is.
+ */
+const STRICT_METHODS = ["registerTool", "registerToolTask"];
 /** The Function methods that call or capture a method without a direct call. */
 const FUNCTION_METHODS = ["bind", "call", "apply"];
 
@@ -114,19 +123,23 @@ function useOf(outer, parent) {
 }
 
 /**
- * A `registerTool` that is not a member access's own name or key: a bare identifier (a variable, a destructured or
- * declared name) or a "registerTool" string.
+ * The strict method `node` names when it is not a member access's own name or key: a bare identifier (a variable, a
+ * destructured or declared name) or a string, "registerTool" or "registerToolTask". Null for anything else.
  */
-function isBareRegisterTool(node, parent) {
+function bareStrictName(node, parent) {
   if (ts.isIdentifier(node)) {
-    return node.text === "registerTool" && !(parent !== undefined && ts.isPropertyAccessExpression(parent)
-      && parent.name === node);
+    return STRICT_METHODS.includes(node.text) && !(parent !== undefined && ts.isPropertyAccessExpression(parent)
+      && parent.name === node) ? node.text : null;
   }
-  return literalText(node) === "registerTool" && !(parent !== undefined && ts.isElementAccessExpression(parent)
-    && parent.argumentExpression === node);
+  const text = literalText(node);
+  return text !== null && STRICT_METHODS.includes(text) && !(parent !== undefined
+    && ts.isElementAccessExpression(parent) && parent.argumentExpression === node) ? text : null;
 }
 
-/** How a bare `registerTool` name, or a "registerTool" string that is not a member key, is used. */
+/** Whether a module specifier is one of the forbidden packages or a subpath of one. */
+const isForbiddenPackage = (spec) => FORBIDDEN_PACKAGES.some((p) => spec === p || spec.startsWith(`${p}/`));
+
+/** How a bare strict name, or such a string that is not a member key, is used. */
 function nameUseOf(node, parent, ancestors) {
   if (ts.isBindingElement(parent)) return "destructuring";
   if ((ts.isShorthandPropertyAssignment(parent) || ts.isPropertyAssignment(parent)) && parent.name === node) {
@@ -190,13 +203,17 @@ function iterableNames(expr, checker, sourceFile) {
 /**
  * Reads every .js, .mjs and .cjs file under `distDir` as syntax, with the repo's TypeScript parser and binder.
  * - `files`: each scanned file, relative to `distDir`, with forward slashes.
- * - `registrations`: each call of a `.registerTool` or `.tool` member (also `["registerTool"]` and `["tool"]`). `name`
- *   is its first argument when that is a string literal, else null. `loop` is set when the name is the variable of
- *   an enclosing `for (const x of ...)`: the iterable's text, and the string literals it holds, or null.
- * - `registerToolRefs`: each use of registerTool other than a direct call (an alias, an argument, destructuring, a
- *   `.bind`, `.call` or `.apply`, ...), and each `.tool` used as the object of `.bind`, `.call` or `.apply`. A plain
- *   read of a `tool` property, such as the claims' `tool`, is not one.
+ * - `registrations`: each call of a `.registerTool`, `.registerToolTask` or `.tool` member (also `["registerTool"]`,
+ *   `["registerToolTask"]` and `["tool"]`). `name` is its first argument when that is a string literal, else null.
+ *   `loop` is set when the name is the variable of an enclosing `for (const x of ...)`: the iterable's text, and the
+ *   string literals it holds, or null.
+ * - `registerToolRefs`: each use of registerTool or registerToolTask other than a direct call (an alias, an argument,
+ *   destructuring, a `.bind`, `.call` or `.apply`, ...), and each `.tool` used as the object of `.bind`, `.call` or
+ *   `.apply`. A plain read of a `tool` property, such as the claims' `tool`, is not one.
  * - `specifiers`: each import, re-export, `import()` and `require()`, with `spec` null when it is not a literal.
+ * - `packageLiterals`: each other string literal (a no-substitution template included) whose value is a forbidden
+ *   package or a subpath of one, such as the argument of a require made by createRequire. A literal already in
+ *   `specifiers` is not repeated here.
  * Every `line` is 1-based. Throws when a file does not parse, rather than check a partial tree.
  */
 export function analyzeClosure(distDir) {
@@ -212,6 +229,7 @@ export function analyzeClosure(distDir) {
   const registrations = [];
   const registerToolRefs = [];
   const specifiers = [];
+  const packageLiterals = [];
 
   files.forEach((file, index) => {
     const sourceFile = program.getSourceFile(absolute[index]);
@@ -225,10 +243,13 @@ export function analyzeClosure(distDir) {
     }
     const lineOf = (node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
     const ref = (node, member, kind) => registerToolRefs.push({ file, line: lineOf(node), member, kind });
+    // The literals that are a specifier's own, so packageLiterals does not report one twice.
+    const specifierNodes = new Set();
 
     const visit = (node, ancestors) => {
       const parent = ancestors[ancestors.length - 1];
       const member = memberOf(node);
+      const bare = member === null ? bareStrictName(node, parent) : null;
       if (member !== null && REGISTER_METHODS.includes(member.name)) {
         const { outer, parent: user } = outermost(node, ancestors);
         if (isCallee(outer, user)) {
@@ -238,19 +259,26 @@ export function analyzeClosure(distDir) {
             loop: loopOf(nameArg, ancestors, checker, sourceFile) });
         } else {
           const use = useOf(outer, user);
-          if (member.name === "registerTool" || FUNCTION_METHODS.includes(use)) ref(member.at, member.name, use);
+          if (STRICT_METHODS.includes(member.name) || FUNCTION_METHODS.includes(use)) ref(member.at, member.name, use);
         }
-      } else if (isBareRegisterTool(node, parent)) {
-        ref(node, "registerTool", nameUseOf(node, parent, ancestors));
+      } else if (bare !== null) {
+        ref(node, bare, nameUseOf(node, parent, ancestors));
       }
 
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined) {
         specifiers.push({ file, line: lineOf(node), kind: ts.isImportDeclaration(node) ? "import" : "export",
           spec: literalText(node.moduleSpecifier) });
+        specifierNodes.add(node.moduleSpecifier);
       } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
         || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
         specifiers.push({ file, line: lineOf(node), kind: ts.isIdentifier(node.expression) ? "require" : "dynamic",
           spec: literalText(node.arguments[0]) });
+        if (node.arguments[0] !== undefined) specifierNodes.add(node.arguments[0]);
+      }
+
+      const value = literalText(node);
+      if (value !== null && !specifierNodes.has(node) && isForbiddenPackage(value)) {
+        packageLiterals.push({ file, line: lineOf(node), value });
       }
 
       ancestors.push(node);
@@ -260,7 +288,7 @@ export function analyzeClosure(distDir) {
     visit(sourceFile, []);
   });
 
-  return { files, registrations, registerToolRefs, specifiers };
+  return { files, registrations, registerToolRefs, specifiers, packageLiterals };
 }
 
 /** The names a registration registers: its literal name, or its loop's names. */
@@ -301,8 +329,8 @@ export function verdict(analysis) {
   }
 
   for (const ref of analysis.registerToolRefs) {
-    problems.push(ref.member === "registerTool"
-      ? `${ref.file}:${ref.line}: a non-call reference to registerTool (${ref.kind})`
+    problems.push(STRICT_METHODS.includes(ref.member)
+      ? `${ref.file}:${ref.line}: a non-call reference to ${ref.member} (${ref.kind})`
       : `${ref.file}:${ref.line}: .${ref.member} used through .${ref.kind}`);
   }
 
@@ -310,9 +338,12 @@ export function verdict(analysis) {
     const at = `${s.file}:${s.line}`;
     if (s.spec === null) {
       problems.push(`${at}: a non-literal ${s.kind === "require" ? "require()" : "import()"}`);
-    } else if (FORBIDDEN_PACKAGES.some((p) => s.spec === p || s.spec.startsWith(`${p}/`))) {
+    } else if (isForbiddenPackage(s.spec)) {
       problems.push(`${at}: imports ${s.spec}`);
     }
+  }
+  for (const p of analysis.packageLiterals) {
+    problems.push(`${p.file}:${p.line}: names the forbidden package ${p.value} outside an import or require()`);
   }
   return problems;
 }
