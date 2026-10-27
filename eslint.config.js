@@ -29,7 +29,8 @@ const nodeGlobals = {
 
 export default tseslint.config(
   // Generated output: dist-service/, build/ staging, plus extracted/, artifact/ and tmp-*/ from bundle verification.
-  { ignores: ["dist/**", "dist-service/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb", "extracted/**", "artifact/**", "tmp-*/**"] },
+  // fixtures/pack/ is a separate Remotion project (React and TSX), with its own dependencies; build-pack checks it.
+  { ignores: ["dist/**", "dist-service/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb", "extracted/**", "artifact/**", "tmp-*/**", "fixtures/pack/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

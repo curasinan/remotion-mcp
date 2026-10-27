@@ -16,6 +16,7 @@ below have a recorded moment where they caught a deliberately planted defect.
 | `sbom` | — | CycloneDX and SPDX SBOMs, plus a Trivy filesystem scan (advisory). |
 | `bundle` | `build-and-test` | Builds the `.mcpb`, enforces the size ceiling, runs the bundle assertions. |
 | `verify-bundle` | `bundle` | 6 platforms. Extracts the shipped artifact and *runs* it. |
+| `pack` | — | Builds the fixture template pack on Linux with `scripts/build-pack.mjs` and uploads `dist-pack/` as the `pack` artifact. |
 | `lint-workflows` | — | `actionlint` over `.github/workflows/`. |
 | `ci-ok` | all of the above | One aggregate check, so branch protection has a single required status instead of 15 that change name whenever the matrix does. |
 
@@ -198,6 +199,59 @@ Not covered:
 
 The file-name rules still catch the local-dev modules that load the forbidden
 packages, such as `services/raster.js` and `services/browser.js`.
+
+### The `pack` job: the fixture pack, built as a deployer builds one
+
+`fixtures/pack/` is a separate Remotion project with two templates, `swatch`
+and `slow`. The job installs it with its own lockfile and builds it the way
+[`CONTRACT-pack.md`](CONTRACT-pack.md) tells a deployer to:
+
+1. `npm ci`, then `npm run build:service`. `build-pack.mjs` imports the
+   service's own JSON Schema gate and `loadPack` from `dist-service/`.
+2. `npm ci --prefix fixtures/pack`. It runs on Linux, so the pack's native
+   packages are the Linux ones.
+3. `node scripts/build-pack.mjs fixtures/pack`. It exits 1 if any gate refuses
+   a schema, or if the service's `loadPack` refuses the result.
+4. It uploads `fixtures/pack/dist-pack/` as the `pack` artifact:
+   `pack-manifest.json`, `bundle/`, `package.json` and `package-lock.json`.
+
+The gate's own rules are unit-tested in `test/zod-gate.test.mjs`, part of
+`npm test`. Each refused construct sits on an otherwise valid schema and must
+give exactly one violation, and its positive twin must give none. The job is
+the end-to-end half: a real bundle, a real `RemotionRoot`, and zod 4.5.4's own
+`z.toJSONSchema`.
+
+**Recorded evidence (2026-10-27, WSL Ubuntu, Node 22).**
+- A rebuild of the same checkout gave the same `packHash`. An edit to
+  `Swatch.tsx` changed it, and undoing the edit restored it. Remotion's
+  `index.html` records the build directory and each `public/` file's
+  modification time, so every fresh checkout, CI's included, gets its own
+  hash.
+- `remotion still` rendered `swatch` from `dist-pack/bundle` with the
+  Turkish props.
+- Separate copies with planted defects each made `build-pack` exit 1, naming
+  the composition:
+  - a non-strict object
+  - a missing schema
+  - zod 3 schemas
+  - `calculateMetadata` without a static size
+  - `.trim()` together with a flagged regex, both reported
+  - `@remotion/cli` under `devDependencies`
+  - an `--out` dir holding files `build-pack` did not write. That one was
+    refused, and nothing was deleted.
+- Each of build-pack's own steps was proved both ways: with the repo's
+  script, and with a copy that had that one step removed.
+  - **The bounds check.** `z.string().max(80).meta({ maxLength: 999 })`
+    passes the zod gate, but its export says 999. With the check, the build
+    fails. Without it, the pack builds with `maxLength: 999`.
+  - **The final `loadPack`.** A 20000 × 20000 composition passes every schema
+    gate. With `loadPack`, the build fails on `MAX_RASTER_PIXELS`. Without
+    it, the pack builds.
+  - **The JSON Schema gate.** Two `.regex()` calls export an `allOf`. With
+    the gate, the build fails, naming the template. Without it, `loadPack`
+    still refuses the pack.
+- 45 single-guard mutations of `scripts/lib/zod-gate.mjs` and
+  `scripts/lib/pack-files.mjs` each turned `test/zod-gate.test.mjs` red.
 
 ### The browser-presence assertion is not decoration
 
