@@ -11,9 +11,11 @@ ruling 7).
 | Design | [design §5.4](superpowers/specs/2026-10-26-service-profile-v2-design.md) |
 | Builder | `scripts/build-pack.mjs` |
 | zod 4 gate and discovery | `scripts/lib/zod-gate.mjs` |
+| Loading `src/Root`, and each composition's checks in order | `scripts/lib/pack-templates.mjs` |
 | packHash, dependencies and the output dir | `scripts/lib/pack-files.mjs` |
 | JSON Schema gate and loader | `src/service/templates.ts` (`checkSchemaVocabulary`, `loadPack`) |
-| Tests | `test/zod-gate.test.mjs` (the build side), `test/templates.test.mjs` (the service side) |
+| Limits both gates share | `src/service/constants.ts` (`MAX_TEMPLATE_ID`, `MAX_SCHEMA_DEPTH`, `MAX_EXPANDED_NODES`) |
+| Tests | the build side: `test/zod-gate.test.mjs`, `test/build-pack.test.mjs` and `test/pack-files.test.mjs`; the service side: `test/templates.test.mjs` |
 | Fixture pack | `fixtures/pack/`, built by the CI `pack` job ([CI.md](CI.md)) |
 
 ## Building a pack
@@ -31,11 +33,17 @@ node scripts/build-pack.mjs <project> [--out <dir>]
   `src/index.jsx` also work.
 - `src/Root.tsx`, `.jsx`, `.ts` or `.js`, exporting the component as
   `RemotionRoot`.
+- **The entry point must call `registerRoot(RemotionRoot)` with the
+  `RemotionRoot` from `src/Root`.** Discovery reads `src/Root`, but the bundle
+  registers whatever `src/index` registers. An entry that registers another
+  root ships compositions the manifest never checked.
 
 **What build-pack does, in order.** Any failure exits 1 and prints every
 problem found. A problem with a composition starts with its id.
 1. **Bundles** the project with the project's own `remotion bundle`, or with
-   `@remotion/bundler`'s `bundle()` when the CLI has no `bundle` command.
+   `@remotion/bundler`'s `bundle()` when the CLI has no `bundle` command. A
+   fallback logs why: `@remotion/cli` did not resolve (with the error), or
+   `remotion bundle --help` exited non-zero.
 2. **Loads `RemotionRoot`** by bundling a generated entry with the project's
    own esbuild. It then calls `RemotionRoot()` in Node.
 3. **Discovers** the compositions in the tree it returns.
@@ -90,15 +98,20 @@ pack never ships a `node_modules` built on Windows or macOS (design §5.4).
 
 `packHash` identifies the exact bundle: it changes whenever any byte of
 `bundle/` does. build-pack bundles with `--disable-git-source`, so the commit a
-pack was built from is not in it. Remotion's `index.html` does record two
-things beyond the sources:
+pack was built from is not in it. Remotion 4.0.532's `index.html` does record
+four things beyond the sources:
 - the directory the pack was built in (`window.remotion_cwd`, also in some
   source maps)
+- that directory's name (`window.remotion_projectName`)
 - each `public/` file's modification time (`window.remotion_staticFiles`)
+- the build host's CPU count (`maxConcurrency` in
+  `window.remotion_renderDefaults`, and `concurrency` beside it: half the CPU
+  count, rounded, from 1 to 8)
 
-So a rebuild of the same checkout gives the same hash, but a fresh checkout,
-as in CI, gives a new one. A hash identifies one build; it does not prove two
-builds came from the same sources.
+So a rebuild of the same checkout on the same host gives the same hash, but a
+fresh checkout, another directory or another machine, as in CI, gives a new
+one. A hash identifies one build; it does not prove two builds came from the
+same sources.
 
 **The template-id rule.** A template's id is its composition's id, verbatim.
 - Remotion allows `a-z`, `A-Z`, `0-9`, `-` and CJK characters. The service also
@@ -113,7 +126,11 @@ build-pack calls `RemotionRoot()` in Node, without rendering it, and walks the
 elements it returns.
 
 **Where a composition must sit.** Register every composition directly in that
-tree. It may sit inside fragments, arrays and `<Folder>`.
+tree. It may sit inside fragments, arrays, `<Folder>` and other elements.
+- Discovery looks into every element's `children` prop without rendering the
+  element. **Any element around a `<Composition>` must render its children**,
+  as `<Folder>` does. A wrapper that drops them would list a composition
+  Remotion never registers.
 - A component that registers compositions from its own render is not seen.
 - `RemotionRoot` must not call hooks.
 - A `<Still>` counts as one frame at 1 fps, as in Remotion.
@@ -121,12 +138,15 @@ tree. It may sit inside fragments, arrays and `<Folder>`.
 **Module scope must be safe in Node.** Every module `src/Root` imports is
 loaded in Node. Do not call `loadFont`, `delayRender` or any browser API at
 module scope. Start the work on first render instead, as the fixture's
-`Swatch.tsx` does with its font.
+`Swatch.tsx` does with its font. A module that fails as it loads is reported
+in one line:
+`loading src/Root in Node failed: <message>; module scope must not use browser APIs (docs/CONTRACT-pack.md)`.
 
 The design lists four discovery limits as untested: `<Folder>`, hooks,
 module-scope font loading and pnpm layouts. build-pack now walks `<Folder>`
-children, but only the unit tests' hand-built elements exercise that, not a
-real Remotion project.
+children, and reports a module that touches `document` or `FontFace` as it
+loads. Only the unit tests exercise those, with hand-built elements and
+hand-written modules, not a real Remotion project.
 
 **Every composition must declare a static `width`, `height`, `fps` and
 `durationInFrames`.** The manifest records them, and `render_still` checks a
@@ -151,8 +171,10 @@ literal or an optional is still found.
 
 **Allowed:**
 - strict objects (`z.strictObject`); the root must be one
-- strings with a max (`.max(N)` or `.length(N)`), optionally with regexes
-  that have no flags
+- strings with a max (`.max(N)` or `.length(N)`), optionally with at most one
+  `.regex()`, without flags. zod exports a second regex as `allOf`, which the
+  service refuses, so the gate refuses it first: `at most one .regex() per
+  string`. Combine the patterns into one.
 - numbers with a lower bound and an upper bound, inclusive (`.min`, `.max`)
   or exclusive (`.gt`, `.lt`), including `.int()` and `z.int()`
 - booleans, enums and literals
@@ -170,20 +192,41 @@ literal or an optional is still found.
 - pipes and transforms (`.transform`, `z.preprocess`, `.pipe`)
 - any check the gate does not know, such as `.multipleOf`
 - a regex with flags: the export keeps only its source
+- a second `.regex()` on one string
 - `any`, `unknown`, `record`, `union` and every other type, including
   `.default()`, `.nullable()` and `z.lazy()`
 - a recursive schema, and a schema nested more than 64 levels deep
+- a schema of more than 10 000 nodes, a subschema used more than once counted
+  at each use, as its export repeats it. The message is
+  `<root>: schema expands past 10000 nodes, counting a shared subschema at each use`.
+  An `.optional()` is no node of its own.
+
+The longest composition id (100), the depth (64) and the node budget (10 000)
+are the service's own values. build-pack reads them from
+`dist-service/service/constants.js`, so the two gates' limits cannot drift
+apart.
 
 A path starts at `<root>`. `.name` steps into a property, `["a b"]` into a
 property whose name is not an identifier, and `[]` into an array's elements.
 
 **After the export**, build-pack checks that every bound the gate accepted is
 still in the JSON Schema, and fails if one is missing. The bounds are lengths,
-item counts, patterns, number bounds, strict objects, required fields, enums
-and literals. An exported bound at least as tight still counts. For an enum or
-a literal, the export's `enum` and `const` must name at least one value, and
-only values zod accepts: an export that admits another value fails with
-`<path>: the export admits <values>, which zod refuses`.
+item counts, patterns, number bounds, strict objects, required fields, enums,
+literals and types. An exported bound at least as tight still counts. The
+export must also admit nothing zod refuses:
+- For an enum or a literal, the export's `enum` and `const` must name at
+  least one value, and only values zod accepts.
+- A strict object's export may name only the properties its shape has.
+  `additionalProperties: false` refuses only the names `properties` lacks, so
+  an extra name would be admitted.
+- Every string, number, boolean, array and object node keeps its `type`, and
+  names no other. An integer (`.int()`, `z.int()`) must stay `integer`; a
+  number exported as `integer` is tighter, and counts.
+
+Each of these fails with `<path>: the export admits <what>, which zod refuses`,
+or with `<path>: type <type> missing from the export`. `.meta()` writes its
+keywords straight into the export, which is how an export comes to differ
+from its zod schema.
 
 ## The JSON Schema gate (service startup)
 
@@ -269,8 +312,13 @@ ruling 6). A pack must render with no network at all:
 - **No fetches.** No `fetch`, no remote `<Img>` or `<Video>` source, and no
   `calculateMetadata` that calls an API.
 - **Ship each asset's licence with it.** The fixture pack ships DejaVu Sans
-  Bold with `public/LICENSE-DejaVu.txt`. Its licence permits redistribution
-  only with that notice.
+  Bold 2.37 with `public/LICENSE-DejaVu.txt`. That file is the licence text the
+  font carries in its own `name` table: name ID 0, the copyright lines, as a
+  header, then name ID 13, verbatim. It covers the Bitstream Vera glyphs
+  (Bitstream, Inc.) and the Arev glyphs (Tavmjong Bah), and states that the
+  DejaVu changes are in the public domain. The Bitstream Vera and Arev
+  licences each permit redistribution only with their copyright and
+  permission notice.
 
 ## Dependencies
 

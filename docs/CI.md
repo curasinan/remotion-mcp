@@ -207,38 +207,55 @@ and `slow`. The job installs it with its own lockfile and builds it the way
 [`CONTRACT-pack.md`](CONTRACT-pack.md) tells a deployer to:
 
 1. `npm ci`, then `npm run build:service`. `build-pack.mjs` imports the
-   service's own JSON Schema gate and `loadPack` from `dist-service/`.
+   service's own JSON Schema gate, `loadPack` and the limits both gates share
+   from `dist-service/`.
 2. `npm ci --prefix fixtures/pack`. It runs on Linux, so the pack's native
    packages are the Linux ones.
 3. `node scripts/build-pack.mjs fixtures/pack`. It exits 1 if any gate refuses
    a schema, or if the service's `loadPack` refuses the result.
 4. It uploads `fixtures/pack/dist-pack/` as the `pack` artifact:
    `pack-manifest.json`, `bundle/`, `package.json` and `package-lock.json`.
+   The step sets `include-hidden-files: true`, because `packHash` covers every
+   file under `bundle/`, dotfiles included, and `loadPack` never re-hashes. It
+   sets `if-no-files-found: error`, so a missing pack fails the job.
 
-The gate's own rules are unit-tested in `test/zod-gate.test.mjs`, part of
-`npm test`. Each refused construct sits on an otherwise valid schema and must
-give exactly one violation, and its positive twin must give none. The job is
-the end-to-end half: a real bundle, a real `RemotionRoot`, and zod 4.5.4's own
-`z.toJSONSchema`.
+build-pack's rules are unit-tested as part of `npm test`:
+- `test/zod-gate.test.mjs`: the zod gate, the bounds check and discovery.
+  Each refused construct sits on an otherwise valid schema and must give
+  exactly one violation, and its positive twin must give none. One test also
+  holds the gate's limits to the service's own behaviour: `render_still`'s
+  `template_id`, the JSON Schema gate's depth and its node budget.
+- `test/build-pack.test.mjs`: each composition's checks in order, loading
+  `src/Root`, and the CLI's bundler fallback.
+- `test/pack-files.test.mjs`: `packHash`, the dependency rules and the
+  output dir.
+
+The job is the end-to-end half: a real bundle, a real `RemotionRoot`, and
+zod 4.5.4's own `z.toJSONSchema`.
 
 **Recorded evidence (2026-10-27, WSL Ubuntu, Node 22).**
 - A rebuild of the same checkout gave the same `packHash`. An edit to
-  `Swatch.tsx` changed it, and undoing the edit restored it. Remotion's
-  `index.html` records the build directory and each `public/` file's
-  modification time, so every fresh checkout, CI's included, gets its own
-  hash.
+  `Swatch.tsx` changed it, and undoing the edit restored it. Remotion
+  4.0.532's `index.html` records four things beyond the sources: the build
+  directory (`remotion_cwd`), its name (`remotion_projectName`), each
+  `public/` file's modification time (`remotion_staticFiles`) and the build
+  host's CPU count (`maxConcurrency` in `remotion_renderDefaults`, and
+  `concurrency`, which Remotion derives from it). So every
+  fresh checkout, CI's included, gets its own hash.
 - `remotion still` rendered `swatch` from `dist-pack/bundle` with the
   Turkish props.
-- Separate copies with planted defects each made `build-pack` exit 1, naming
-  the composition:
+- Separate copies with planted defects each made `build-pack` exit 1. These
+  failures named the composition:
   - a non-strict object
   - a missing schema
   - zod 3 schemas
   - `calculateMetadata` without a static size
   - `.trim()` together with a flagged regex, both reported
-  - `@remotion/cli` under `devDependencies`
-  - an `--out` dir holding files `build-pack` did not write. That one was
-    refused, and nothing was deleted.
+- These failures named the file or the dir instead:
+  - `@remotion/cli` under `devDependencies`: `package.json: @remotion/cli
+    must be under dependencies …`
+  - an `--out` dir holding files `build-pack` did not write: `output dir
+    <dir>: holds …`. It was refused, and nothing was deleted.
 - Each of build-pack's own steps was proved both ways: with the repo's
   script, and with a copy that had that one step removed.
   - **The bounds check.** `z.string().max(80).meta({ maxLength: 999 })`
@@ -249,9 +266,21 @@ the end-to-end half: a real bundle, a real `RemotionRoot`, and zod 4.5.4's own
     it, the pack builds.
   - **The JSON Schema gate.** Two `.regex()` calls export an `allOf`. With
     the gate, the build fails, naming the template. Without it, `loadPack`
-    still refuses the pack.
-- 45 single-guard mutations of `scripts/lib/zod-gate.mjs` and
-  `scripts/lib/pack-files.mjs` each turned `test/zod-gate.test.mjs` red.
+    still refuses the pack. Since fix round 2 the zod gate refuses a second
+    `.regex()` itself; `test/build-pack.test.mjs` now plants the `allOf`
+    with `.meta()`, and removing the step turns it red.
+- 96 single-guard mutations each turned the three unit test files red, as
+  recorded in the task 9 report's fix round 2:
+  - 71 of `scripts/lib/zod-gate.mjs`
+  - 11 of `scripts/lib/pack-templates.mjs`
+  - 8 of `scripts/lib/pack-files.mjs`
+  - 3 of `scripts/build-pack.mjs`
+  - 3 of the service's own limits, in the built `dist-service/`
+
+  Each mutation removes or loosens one guard the reports name. They are not
+  every possible mutation. An earlier count of 45 missed five guards that a
+  review then showed could be deleted with every test still green. Those five
+  are now among the 96.
 
 ### The browser-presence assertion is not decoration
 
