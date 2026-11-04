@@ -225,10 +225,14 @@ jobs:
       - run: npm run build:service
       - run: npm ci --prefix fixtures/pack
       - run: node scripts/build-pack.mjs fixtures/pack
+      # packHash covers every file under bundle/, dotfiles included, and loadPack never re-hashes: upload them all,
+      # and fail rather than upload nothing.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pack
           path: fixtures/pack/dist-pack/
+          include-hidden-files: true
+          if-no-files-found: error
 
   # Lint every workflow with actionlint (image pinned by digest).
   lint-workflows:
