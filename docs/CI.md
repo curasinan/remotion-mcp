@@ -226,7 +226,12 @@ build-pack's rules are unit-tested as part of `npm test`:
   holds the gate's limits to the service's own behaviour: `render_still`'s
   `template_id`, the JSON Schema gate's depth and its node budget.
 - `test/build-pack.test.mjs`: each composition's checks in order, loading
-  `src/Root`, and the CLI's bundler fallback.
+  `src/Root`, the CLI's bundler fallback, and what the CLI says when its own
+  rules cannot load. Its CLI runs are hermetic. Each runs without `NODE_PATH`,
+  with `HOME` and `USERPROFILE` set to an empty dir. Each runs only after a
+  check that neither an ancestor of the stub project nor node's own
+  `lib/node` holds `@remotion/cli` or `@remotion/bundler`. So a machine with
+  either installed fails that check by name, and never runs a real one.
 - `test/pack-files.test.mjs`: `packHash`, the dependency rules and the
   output dir.
 
@@ -269,18 +274,22 @@ zod 4.5.4's own `z.toJSONSchema`.
     still refuses the pack. Since fix round 2 the zod gate refuses a second
     `.regex()` itself; `test/build-pack.test.mjs` now plants the `allOf`
     with `.meta()`, and removing the step turns it red.
-- 96 single-guard mutations each turned the three unit test files red, as
-  recorded in the task 9 report's fix round 2:
+- 114 single-guard mutations each turned the three unit test files red on
+  Windows, as recorded in the task 9 report's fix rounds 2 and 3:
   - 71 of `scripts/lib/zod-gate.mjs`
-  - 11 of `scripts/lib/pack-templates.mjs`
+  - 12 of `scripts/lib/pack-templates.mjs`
   - 8 of `scripts/lib/pack-files.mjs`
-  - 3 of `scripts/build-pack.mjs`
+  - 11 of `scripts/build-pack.mjs`
+  - 9 of `test/build-pack.test.mjs`'s own hermetic CLI runs
   - 3 of the service's own limits, in the built `dist-service/`
 
   Each mutation removes or loosens one guard the reports name. They are not
   every possible mutation. An earlier count of 45 missed five guards that a
-  review then showed could be deleted with every test still green. Those five
-  are now among the 96.
+  review then showed could be deleted with every test still green. The 96 of
+  fix round 2 then missed three guards that round had added. All eight are
+  now among the 114. Fix round 3's 18 also ran under WSL Ubuntu with Node 22.
+  17 turned red there. The one that keeps the parent's `USERPROFILE` stayed
+  green by design, since Node reads `USERPROFILE` only on Windows.
 
 ### The browser-presence assertion is not decoration
 

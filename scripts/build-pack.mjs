@@ -28,6 +28,8 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVICE_TEMPLATES = path.join(REPO, "dist-service", "service", "templates.js");
 /** The schema and discovery rules. They read the zod gate's limits from dist-service, so they load after the check. */
 const PACK_TEMPLATES = new URL("./lib/pack-templates.mjs", import.meta.url).href;
+/** dist-service/ as a URL: the form in which Node names a module it cannot find. */
+const DIST_SERVICE_URL = new URL("../dist-service/", import.meta.url).href;
 const USAGE = "usage: node scripts/build-pack.mjs <projectDir> [--out <dir>]";
 /** Where the bundle is entered, in Remotion's own order of preference. */
 const ENTRY_CANDIDATES = ["src/index.ts", "src/index.tsx", "src/index.js", "src/index.jsx"];
@@ -148,6 +150,18 @@ async function loadRoot(projectDir, projectRequire, requireDiscoveryBundle) {
   return requireDiscoveryBundle(output);
 }
 
+/**
+ * Whether the rules failed to load because dist-service lacks a module or an export they import. A service build from
+ * before the limits moved to constants.ts lacks the exports; a partial one, the module. `npm run build:service` fixes
+ * either, and nothing else.
+ */
+function serviceBuildBehind(err) {
+  if (err?.code === "ERR_MODULE_NOT_FOUND") return typeof err.url === "string" && err.url.startsWith(DIST_SERVICE_URL);
+  // V8 names the module as the importing file wrote it.
+  return err instanceof SyntaxError
+    && /^The requested module '[^']*\/dist-service\/[^']*' does not provide an export named /.test(err.message);
+}
+
 /** Builds the pack; returns its manifest, or throws a PackBuildError. */
 async function buildPack(projectDir, outDir) {
   if (!fs.existsSync(SERVICE_TEMPLATES)) {
@@ -158,8 +172,8 @@ async function buildPack(projectDir, outDir) {
   try {
     rules = await import(PACK_TEMPLATES);
   } catch (err) {
-    // A dist-service built before the zod gate's limits moved there lacks them.
-    fail(`scripts/lib/pack-templates.mjs cannot be loaded; run \`npm run build:service\` again: ${err.message}`);
+    const rebuild = serviceBuildBehind(err) ? "; dist-service is incomplete or older than these scripts: run `npm run build:service` again" : "";
+    fail(`cannot load scripts/lib/pack-templates.mjs: ${String(err)}${rebuild}`);
   }
   const { requireDiscoveryBundle, templatesOf } = rules;
 

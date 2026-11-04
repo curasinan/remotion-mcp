@@ -26,6 +26,11 @@ npm ci --prefix <project>                  # on Linux
 node scripts/build-pack.mjs <project> [--out <dir>]
 ```
 
+If build-pack cannot load its own rules from `scripts/lib/`, it prints why:
+`cannot load scripts/lib/pack-templates.mjs: <error>`. It suggests
+`npm run build:service` only when `dist-service/` lacks a module or an export
+the rules import, as a service build older than the scripts does.
+
 **The project needs:**
 - `package.json` and `package-lock.json`. The derived image installs the pack
   with `npm ci --omit=dev`.
@@ -42,8 +47,9 @@ node scripts/build-pack.mjs <project> [--out <dir>]
 problem found. A problem with a composition starts with its id.
 1. **Bundles** the project with the project's own `remotion bundle`, or with
    `@remotion/bundler`'s `bundle()` when the CLI has no `bundle` command. A
-   fallback logs why: `@remotion/cli` did not resolve (with the error), or
-   `remotion bundle --help` exited non-zero.
+   fallback logs why: `@remotion/cli` did not resolve (with the error),
+   `remotion bundle --help` could not be started (with the spawn error), or
+   it exited non-zero.
 2. **Loads `RemotionRoot`** by bundling a generated entry with the project's
    own esbuild. It then calls `RemotionRoot()` in Node.
 3. **Discovers** the compositions in the tree it returns.
