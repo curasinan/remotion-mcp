@@ -10,6 +10,8 @@ import path from "node:path";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 
 import { MAX_RASTER_PIXELS } from "../constants.js";
+// The schema depth and node budget live in ./constants.js, so build-pack's zod gate reads the same values.
+import { MAX_EXPANDED_NODES, MAX_SCHEMA_DEPTH } from "./constants.js";
 
 export interface TemplateEntry { id: string; compositionId: string; width: number; height: number;
   defaultFps: number; maxFrames: number; propsSchema: Record<string, unknown> }
@@ -43,19 +45,12 @@ const DEFS_PREFIX = "#/$defs/";
  * ajv follows exactly the def the walker checked.
  */
 const DEF_NAME = /^[A-Za-z0-9_.-]+$/;
-/** How deep a schema may nest, its root counted as 1. The walk stops there, so it never recurses further. */
-const MAX_SCHEMA_DEPTH = 64;
 /**
  * How deep a `default`, `examples`, `const` or `enum` value may nest: the arrays and objects on its deepest path, so
  * a scalar is 0. list_templates serializes these values, and ajv deep-compares a caller's value against a `const` or
  * an `enum` element, both by recursion.
  */
 const MAX_VALUE_DEPTH = 64;
-/**
- * How many nodes a schema may hold with each `$ref` replaced by its def. ajv validates through every ref, so an
- * anyOf of two refs to the same def, repeated def after def, doubles the work per def.
- */
-const MAX_EXPANDED_NODES = 10_000;
 /**
  * Remotion's own composition id rule, `/^([a-zA-Z0-9-\u4E00-\u9FFF])+$/` in remotion 4.0.532's
  * `dist/cjs/validation/validate-composition-id.js`. The id reaches the CLI as a positional argument, so a leading

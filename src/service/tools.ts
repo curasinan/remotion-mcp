@@ -13,6 +13,7 @@ import { z, type ZodRawShape } from "zod";
 
 import { buildStillArgv } from "../services/render-core.js";
 import type { ServiceAuditEvent } from "./audit.js";
+import { MAX_TEMPLATE_ID } from "./constants.js";
 import { serviceError } from "./errors.js";
 import type { ServiceContext } from "./registry.js";
 import { childEnv, type CleanupReport, type RenderProcessResult } from "./render-process.js";
@@ -299,7 +300,7 @@ export const TOOL_DEFS = Object.freeze({
       + "invalid_props (with the JSON pointers of the failing props), render_busy, render_timeout, render_failed, "
       + "output_too_large or internal.",
     inputSchema: {
-      template_id: z.string().max(100),
+      template_id: z.string().max(MAX_TEMPLATE_ID),
       frame: z.number().int().min(0).optional(),
       props: z.record(z.string(), z.unknown()),
     },

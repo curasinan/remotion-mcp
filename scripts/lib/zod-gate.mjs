@@ -5,13 +5,21 @@
  *
  * Every problem is a string `<path>: <rule>`. A path starts at `<root>`, the props object; `.name` (or `["a b"]`)
  * steps into a property and `[]` into an array's elements. An optional field keeps its field's path.
+ *
+ * Its limits are the service's own, read from the service build (`npm run build:service`): the longest template_id
+ * render_still accepts, how deep a propsSchema may nest, and how many nodes it may expand to.
  */
+
+import { MAX_EXPANDED_NODES, MAX_SCHEMA_DEPTH, MAX_TEMPLATE_ID } from "../../dist-service/service/constants.js";
 
 const ROOT = "<root>";
 /** How deep a schema may nest, the root counted as 1. Every zod node counts, so the export nests no deeper. */
-const MAX_DEPTH = 64;
-/** The longest template_id render_still accepts (src/service/tools.ts), in UTF-16 units as zod counts it. */
-const MAX_TEMPLATE_ID = 100;
+const MAX_DEPTH = MAX_SCHEMA_DEPTH;
+/**
+ * The problem once a walk passes the service's node budget. Every node but an optional is one node of the export, and
+ * a subschema used twice is exported twice, so it counts at each use, as the service counts it.
+ */
+const OVER_BUDGET = `${ROOT}: schema expands past ${MAX_EXPANDED_NODES} nodes, counting a shared subschema at each use`;
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 const isObject = (value) => typeof value === "object" && value !== null;
@@ -56,9 +64,29 @@ function checkProblem(type, check) {
 const hasMaxLength = (checks) => checks.some((c) =>
   (c.check === "max_length" && isLimit(c.maximum)) || (c.check === "length_equals" && isLimit(c.length)));
 const hasBound = (checks, kind) => checks.some((c) => c.check === kind && Number.isFinite(c.value));
+const isRegexCheck = (c) => c.check === "string_format" && c.format === "regex";
 
-/** Appends every problem of `schema`, and of the schemas under it, to `out`. `ancestors` holds the path's nodes. */
-function gateNode(schema, at, depth, ancestors, out) {
+/**
+ * Counts `def`'s node against the service's node budget, and reports when the walk passes it. Returns whether the
+ * walk must stop; each walk returns at once when `state.over` is set, so the problem is reported once. An optional
+ * is no node of its own in the export, so it does not count.
+ */
+function overBudget(def, state) {
+  if (def.type === "optional") return false;
+  state.nodes += 1;
+  if (state.nodes <= MAX_EXPANDED_NODES) return false;
+  state.over = true;
+  state.out.push(OVER_BUDGET);
+  return true;
+}
+
+/**
+ * Appends every problem of `schema`, and of the schemas under it, to `state.out`. `state.ancestors` holds the path's
+ * nodes, and `state.nodes` counts every node walked, so a subschema shared many times stops at the budget.
+ */
+function gateNode(schema, at, depth, state) {
+  const { ancestors, out } = state;
+  if (state.over) return;
   if (depth > MAX_DEPTH) {
     out.push(`${at}: schema nested too deeply`);
     return;
@@ -72,6 +100,7 @@ function gateNode(schema, at, depth, ancestors, out) {
     return;
   }
   const def = defOf(schema);
+  if (overBudget(def, state)) return;
   const checks = checksOf(schema);
   if (def.type === "pipe" || def.type === "transform") {
     out.push(`${at}: transform, preprocess and pipe not allowed`);
@@ -93,6 +122,8 @@ function gateNode(schema, at, depth, ancestors, out) {
       // z.url(), z.email() and the other top-level formats carry their format on the schema itself.
       if (def.format !== undefined) out.push(`${at}: format ${def.format} not allowed`);
       if (!hasMaxLength(checks)) out.push(`${at}: string needs .max(N)`);
+      // zod exports a second pattern as allOf, which the service refuses: the author would meet a keyword they never wrote.
+      if (checks.filter(isRegexCheck).length > 1) out.push(`${at}: at most one .regex() per string`);
       break;
     case "number":
       // A top-level number format (z.int(), z.float32()) is allowed, but is not a bound by itself.
@@ -101,17 +132,17 @@ function gateNode(schema, at, depth, ancestors, out) {
       break;
     case "array":
       if (!hasMaxLength(checks)) out.push(`${at}: array needs .max(N)`);
-      gateNode(def.element, `${at}[]`, below, ancestors, out);
+      gateNode(def.element, `${at}[]`, below, state);
       break;
     case "object":
       // z.strictObject sets the catchall to never; z.object leaves none, and .passthrough() and .catchall() set another.
       if (zodMajor(def.catchall) !== 4 || defOf(def.catchall).type !== "never") {
         out.push(`${at}: object must be strict (z.strictObject)`);
       }
-      for (const [key, sub] of Object.entries(def.shape)) gateNode(sub, childPath(at, key), below, ancestors, out);
+      for (const [key, sub] of Object.entries(def.shape)) gateNode(sub, childPath(at, key), below, state);
       break;
     case "optional":
-      gateNode(def.innerType, at, below, ancestors, out);
+      gateNode(def.innerType, at, below, state);
       break;
     default:
       // boolean, enum and literal: bounded by their type, and their checks were read above.
@@ -122,18 +153,18 @@ function gateNode(schema, at, depth, ancestors, out) {
 
 /**
  * The gate a composition's schema must pass before build-pack exports it: every problem, or [] when it passes.
- * The root must be a strict object. Allowed under it: strict objects, strings with a max (and at most regexes
+ * The root must be a strict object. Allowed under it: strict objects, strings with a max (and at most one regex
  * without flags), numbers with a lower and an upper bound, booleans, enums, literals, arrays with a max, and
  * optional of any of these. Refused: formats, anything unbounded, refine, superRefine and overwrite checks on any
- * type, pipes and transforms, and every other type.
+ * type, pipes and transforms, every other type, and a schema past the service's depth or node budget.
  */
 export function gateSchema(schema) {
   if (!isObject(schema) || (!isObject(schema._zod) && !isObject(schema._def))) return [`${ROOT}: not a zod schema`];
   if (zodMajor(schema) !== 4) return [`${ROOT}: zod 3 is not supported, use zod 4`];
   if (defOf(schema).type !== "object") return [`${ROOT}: the props schema must be z.strictObject`];
-  const out = [];
-  gateNode(schema, ROOT, 1, new Set(), out);
-  return out;
+  const state = { ancestors: new Set(), out: [], nodes: 0, over: false };
+  gateNode(schema, ROOT, 1, state);
+  return state.out;
 }
 
 /** `node`, or the `#/$defs/<name>` entry its `$ref` chain ends at; undefined when the chain breaks or loops. */
@@ -217,20 +248,63 @@ const showValue = (value) => {
   return String(value);
 };
 
-/** Appends to `out` each bound of `schema` that its exported `json` node lost. */
-function survivedNode(schema, jsonNode, at, depth, defs, out) {
-  if (depth > MAX_DEPTH || zodMajor(schema) !== 4) return;
+/** The integer formats of a zod number: z.int() and .int() (safeint), z.int32() and z.uint32(). */
+const INTEGER_FORMATS = new Set(["safeint", "int32", "uint32"]);
+
+/**
+ * The JSON Schema types a zod node of `def` may export as, or undefined when its values bound it by themselves (an
+ * enum or a literal) or it has no node of its own (an optional). An integer may export as nothing wider; any other
+ * number may also export as an integer, which is tighter.
+ */
+function exportTypes(def, checks) {
+  switch (def.type) {
+    case "string":
+    case "boolean":
+    case "array":
+    case "object":
+      return [def.type];
+    case "number": {
+      const integer = INTEGER_FORMATS.has(def.format)
+        || checks.some((c) => c.check === "number_format" && INTEGER_FORMATS.has(c.format));
+      return integer ? ["integer"] : ["number", "integer"];
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** The problem with the type an exported node names, or undefined when it admits no type zod refuses. */
+function typeProblem(def, checks, json, at) {
+  const allowed = exportTypes(def, checks);
+  if (allowed === undefined) return undefined;
+  const named = typeof json.type === "string" ? [json.type] : Array.isArray(json.type) ? json.type : [];
+  // A node with no type admits a value of every type.
+  if (named.length === 0) return `${at}: type ${allowed[0]} missing from the export`;
+  const refused = named.filter((type) => !allowed.includes(type));
+  return refused.length > 0 ? `${at}: the export admits type ${refused.map(showValue).join(", ")}, which zod refuses` : undefined;
+}
+
+/**
+ * Appends to `state.out` each bound of `schema` that its exported `json` node lost. `state.nodes` counts every node
+ * walked, so a subschema shared many times, here or through `$defs`, stops at the budget.
+ */
+function survivedNode(schema, jsonNode, at, depth, state) {
+  const { defs, out } = state;
+  if (state.over || depth > MAX_DEPTH || zodMajor(schema) !== 4) return;
+  const def = defOf(schema);
+  if (overBudget(def, state)) return;
   const json = resolveRef(jsonNode, defs);
   if (!isObject(json)) {
     out.push(`${at}: missing from the export`);
     return;
   }
-  const def = defOf(schema);
   const checks = checksOf(schema);
   const below = depth + 1;
+  const type = typeProblem(def, checks, json, at);
+  if (type !== undefined) out.push(type);
   switch (def.type) {
     case "optional":
-      survivedNode(def.innerType, json, at, below, defs, out);
+      survivedNode(def.innerType, json, at, below, state);
       break;
     case "string": {
       lengthsSurvived(checks, json, at, { max: "maxLength", min: "minLength" }, out);
@@ -248,20 +322,25 @@ function survivedNode(schema, jsonNode, at, depth, defs, out) {
       break;
     case "array":
       lengthsSurvived(checks, json, at, { max: "maxItems", min: "minItems" }, out);
-      survivedNode(def.element, json.items, `${at}[]`, below, defs, out);
+      survivedNode(def.element, json.items, `${at}[]`, below, state);
       break;
     case "object": {
       if (zodMajor(def.catchall) === 4 && defOf(def.catchall).type === "never" && json.additionalProperties !== false) {
         out.push(`${at}: additionalProperties: false missing from the export`);
       }
       const properties = isObject(json.properties) ? json.properties : {};
-      const required = Array.isArray(json.required) ? json.required : [];
+      const required = new Set(Array.isArray(json.required) ? json.required : []);
+      // additionalProperties: false refuses only the keys `properties` does not name, so each extra name is admitted.
+      const added = Object.keys(properties).filter((key) => !Object.hasOwn(def.shape, key));
+      if (added.length > 0) {
+        out.push(`${at}: the export admits ${added.map((key) => `property ${JSON.stringify(key)}`).join(", ")}, which zod refuses`);
+      }
       for (const [key, sub] of Object.entries(def.shape)) {
         const subAt = childPath(at, key);
-        if (zodMajor(sub) === 4 && defOf(sub).type !== "optional" && !required.includes(key)) {
+        if (zodMajor(sub) === 4 && defOf(sub).type !== "optional" && !required.has(key)) {
           out.push(`${subAt}: required missing from the export`);
         }
-        survivedNode(sub, Object.hasOwn(properties, key) ? properties[key] : undefined, subAt, below, defs, out);
+        survivedNode(sub, Object.hasOwn(properties, key) ? properties[key] : undefined, subAt, below, state);
       }
       break;
     }
@@ -285,15 +364,16 @@ function survivedNode(schema, jsonNode, at, depth, defs, out) {
 
 /**
  * Every bound the gate accepted that `jsonSchema`, the schema's export, does not carry: `[]` when all survived.
- * It checks lengths, item counts, patterns, number bounds, strict objects, required fields, enums and literals. An
- * exported bound at least as tight as zod's counts: for an enum or literal, an `enum` or `const` that names only
- * values zod accepts. A `$ref` into the export's `$defs` is followed.
+ * It checks lengths, item counts, patterns, number bounds, strict objects, required fields, enums, literals and
+ * types, and that the export names no property a strict object lacks. An exported bound at least as tight as zod's
+ * counts: for an enum or literal, an `enum` or `const` that names only values zod accepts; for a number, the type
+ * `integer`. A `$ref` into the export's `$defs` is followed. The walk stops at the service's node budget.
  */
 export function boundsSurvived(schema, jsonSchema) {
   const defs = isObject(jsonSchema) && isObject(jsonSchema.$defs) ? jsonSchema.$defs : {};
-  const out = [];
-  survivedNode(schema, jsonSchema, ROOT, 1, defs, out);
-  return out;
+  const state = { defs, out: [], nodes: 0, over: false };
+  survivedNode(schema, jsonSchema, ROOT, 1, state);
+  return state.out;
 }
 
 const isElement = (node) => isObject(node) && !Array.isArray(node) && "type" in node && isObject(node.props);

@@ -36,6 +36,26 @@ export const RENDER_SLOTS_DEFAULT = 2;
 /** Oldest `@remotion/renderer` the service starts with. */
 export const MIN_REMOTION_RENDERER = "4.0.458";
 
+/**
+ * The longest `template_id` render_still accepts, in UTF-16 units as zod counts it. A template's id is its
+ * composition's id, so scripts/build-pack.mjs refuses a longer one, reading this value from dist-service.
+ */
+export const MAX_TEMPLATE_ID = 100;
+
+/**
+ * How deep a template's `propsSchema` may nest, its root counted as 1. The service's JSON Schema gate stops its walk
+ * there, and build-pack's zod gate applies the same limit, reading this value from dist-service.
+ */
+export const MAX_SCHEMA_DEPTH = 64;
+
+/**
+ * How many nodes a `propsSchema` may hold with each `$ref` replaced by its def. ajv validates through every ref, so
+ * an anyOf of two refs to the same def, repeated def after def, doubles the work per def. build-pack's zod gate
+ * applies the same budget to a zod schema, a shared subschema counted at each use, reading this value from
+ * dist-service.
+ */
+export const MAX_EXPANDED_NODES = 10_000;
+
 if (RENDER_CLI_TIMEOUT_MS <= RENDER_STILL_DEADLINE_MS) {
   throw new Error(
     `RENDER_CLI_TIMEOUT_MS (${RENDER_CLI_TIMEOUT_MS}) must exceed RENDER_STILL_DEADLINE_MS `

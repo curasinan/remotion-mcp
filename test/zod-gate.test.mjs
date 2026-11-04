@@ -1,18 +1,25 @@
-// The zod 4 vocabulary gate scripts/build-pack.mjs runs on every composition's schema, its composition discovery,
-// and its file rules: packHash, dependencies and the output dir (design 5.4, docs/CONTRACT-pack.md).
+// The zod 4 vocabulary gate scripts/build-pack.mjs runs on every composition's schema, and its composition
+// discovery (scripts/lib/zod-gate.mjs, design 5.4, docs/CONTRACT-pack.md). The file rules are in pack-files.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { z as z3 } from "zod";
 import { z, toJSONSchema } from "zod/v4";
 
-import {
+const SERVICE = path.join(import.meta.dirname, "..", "dist-service", "service");
+if (!fs.existsSync(path.join(SERVICE, "constants.js"))) {
+  throw new Error("dist-service/service/constants.js does not exist. Run `npm run build:service` first; "
+    + "the zod gate reads its limits from the service build.");
+}
+// pathToFileURL, not a bare path: import() of a Windows absolute path throws.
+const service = (name) => import(pathToFileURL(path.join(SERVICE, name)).href);
+const { MAX_EXPANDED_NODES, MAX_SCHEMA_DEPTH, MAX_TEMPLATE_ID } = await service("constants.js");
+const { checkSchemaVocabulary } = await service("templates.js");
+const {
   boundsSurvived, compositionProblems, discoverCompositions, gateSchema, zodMajor,
-} from "../scripts/lib/zod-gate.mjs";
-import { dependencyProblems, hashBundle, prepareOutDir } from "../scripts/lib/pack-files.mjs";
+} = await import("../scripts/lib/zod-gate.mjs");
 
 /** A strict object that passes the gate, with `row` added: each refused row is the only thing wrong with it. */
 const base = (row = {}) => z.strictObject({ a: z.string().max(10), ...row });
@@ -54,6 +61,9 @@ const REFUSED = [
     /regex flags not allowed/],
   ["z.number().multipleOf()", () => z.number().min(0).max(10).multipleOf(2), () => z.number().min(0).max(10),
     /check multiple_of not allowed/],
+  // A second regex exports as allOf, a keyword the service refuses and the author never wrote.
+  ["two .regex() calls", () => z.string().max(7).regex(/a/).regex(/b/), () => z.string().max(7).regex(/a/),
+    /at most one \.regex\(\) per string/],
 ];
 
 for (const [label, construct, twin, rule] of REFUSED) {
@@ -229,11 +239,180 @@ test("boundsSurvived refuses an empty or malformed enum, and reads a numeric enu
   ]);
 });
 
+test("boundsSurvived reports a literal whose const the export lost", () => {
+  const schema = z.strictObject({ kind: z.literal("card") });
+  const exported = toJSONSchema(schema);
+  assert.deepEqual(boundsSurvived(schema, exported), []);
+  delete exported.properties.kind.const;
+  assert.deepEqual(boundsSurvived(schema, exported), ["<root>.kind: const missing from the export"]);
+});
+
+test("boundsSurvived reports each side of a lost .length(N), on a string and on an array", () => {
+  const schema = z.strictObject({ code: z.string().length(3), list: z.array(z.boolean()).length(3) });
+  const exported = toJSONSchema(schema);
+  assert.deepEqual(boundsSurvived(schema, exported), []);
+  delete exported.properties.code.maxLength;
+  delete exported.properties.list.maxItems;
+  assert.deepEqual(boundsSurvived(schema, exported), [
+    "<root>.code: maxLength 3 missing from the export",
+    "<root>.list: maxItems 3 missing from the export",
+  ]);
+  delete exported.properties.code.minLength;
+  delete exported.properties.list.minItems;
+  assert.deepEqual(boundsSurvived(schema, exported), [
+    "<root>.code: maxLength 3 missing from the export",
+    "<root>.code: minLength 3 missing from the export",
+    "<root>.list: maxItems 3 missing from the export",
+    "<root>.list: minItems 3 missing from the export",
+  ]);
+});
+
+test("boundsSurvived reports a lost exclusive bound, and an inclusive one at the same value as lost too", () => {
+  const schema = z.strictObject({ ratio: z.number().gt(0).lt(1) });
+  const exported = toJSONSchema(schema);
+  assert.deepEqual(boundsSurvived(schema, exported), []);
+  const ratio = exported.properties.ratio;
+  delete ratio.exclusiveMinimum;
+  delete ratio.exclusiveMaximum;
+  assert.deepEqual(boundsSurvived(schema, exported), [
+    "<root>.ratio: exclusiveMinimum 0 missing from the export",
+    "<root>.ratio: exclusiveMaximum 1 missing from the export",
+  ]);
+  // minimum 0 admits 0, which .gt(0) refuses; minimum 0.25 and maximum 0.75 are tighter, and count.
+  Object.assign(ratio, { minimum: 0, maximum: 1 });
+  assert.equal(boundsSurvived(schema, exported).length, 2);
+  Object.assign(ratio, { minimum: 0.25, maximum: 0.75 });
+  assert.deepEqual(boundsSurvived(schema, exported), []);
+});
+
+// The export must not admit what the strict object refuses: a property zod does not know, or a value of another type.
+test("boundsSurvived reports a property the export adds to a strict object", () => {
+  const added = z.strictObject({ a: z.string().max(5) }).meta({
+    properties: { a: { type: "string", maxLength: 5 }, extra: { type: "string", maxLength: 5 } },
+  });
+  assert.deepEqual(gateSchema(added), []);
+  assert.deepEqual(checkSchemaVocabulary(toJSONSchema(added)), []);
+  assert.deepEqual(boundsSurvived(added, toJSONSchema(added)), ['<root>: the export admits property "extra", which zod refuses']);
+
+  const nested = realistic();
+  const exported = toJSONSchema(nested);
+  exported.properties.players.items.properties["full name"] = { type: "string", maxLength: 3 };
+  assert.deepEqual(boundsSurvived(nested, exported), [
+    '<root>.players[]: the export admits property "full name", which zod refuses',
+  ]);
+});
+
+test("boundsSurvived reports an exported type zod refuses, or a type the export lost", () => {
+  const retyped = z.strictObject({ a: z.string().max(5).meta({ type: "number", minimum: 0, maximum: 1 }) });
+  assert.deepEqual(gateSchema(retyped), []);
+  assert.deepEqual(checkSchemaVocabulary(toJSONSchema(retyped)), []);
+  assert.deepEqual(boundsSurvived(retyped, toJSONSchema(retyped)), ['<root>.a: the export admits type "number", which zod refuses']);
+
+  // An integer exported as any number admits 0.5, which zod refuses. A number exported as an integer is tighter.
+  const counts = z.strictObject({ n: z.int().min(0).max(5), m: z.number().int().min(0).max(5), x: z.number().min(0).max(1) });
+  const exported = toJSONSchema(counts);
+  assert.deepEqual(boundsSurvived(counts, exported), []);
+  exported.properties.x.type = "integer";
+  assert.deepEqual(boundsSurvived(counts, exported), []);
+  exported.properties.n.type = "number";
+  exported.properties.m.type = "number";
+  assert.deepEqual(boundsSurvived(counts, exported), [
+    '<root>.n: the export admits type "number", which zod refuses',
+    '<root>.m: the export admits type "number", which zod refuses',
+  ]);
+
+  const kinds = z.strictObject({
+    s: z.string().max(5), on: z.boolean(), list: z.array(z.boolean()).max(2), box: z.strictObject({}),
+  });
+  const lost = toJSONSchema(kinds);
+  delete lost.properties.s.type;
+  lost.properties.on.type = ["boolean", "null"];
+  lost.properties.list.type = "object";
+  lost.properties.box.type = "array";
+  assert.deepEqual(boundsSurvived(kinds, lost), [
+    "<root>.s: type string missing from the export",
+    '<root>.on: the export admits type "null", which zod refuses',
+    '<root>.list: the export admits type "object", which zod refuses',
+    '<root>.box: the export admits type "array", which zod refuses',
+  ]);
+});
+
+/** `levels` strict objects, each holding the one below twice: a DAG of 2^(levels+1) - 1 nodes once expanded. */
+const dag = (levels) => {
+  let node = z.string().max(1);
+  for (let i = 0; i < levels; i += 1) node = z.strictObject({ a: node, b: node });
+  return node;
+};
+/** The export of dag(levels), each level one $defs entry, so the JSON stays small however deep the DAG is. */
+const dagExport = (levels) => {
+  const $defs = { L0: { type: "string", maxLength: 1 } };
+  for (let i = 1; i <= levels; i += 1) {
+    const below = { $ref: `#/$defs/L${i - 1}` };
+    $defs[`L${i}`] = { type: "object", properties: { a: below, b: below }, required: ["a", "b"], additionalProperties: false };
+  }
+  return { $ref: `#/$defs/L${levels}`, $defs };
+};
+const BUDGET = `<root>: schema expands past ${MAX_EXPANDED_NODES} nodes, counting a shared subschema at each use`;
+
+test("gateSchema and boundsSurvived stop at the service's node budget, so a shared subschema is never walked exponentially", () => {
+  // 8191 nodes pass; 16383 do not. Each is far below the depth limit, so the budget is the only rule they meet.
+  assert.deepEqual(gateSchema(dag(12)), []);
+  assert.deepEqual(boundsSurvived(dag(12), dagExport(12)), []);
+  assert.deepEqual(gateSchema(dag(13)), [BUDGET]);
+  assert.deepEqual(boundsSurvived(dag(13), dagExport(13)), [BUDGET]);
+  // 2^41 - 1 nodes: without the budget, each walk would never return.
+  const started = performance.now();
+  assert.deepEqual(gateSchema(dag(40)), [BUDGET]);
+  assert.deepEqual(boundsSurvived(dag(40), dagExport(40)), [BUDGET]);
+  assert.ok(performance.now() - started < 5_000, `the walks took ${Math.round(performance.now() - started)} ms`);
+});
+
+// The gate refuses at build time what the service would refuse at startup, so its limits are the service's own.
+test("the gate's limits are the service's: render_still's template_id, the schema depth and the node budget", async () => {
+  const { TOOL_DEFS } = await service("tools.js");
+  const templateId = TOOL_DEFS.render_still.inputSchema.template_id;
+  const composition = (id) => ({ id, width: 64, height: 64, fps: 30, durationInFrames: 1, schema: base(), hasCalculateMetadata: false });
+  for (const length of [MAX_TEMPLATE_ID, MAX_TEMPLATE_ID + 1]) {
+    const id = "a".repeat(length);
+    assert.equal(compositionProblems([composition(id)]).length === 0, templateId.safeParse(id).success, `an id of ${length}`);
+  }
+  assert.equal(templateId.safeParse("a".repeat(MAX_TEMPLATE_ID + 1)).success, false);
+
+  /** A chain of strict objects `depth` nodes deep, the root counted as 1: as deep in zod as in its export. */
+  const chain = (depth) => {
+    let node = z.string().max(5);
+    for (let i = 1; i < depth; i += 1) node = z.strictObject({ n: node });
+    return node;
+  };
+  /** A strict object of `nodes` nodes in all: the root, one optional field, and required fields. */
+  const wide = (nodes) => z.strictObject(Object.fromEntries(Array.from({ length: nodes - 1 },
+    (_, i) => [`f${i}`, i === 0 ? z.boolean().optional() : z.boolean()])));
+  for (const [label, make, limit] of [["depth", chain, MAX_SCHEMA_DEPTH], ["nodes", wide, MAX_EXPANDED_NODES]]) {
+    for (const size of [limit, limit + 1]) {
+      const schema = make(size);
+      const serviceAccepts = checkSchemaVocabulary(toJSONSchema(schema)).length === 0;
+      assert.equal(serviceAccepts, size === limit, `the service at ${label} ${size}`);
+      assert.equal(gateSchema(schema).length === 0, serviceAccepts, `the gate at ${label} ${size}`);
+    }
+  }
+  assert.deepEqual(boundsSurvived(wide(MAX_EXPANDED_NODES), toJSONSchema(wide(MAX_EXPANDED_NODES))), []);
+  assert.deepEqual(boundsSurvived(wide(MAX_EXPANDED_NODES + 1), toJSONSchema(wide(MAX_EXPANDED_NODES + 1))), [BUDGET]);
+});
+
 test("zod 3 schemas are refused with the clear message", () => {
   const schema = z3.object({ a: z3.string().max(10) }).strict();
   assert.equal(zodMajor(schema), 3);
   assert.equal(zodMajor(base()), 4);
   assert.deepEqual(gateSchema(schema), ["<root>: zod 3 is not supported, use zod 4"]);
+});
+
+test("gateSchema refuses a zod 3 node inside a zod 4 object, and a value that is no zod schema", () => {
+  const mixed = z.strictObject({ b: z3.string().max(5) });
+  assert.deepEqual(gateSchema(mixed), ["<root>.b: not a zod 4 schema"]);
+  assert.deepEqual(boundsSurvived(mixed, { type: "object", properties: {}, additionalProperties: false }), []);
+  for (const value of [undefined, null, {}, "z.string()", 5]) {
+    assert.deepEqual(gateSchema(value), ["<root>: not a zod schema"], String(value));
+  }
 });
 
 // Hand-built React elements: the shape React.createElement returns, with stand-ins for remotion's components.
@@ -298,93 +477,4 @@ test("compositionProblems flags a composition without a static size, fps or dura
     "unknown-still: static fps and durationInFrames required",
     `${"b".repeat(101)}: id longer than 100 characters, which render_still never accepts as a template_id`,
   ]);
-});
-
-test("hashBundle covers every file's relative path and contents, in code-unit order", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.mkdirSync(path.join(dir, "public"));
-  fs.writeFileSync(path.join(dir, "index.html"), "<html></html>");
-  fs.writeFileSync(path.join(dir, "public", "a.txt"), "a");
-  const first = hashBundle(dir);
-  assert.match(first, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(hashBundle(dir), first);
-
-  fs.writeFileSync(path.join(dir, "public", "a.txt"), "b");
-  const edited = hashBundle(dir);
-  assert.notEqual(edited, first);
-
-  fs.renameSync(path.join(dir, "public", "a.txt"), path.join(dir, "public", "c.txt"));
-  assert.notEqual(hashBundle(dir), edited);
-
-  // Moving a byte from one file's end to the next file's start must change the hash: the framing is unambiguous.
-  fs.writeFileSync(path.join(dir, "public", "c.txt"), "bx");
-  const split = hashBundle(dir);
-  fs.writeFileSync(path.join(dir, "index.html"), "<html></html>b");
-  fs.writeFileSync(path.join(dir, "public", "c.txt"), "x");
-  assert.notEqual(hashBundle(dir), split);
-});
-
-test("hashBundle hashes path, NUL, byte length, NUL and bytes per file, sorted by code unit, not by locale", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  // Code-unit order puts "B.txt" (0x42) before "a.txt" (0x61); a locale sort, and NTFS's listing, put it after.
-  const files = [["B.txt", "upper"], ["a.txt", "ş"], ["sub/z.txt", ""]];
-  fs.mkdirSync(path.join(dir, "sub"));
-  for (const [rel, content] of files) fs.writeFileSync(path.join(dir, rel), content);
-  const expected = crypto.createHash("sha256");
-  for (const [rel, content] of files) {
-    expected.update(`${rel}\0${Buffer.byteLength(content)}\0`);
-    expected.update(content);
-  }
-  assert.equal(hashBundle(dir), `sha256:${expected.digest("hex")}`);
-});
-
-test("dependencyProblems wants remotion and every @remotion/* package under dependencies", () => {
-  const remotion = { remotion: "4.0.532", "@remotion/cli": "4.0.532", "@remotion/renderer": "4.0.532" };
-  assert.deepEqual(dependencyProblems({ dependencies: remotion, devDependencies: { typescript: "5.7.2" } }), []);
-  assert.deepEqual(dependencyProblems({
-    dependencies: { remotion: "4.0.532" },
-    devDependencies: { "@remotion/cli": "4.0.532", "@remotion/fonts": "4.0.532", typescript: "5.7.2" },
-  }), [
-    "package.json: @remotion/cli must be under dependencies (the derived image runs npm ci --omit=dev)",
-    "package.json: @remotion/renderer must be under dependencies (the derived image runs npm ci --omit=dev)",
-    "package.json: @remotion/fonts must be under dependencies (the derived image runs npm ci --omit=dev)",
-  ]);
-});
-
-test("prepareOutDir empties a previous pack, and refuses a dir holding anything else or holding the project", (t) => {
-  const top = fs.mkdtempSync(path.join(os.tmpdir(), "out-"));
-  t.after(() => fs.rmSync(top, { recursive: true, force: true }));
-  const project = path.join(top, "project");
-  fs.mkdirSync(path.join(project, "src"), { recursive: true });
-  fs.writeFileSync(path.join(project, "src", "Root.tsx"), "source");
-
-  const previous = path.join(project, "dist-pack");
-  fs.mkdirSync(path.join(previous, "bundle"), { recursive: true });
-  fs.writeFileSync(path.join(previous, "pack-manifest.json"), "{}");
-  fs.writeFileSync(path.join(previous, "bundle", "index.html"), "old");
-  prepareOutDir(previous, project);
-  assert.deepEqual(fs.readdirSync(previous), []);
-
-  // A mistyped --out: the sources must survive, untouched.
-  assert.throws(() => prepareOutDir(path.join(project, "src"), project), /holds Root\.tsx, which build-pack did not write/);
-  assert.equal(fs.readFileSync(path.join(project, "src", "Root.tsx"), "utf8"), "source");
-  assert.throws(() => prepareOutDir(project, project), /must not be the project dir or contain it/);
-  assert.throws(() => prepareOutDir(top, project), /must not be the project dir or contain it/);
-  assert.equal(fs.readFileSync(path.join(project, "src", "Root.tsx"), "utf8"), "source");
-
-  const fresh = path.join(top, "fresh", "out");
-  prepareOutDir(fresh, project);
-  assert.ok(fs.statSync(fresh).isDirectory());
-});
-
-test("hashBundle refuses a link in the bundle rather than hash or follow it", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.mkdirSync(path.join(dir, "real"));
-  fs.writeFileSync(path.join(dir, "index.html"), "<html></html>");
-  // A junction needs no privilege on Windows, and is an ordinary symlink elsewhere.
-  fs.symlinkSync(path.join(dir, "real"), path.join(dir, "linked"), "junction");
-  assert.throws(() => hashBundle(dir), /bundle\/linked: neither a file nor a directory/);
 });
