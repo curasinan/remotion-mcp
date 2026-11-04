@@ -1,6 +1,6 @@
 # CI and release pipeline
 
-Four workflows. This file says what each gate proves, and — where it matters —
+Five workflows. This file says what each gate proves, and — where it matters —
 what evidence exists that the gate actually catches something, rather than only
 that it has stayed quiet.
 
@@ -17,13 +17,16 @@ below have a recorded moment where they caught a deliberately planted defect.
 | `bundle` | `build-and-test` | Builds the `.mcpb`, enforces the size ceiling, runs the bundle assertions. |
 | `verify-bundle` | `bundle` | 6 platforms. Extracts the shipped artifact and *runs* it. |
 | `pack` | — | Builds the fixture template pack on Linux with `scripts/build-pack.mjs` and uploads `dist-pack/` as the `pack` artifact. |
+| `image` | `pack` | Builds the service image and the derived image from the `pack` artifact, then runs `image-checks.sh`, `image-e2e.mjs` and `walk-only-proof.mjs` against them. |
 | `lint-workflows` | — | `actionlint` over `.github/workflows/`. |
-| `ci-ok` | all of the above | One aggregate check, so branch protection has a single required status instead of 15 that change name whenever the matrix does. |
+| `ci-ok` | all of the above | One aggregate check, so branch protection has a single required status instead of 20 that change name whenever the matrix does. |
 
 ### The service build runs before the suite
 
-`npm run build:service` compiles `tsconfig.service.json`, whose only root is
-`src/service/index.ts`, into `dist-service/`. The service profile's tests import
+`npm run build:service` compiles `tsconfig.service.json` into `dist-service/`.
+It has two roots: `src/service/index.ts`, and `src/service/healthcheck.ts`,
+the image's `HEALTHCHECK`, which `index.ts` never imports because importing
+it would run the probe. The service profile's tests import
 their modules from `dist-service/service/*.js`, not from `dist/`, so the
 `Build service` step sits straight after `Build` and before every test step, in
 both `ci.yml` and `release.yml`. Locally, run
@@ -291,6 +294,106 @@ zod 4.5.4's own `z.toJSONSchema`.
   17 turned red there. The one that keeps the parent's `USERPROFILE` stayed
   green by design, since Node reads `USERPROFILE` only on Windows.
 
+### The `image` job: the images, proved on Linux
+
+The job downloads the `pack` artifact into `fixtures/pack/dist-pack/`, builds
+`Dockerfile.service` as `rv-service:dev`, then builds
+`fixtures/pack/Dockerfile.derived` on top of it as `rv-pack:dev`
+([`DEPLOY.md`](DEPLOY.md) explains both). It then runs three checks. Each
+check generates its own throwaway keys and passes them to `docker run` by
+name, so no key is in the repository, an image or an argv.
+
+1. **`scripts/image-checks.sh`**, piped into a running derived container
+   (`docker exec -i rv sh -s`), once that container reports healthy. It is
+   never copied into the image. It checks that `setpriv` is on PATH, that npm
+   and npx are absent, that PID 1 is `tini`, that the browser runs
+   `--version`, that `ldd` finds every one of its libraries, that the
+   `@remotion/renderer` the pack's CLI loads is at least 4.0.458, and that
+   `/var/log/remotion-viz` is writable. Every check runs, and each failure
+   names what was missing.
+2. **`scripts/image-e2e.mjs rv-pack:dev`** drives the derived image directly
+   with this repository's test signing client,
+   `test/helpers/signing-client.mjs`. **The owner's gateway is not in it,**
+   so it is not a test of the backend, gateway and service path. It starts
+   one container and waits for its `HEALTHCHECK` to report healthy. Then:
+   - `render_still swatch` with `props/turkish.json` returns a PNG, with
+     the PNG signature and a 1280 × 720 IHDR.
+   - A replay of that exact request gets 401.
+   - A forged header, another tenant's claims under the genuine signature,
+     gets 401. The genuine header on the same body then gets 200.
+   - The audit log has the render's `ok` line and both refusals, and no
+     string from the props.
+   - `render_still slow` gets `render_timeout`, after the 45 s deadline.
+   - A CLI killed with `kill -KILL` mid-render gives `render_failed`.
+   - A Turkish label differs from an all-tofu label in at least half of the
+     tofu render's ink pixels, measured with `pixelmatch`.
+
+   After the timeout and the crash, an orphan scan polls the container's
+   `/proc` until no new process survives. The scan reads every pid's
+   `cmdline` through `docker exec`, since the image has no `ps`. A failed
+   exec fails the case, never counting as an empty scan. Its positive
+   control is that it does see the render's Chrome while `slow` runs. It
+   matches Chrome by `argv[0]`, because the CLI's own cmdline names the
+   browser in `--browser-executable`. A `render_busy` is retried until a slot
+   frees, since a slot is held until its render's processes are gone.
+3. **`scripts/walk-only-proof.mjs`** runs inside the derived image with
+   `tini` as PID 1 and `scripts/` mounted read-only, below the service. The
+   e2e's timeout case cannot prove the `/proc` walk: on `SIGTERM`,
+   Remotion's own BrowserRunner kills Chrome's group, `setpriv` or not. So
+   the proof runs the service's own preflight, argv and `runRenderProcess` on
+   `slow`, with `PATH=/usr/local/bin`, where Remotion cannot find `setpriv`,
+   and an injected kill that only ever sends `SIGKILL`.
+   - **The control** kills only the CLI's group. Cleanup must report
+     unverified, and Chrome must survive. That shows the proof can fail.
+   - **The proof** kills every group the walk recorded. Cleanup must report
+     verified, and no new process may survive.
+
+   Both runs also check that the kill was handed Chrome's own group.
+
+To run the same locally, with Docker's Linux engine and the fixture pack
+built on Linux (copied into `fixtures/pack/dist-pack/`, which is
+gitignored), from the repository root after `npm ci` and
+`npm run build:service`:
+
+```sh
+docker build -f Dockerfile.service -t rv-service:dev .
+docker build -f fixtures/pack/Dockerfile.derived --build-arg SERVICE_IMAGE=rv-service:dev -t rv-pack:dev fixtures/pack
+key() { node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"; }
+IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run -d --name rv \
+  --health-start-period=120s --health-start-interval=1s \
+  -e SERVICE_AUDIENCE=ci -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY rv-pack:dev
+# Polls until the service reports healthy. If it never does, `docker logs rv` names the failed startup check.
+until [ "$(docker inspect --format '{{.State.Health.Status}}' rv)" = healthy ]; do sleep 1; done
+docker exec -i rv sh -s < scripts/image-checks.sh; docker rm -f rv
+node scripts/image-e2e.mjs rv-pack:dev
+IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" MSYS_NO_PATHCONV=1 docker run --rm --entrypoint /usr/bin/tini \
+  -e SERVICE_AUDIENCE=proof -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY \
+  -v "$PWD/scripts:/proof:ro" rv-pack:dev -- node /proof/walk-only-proof.mjs
+```
+
+`MSYS_NO_PATHCONV=1` matters only in Git Bash on Windows, which would
+otherwise rewrite `/proof`. CI's own wait has a 120 s deadline.
+
+**Recorded evidence: the images have not yet been built.** Docker's engine
+was down when Task 10 was written (2026-11-04), so the local image run, its
+Step 4, has not happened, and this job has not yet run in CI. What has run is
+a rehearsal of the three scripts in WSL Ubuntu with Node 22, natively and
+not in Docker: the service and the proof ran from `dist-service/` in their
+own pid and mount namespaces, with a reaper as PID 1, and a stand-in for the
+`docker` CLI. It is not the image, but it is the scripts' own logic against
+the real service, CLI and Chrome:
+
+- `walk-only-proof.mjs` passed both runs. With the walk disabled in the
+  built `render-process.js`, both runs failed.
+- `image-e2e.mjs` passed every case. With the tofu label swapped for the
+  Turkish one, case 7 failed with 0 differing pixels.
+- `image-checks.sh` passed all eight checks in a namespace whose PID 1 was
+  named `tini`, with a PATH without npm. On the plain WSL host it failed the
+  six that host does not meet, each naming what was missing, and it failed
+  a renderer below 4.0.458, a missing one and a pre-release.
+
+The first image run records its own evidence here.
+
 ### The browser-presence assertion is not decoration
 
 `test/html.test.mjs` gates all seven of its tests on `locateBrowser()` evaluated
@@ -364,6 +467,17 @@ Three things worth knowing:
 See [`../README.md#verifying-a-release`](../README.md) for the verification
 recipe, including why cosign 3 cannot verify these artifacts and a 2.x binary is
 required.
+
+## `service-image-publish.yml` — on push to `main`, when the owner enables it
+
+Builds `Dockerfile.service` for linux/amd64 and pushes it to
+`ghcr.io/curasinan/remotion-viz-service`, tagged with the commit SHA. The job
+runs only when the repository variable `PUBLISH_SERVICE_IMAGE` is `'true'`,
+which the owner sets when publishing is approved (design §1, ruling 3); until
+then it is skipped. It holds `contents: read` and `packages: write`, and
+nothing else. The pushed image's digest goes into the job summary, and that
+digest, never the tag, is what a deployer pins as the derived image's
+`SERVICE_IMAGE` ([`DEPLOY.md`](DEPLOY.md)). It has not run yet.
 
 ## `pages.yml` — the landing site
 

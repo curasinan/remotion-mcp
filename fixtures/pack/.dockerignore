@@ -1,0 +1,10 @@
+# For Dockerfile.derived, whose build context is this directory. Only dist-pack/ (build-pack's output, which the
+# image installs with npm ci --omit=dev) and the Dockerfile are sent: never the sources, a node_modules installed on
+# the build host, or a test render.
+node_modules
+src
+public
+props
+out.png
+package.json
+package-lock.json

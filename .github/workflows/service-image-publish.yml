@@ -1,0 +1,67 @@
+name: Service image
+
+# Builds Dockerfile.service for linux/amd64 and pushes it to GHCR (design 5.9, docs/DEPLOY.md). Off until the owner
+# sets the repository variable PUBLISH_SERVICE_IMAGE to 'true' (design 1, ruling 3). Deployers pin the image by the
+# digest this job writes to its summary.
+on:
+  push:
+    branches: [main]
+
+# Actions are pinned to commit SHAs; bump the SHA and its version comment together.
+permissions:
+  contents: read
+  packages: write
+
+# One publish at a time; queue instead of cancelling a running one.
+concurrency:
+  group: service-image-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: vars.PUBLISH_SERVICE_IMAGE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tagged with the commit it was built from; deployers pin the digest, never a tag.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.service
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/curasinan/remotion-viz-service:${{ github.sha }}
+
+      - name: Digest in the job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          if [ -z "$DIGEST" ]; then
+            echo "build-push-action reported no digest" >&2
+            exit 1
+          fi
+          {
+            echo "## Service image"
+            echo
+            echo "Pin this in the derived image's SERVICE_IMAGE build argument:"
+            echo
+            echo '```'
+            echo "ghcr.io/curasinan/remotion-viz-service@${DIGEST}"
+            echo '```'
+            echo
+            echo "Built from ${COMMIT}, linux/amd64."
+          } >> "$GITHUB_STEP_SUMMARY"

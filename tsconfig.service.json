@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "files": ["src/service/index.ts"],
+  "files": ["src/service/index.ts", "src/service/healthcheck.ts"],
   "include": [],
   "compilerOptions": {
     "outDir": "./dist-service",
