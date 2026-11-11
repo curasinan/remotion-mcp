@@ -10,7 +10,8 @@
 //   1. render_still swatch with fixtures/pack/props/turkish.json returns a 1280 x 720 PNG
 //   2. a replay of case 1's exact request gets 401
 //   3. a forged header gets 401, and the genuine header on the same body gets 200
-//   6. the audit log has case 1's ok line, both refusals, and no string value from the props
+//   6. the audit log has case 1's ok line, both refusals, and no string value from the props; every line is
+//      printable ASCII and holds no \u escape
 //   4. render_still slow gets render_timeout, after the deadline, and leaves no process behind
 //   5. a CLI killed mid-render gives render_failed, and leaves no process behind
 //   7. Turkish glyphs render as glyphs, not as the tofu an unrenderable label gives

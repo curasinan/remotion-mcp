@@ -167,6 +167,28 @@ const vectors = [
   // The body hash runs on the raw bytes, before the body is parsed.
   vector("body_mismatch: the signed body replaced by one that is not JSON", [step(VALID, NOT_JSON,
     refused(401, "body_mismatch"))]),
+
+  // The rest of the order. With the cases above, these order every two checks that one request can fail together;
+  // test/identity.test.mjs checks that claim against this file. Each breaks the checks its comment names and
+  // expects the first. Two kinds of pair need none, as they never fail together: with no header there are no claims,
+  // and a body that does not parse holds no message.
+  // malformed, unsupported_version and bad_signature: the claims decode, so a port could read v first.
+  vector("malformed: v 2 under a 42-character signature", [step(header({ v: 2 }).slice(0, -1), CALL,
+    refused(401, "malformed"))]),
+  // missing and parse, then missing and batch: the header comes before the body is read at all.
+  vector("missing: no header, and a body that is not JSON", [step(null, NOT_JSON, refused(401, "missing"))]),
+  vector("missing: no header, and an array body", [step(null, BATCH, refused(401, "missing"))]),
+  // body_mismatch, batch, tool_mismatch and request_id_mismatch: an array has no tool and no _meta id.
+  vector("body_mismatch: the signed body replaced by an array", [step(VALID, BATCH, refused(401, "body_mismatch"))]),
+  // tool_mismatch and request_id_mismatch.
+  vector("tool_mismatch: claims tool list_templates, and the _meta id is r-2",
+    [step(header({ tool: "list_templates" }, R2), R2, refused(401, "tool_mismatch"))]),
+  // request_id_mismatch and replayed: the claims' id r-1 was accepted by the first step.
+  vector("request_id_mismatch: an accepted id reused with the _meta id r-2", [step(VALID, CALL, OK),
+    step(header({}, R2), R2, refused(401, "request_id_mismatch"))]),
+  // parse and replayed: the replay check reads only the claims, so a port could run it before the parse.
+  vector("parse: an accepted id reused with a body that is not JSON", [step(VALID, CALL, OK),
+    step(header({}, NOT_JSON), NOT_JSON, refused(400, "parse"))]),
 ];
 
 const names = new Set(vectors.map((v) => v.name));

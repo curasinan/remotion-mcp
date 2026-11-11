@@ -160,9 +160,13 @@ implementation, and every expected verdict is declared by hand in it.
 
 Besides one or more cases per verdict, the vectors pin the encoding rules
 above (a padded claims part signed over the padded text, and a non-canonical
-signature spelling) and the check order: for each pair of neighbouring checks
-from 3 to 10, for checks 8 and 10, and for checks 10 and 11, one vector breaks
-exactly those two and expects the earlier.
+signature spelling) and the check order. For every two checks that one request
+can fail together, a vector breaks both and expects the earlier, or a chain of
+such vectors does: one that orders 3 before 4 and one that orders 4 before 5
+together order 3 before 5. A vector that breaks more than two checks expects
+the first of them. Only two kinds of pair never fail together: `missing` and a
+check that reads the claims, and `parse` and checks 12 to 14, which read the
+parsed message. `test/identity.test.mjs` checks the file against this claim.
 
 **The key** is the published throwaway `Buffer.alloc(32, 7)`, 32 bytes of
 `0x07`, given in the file as `key_base64url`. It protects nothing. Never

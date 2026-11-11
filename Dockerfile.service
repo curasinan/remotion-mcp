@@ -16,6 +16,8 @@ RUN npm prune --omit=dev
 
 # Runtime.
 FROM --platform=linux/amd64 node:22-bookworm-slim
+# Links the published GHCR package to this repository.
+LABEL org.opencontainers.image.source="https://github.com/curasinan/remotion-mcp"
 WORKDIR /app
 # tini runs as PID 1, so orphans are reaped and SIGTERM reaches the service. util-linux carries setpriv, which
 # Remotion wraps Chrome in for its pdeathsig. fonts-noto-core is the fallback for text a pack's own fonts do not
@@ -26,8 +28,11 @@ RUN apt-get update \
     libnss3 libnspr4 libasound2 libgbm1 libxkbcommon0 libdbus-1-3 libatk-bridge2.0-0 libcups2 libpango-1.0-0 \
     libcairo2 \
   && rm -rf /var/lib/apt/lists/*
-# No npm: the service never installs anything, and never falls back to npx.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# No package manager: the service never installs anything, and never falls back to npx. The base image also ships
+# Yarn (under /opt, linked as yarn and yarnpkg) and corepack, which can fetch npm or pnpm; they go too.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    /usr/local/lib/node_modules/corepack /usr/local/bin/corepack \
+    /opt/yarn-v* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 # package.json carries "type": "module", which dist-service/'s ES modules need.
 COPY --from=build /app/package.json ./
 COPY --from=build /app/dist-service/ dist-service/

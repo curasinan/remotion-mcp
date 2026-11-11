@@ -22,8 +22,8 @@ export interface PreflightDeps {
   runVersion(file: string): Promise<boolean>;
 }
 
-/** How long the browser's `--version` may take before it counts as not running. */
-const VERSION_TIMEOUT_MS = 30_000;
+/** How long the browser's `--version` may take before it is killed and counts as not running. */
+export const VERSION_TIMEOUT_MS = 30_000;
 const RELEASE_VERSION = /^(\d+)\.(\d+)\.(\d+)$/;
 
 /** A regular file, following symlinks. Never throws. */
@@ -51,15 +51,22 @@ function which(cmd: string, pathVar: string): string | null {
   return null;
 }
 
-function runVersion(file: string): Promise<boolean> {
-  return new Promise((resolve) => {
+/**
+ * A runVersion whose `--version` is killed with SIGKILL once it has run `timeoutMs`, and then counts as not running:
+ * a browser that never exits would otherwise hold the service's start forever. The default deps use
+ * VERSION_TIMEOUT_MS; the tests pass a short bound.
+ */
+export function makeRunVersion(timeoutMs: number): PreflightDeps["runVersion"] {
+  return (file) => new Promise((resolve) => {
     execFile(file, ["--version"], {
-      env: childEnv(process.env, os.tmpdir()), shell: false, timeout: VERSION_TIMEOUT_MS, killSignal: "SIGKILL",
+      env: childEnv(process.env, os.tmpdir()), shell: false, timeout: timeoutMs, killSignal: "SIGKILL",
     }, (err) => resolve(err === null));
   });
 }
 
-export const defaultPreflightDeps: PreflightDeps = Object.freeze({ which, runVersion });
+export const defaultPreflightDeps: PreflightDeps = Object.freeze({
+  which, runVersion: makeRunVersion(VERSION_TIMEOUT_MS),
+});
 
 const fail = (check: string, missing: string): Error => new Error(`preflight: ${check}: ${missing}`);
 

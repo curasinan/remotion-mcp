@@ -352,3 +352,37 @@ test("build-pack names what stopped its rules loading, and suggests a service bu
   assert.equal(failure({ "scripts/lib/zod-gate.mjs": "export const unrelated = 1;\n" }).line,
     `${CANNOT}SyntaxError: The requested module './zod-gate.mjs' does not provide an export named 'boundsSurvived'`);
 });
+
+test("build-pack names a failed remotion bundle, a bundle without index.html, and a project with no esbuild", (t) => {
+  // NODE_PATH and the home folders hold a CLI and a bundler that each run must not find.
+  pollute(t);
+  /** A project whose own @remotion/cli answers `bundle --help` with exit 0 and runs `cli` for the bundle itself. */
+  const withCli = (cli) => stubProject(t, {
+    "node_modules/@remotion/cli/package.json": JSON.stringify({ name: "@remotion/cli", bin: { remotion: "cli.js" } }),
+    "node_modules/@remotion/cli/cli.js": `if (process.argv.includes("--help")) process.exit(0);\n${cli}\n`,
+  });
+  /** The run's stderr lines; the run must exit 1 and leave no dist-pack/ behind. */
+  const failed = (dir) => {
+    const run = buildPack(t, dir);
+    assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+    assert.equal(fs.existsSync(path.join(dir, "dist-pack")), false, "a failed build left dist-pack/ behind");
+    assert.match(run.stdout, /^build-pack: bundling src\/index\.ts with remotion bundle$/m, "it bundled with the CLI");
+    return run.stderr.split(/\r?\n/).filter(Boolean);
+  };
+
+  assert.deepEqual(failed(withCli("process.exit(4);")), ["build-pack: remotion bundle failed (exit 4)"]);
+  assert.deepEqual(failed(withCli("process.exit(0);")), ["build-pack: the bundle has no index.html"]);
+
+  // The CLI writes a bundle, and the project has neither esbuild nor the @remotion/bundler that would carry one.
+  const writesBundle = withCli([
+    "const fs = require(\"node:fs\");",
+    "const out = process.argv[process.argv.indexOf(\"--out-dir\") + 1];",
+    "fs.mkdirSync(out, { recursive: true });",
+    "fs.writeFileSync(require(\"node:path\").join(out, \"index.html\"), \"<!doctype html>\");",
+  ].join("\n"));
+  const esbuildAbove = placesAbove(writesBundle).map((place) => path.join(place, "esbuild")).filter((pkg) => fs.existsSync(pkg));
+  assert.deepEqual(esbuildAbove, [], "an esbuild above the project would be found in place of none");
+  // Node's message goes on to list the require stack, so only its first line is fixed.
+  const [first] = failed(writesBundle);
+  assert.match(first, /^build-pack: the project's esbuild cannot be found: Cannot find module '@remotion\/bundler\/package\.json'/);
+});

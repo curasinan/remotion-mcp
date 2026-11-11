@@ -105,7 +105,9 @@ function isAssignmentPattern(node, ancestors) {
   return false;
 }
 
-/** How a member read of registerTool that is not a call is used: the word each problem names. */
+/**
+ * How a member read of registerTool, registerToolTask or tool that is not a call is used: the word each problem names.
+ */
 function useOf(outer, parent) {
   if (parent === undefined) return "reference";
   const member = (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent))

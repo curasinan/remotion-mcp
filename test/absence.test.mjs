@@ -263,7 +263,7 @@ test("T4: exactly one registration call site, in service/registry.js, inside its
   // The reported line is the call's own line.
   const line = fs.readFileSync(path.join(DIST, ...REGISTRY.split("/")), "utf8").split(/\r?\n/)[site.line - 1];
   assert.match(line, /\.registerTool\(/, `service/registry.js:${site.line} is not the call site`);
-  assert.deepEqual(registerToolRefs, [], "registerTool is referenced other than by its one call");
+  assert.deepEqual(registerToolRefs, [], "registerTool or registerToolTask is referenced other than by its one call");
 });
 
 describe("T5 poisoned build: a type-only import of src/services/entrypoint.ts and tools/project.ts", () => {

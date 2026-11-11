@@ -273,6 +273,10 @@ test("the checks run in the documented order", () => {
   assert.equal(verifyRequest(sign(claims()), BODY, options(), cache).ok, true);
   assert.deepEqual(verifyRequest(sign(claims({ tool: "list_templates" })), BODY, options(), cache),
     refused401("tool_mismatch"), "a reused id that also fails the message check reports the message check");
+  assert.deepEqual(verifyRequest(sign(claims({}, R2_BODY)), R2_BODY, options(), cache), refused401("request_id_mismatch"),
+    "a reused id under another _meta id reports the id check, not the replay");
+  assert.deepEqual(verifyRequest(sign(claims({}, notJson)), notJson, options(), cache),
+    { ok: false, status: 400, reason: "parse" }, "a reused id on a body that does not parse reports the parse");
 });
 
 test("REVIEW FOCUS 1: skew boundaries are inclusive at 30 s", () => {
@@ -524,6 +528,125 @@ test("the vectors pin the canonical-encoding rules a gateway port must reproduce
   assert.ok(parts.some(([p, s]) => /^[A-Za-z0-9_-]{43}$/.test(s) && s !== hmacOf(p).toString("base64url")
       && Buffer.from(s, "base64url").equals(hmacOf(p))),
   "no malformed vector carries a non-canonical spelling of the right signature");
+});
+
+/**
+ * The contract's fifteen checks in its order (docs/CONTRACT-gateway.md, "Check order and refusals"), each restated as
+ * what breaks it, from node:crypto alone and never from identity.js, so the vectors are checked against the contract
+ * and not against the implementation. `k` is one step: `h` its header read by readHeader (null for no header), `c` the
+ * claims when they decode, `body`, `parsed` ({ message }, or null when the body is not JSON), the vector's options
+ * `o`, and `accepted`, the ids its earlier steps had accepted, each with its exp.
+ */
+const CONTRACT_CHECKS = [
+  ["missing", 401, (k) => k.h === null],
+  ["malformed", 401, (k) => k.h !== null && !k.h.wellFormed],
+  ["unsupported_version", 401, (k) => k.c !== null && k.c.v !== 1],
+  ["bad_signature", 401, (k) => k.c !== null && !Buffer.from(k.h.signaturePart, "base64url")
+    .equals(createHmac("sha256", KEY).update(k.h.claimsPart).digest())],
+  ["wrong_audience", 401, (k) => k.c !== null && k.c.aud !== k.o.audience],
+  ["not_yet_valid", 401, (k) => k.c !== null && k.o.nowS < k.c.iat - k.o.skewS],
+  ["expired", 401, (k) => k.c !== null && k.o.nowS > k.c.exp + k.o.skewS],
+  ["ttl_too_long", 401, (k) => k.c !== null && k.c.exp - k.c.iat > k.o.maxTtlS],
+  ["signed_before_start", 401, (k) => k.c !== null && k.c.iat < k.o.startedAtS - k.o.skewS],
+  ["body_mismatch", 401, (k) => k.c !== null && sha256(k.body) !== k.c.body_sha256],
+  ["parse", 400, (k) => k.parsed === null],
+  ["batch", 400, (k) => k.parsed !== null && Array.isArray(k.parsed.message)],
+  ["tool_mismatch", 401, (k) => k.c !== null && k.parsed !== null && contractToolOf(k.parsed.message) !== k.c.tool],
+  ["request_id_mismatch", 401, (k) => k.c !== null && k.parsed !== null
+    && k.parsed.message?.params?._meta?.[REQUEST_ID_META_KEY] !== k.c.request_id],
+  ["replayed", 401, (k) => k.c !== null && k.accepted.has(k.c.request_id)
+    && k.o.nowS <= k.accepted.get(k.c.request_id) + k.o.skewS],
+];
+
+/** Check 13's tool: `params.name` for a tools/call, the method for anything else, null when there is neither. */
+function contractToolOf(message) {
+  const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isObject(message) || typeof message.method !== "string") return null;
+  if (message.method !== "tools/call") return message.method;
+  return isObject(message.params) && typeof message.params.name === "string" ? message.params.name : null;
+}
+
+/**
+ * A header's parts as checks 2 to 10 read them. `claims` is the claims object when the claims part is base64url of a
+ * JSON object with the nine typed fields, whatever the signature part is, so a port could check it; else null.
+ */
+function readHeader(header) {
+  const [claimsPart, signaturePart = "", ...extra] = header.split(".");
+  let claims = null;
+  if (/^[A-Za-z0-9_-]+$/.test(claimsPart)) {
+    try {
+      const parsed = JSON.parse(Buffer.from(claimsPart, "base64url").toString("utf8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        && ["request_id", "principal", "tenant", "aud", "tool", "body_sha256"].every((f) => typeof parsed[f] === "string")
+        && ["v", "iat", "exp"].every((f) => Number.isInteger(parsed[f]))) claims = parsed;
+    } catch {
+      // Not JSON: no claims for the later checks to read.
+    }
+  }
+  const canonical = /^[A-Za-z0-9_-]{43}$/.test(signaturePart)
+    && Buffer.from(signaturePart, "base64url").toString("base64url") === signaturePart;
+  return { claimsPart, signaturePart, claims, wellFormed: extra.length === 0 && canonical && claims !== null };
+}
+
+/**
+ * Two checks one request can never fail together, so no vector can order them and none needs to. With no header
+ * there are no claims, so `missing` fails only alongside the checks that read the body alone. A body that does not
+ * parse holds no message for checks 12 to 14 to read.
+ */
+function neverTogether(first, second) {
+  if (first === "missing") return !["parse", "batch"].includes(second);
+  return first === "parse" && ["batch", "tool_mismatch", "request_id_mismatch"].includes(second);
+}
+
+test("the vectors order every two checks that one request can fail together, as the contract's table does", () => {
+  const { vectors } = JSON.parse(fs.readFileSync(VECTORS, "utf8"));
+  const ORDER = CONTRACT_CHECKS.map(([name]) => name);
+  assert.deepEqual(ORDER.filter((name) => name !== "parse" && name !== "batch"), ALL_REFUSALS,
+    "CONTRACT_CHECKS must list the contract's 401 checks in its order");
+  assert.deepEqual(ORDER.slice(10, 12), ["parse", "batch"], "the contract's checks 11 and 12");
+  // A step that breaks several checks and expects the first pins it before each of the others: a port that ran any
+  // of them first would report that one instead.
+  const pins = new Set();
+  for (const v of vectors) {
+    const accepted = new Map();
+    v.steps.forEach((step, i) => {
+      const label = `${v.name}, step ${i + 1}`;
+      const body = Buffer.from(step.body_base64, "base64");
+      const h = step.header === null ? null : readHeader(step.header);
+      let parsed = null;
+      try {
+        parsed = { message: JSON.parse(body.toString("utf8")) };
+      } catch {
+        // Not JSON: check 11 breaks.
+      }
+      const k = { h, c: h?.claims ?? null, body, parsed, o: v.options, accepted };
+      const broken = CONTRACT_CHECKS.filter(([, , breaks]) => breaks(k));
+      if (step.expected.ok) {
+        assert.deepEqual(broken.map(([name]) => name), [], `${label}: declared ok, but it breaks these checks`);
+        accepted.set(k.c.request_id, k.c.exp);
+        return;
+      }
+      assert.ok(broken.length > 0, `${label}: declared ${step.expected.reason}, but it breaks no check`);
+      const [[first, status]] = broken;
+      assert.deepEqual({ status: step.expected.status, reason: step.expected.reason }, { status, reason: first },
+        `${label}: it breaks ${broken.map(([name]) => name).join(", ")}, so it must expect the first`);
+      for (const [other] of broken.slice(1)) pins.add(`${first} > ${other}`);
+    });
+  }
+  // A check pinned before a second, and that one before a third, is pinned before the third.
+  const before = new Map(ORDER.map((name) => [name, new Set()]));
+  for (const pin of pins) {
+    const [a, b] = pin.split(" > ");
+    before.get(a).add(b);
+  }
+  for (const via of ORDER) {
+    for (const a of ORDER) if (before.get(a).has(via)) for (const b of before.get(via)) before.get(a).add(b);
+  }
+  const unpinned = [];
+  ORDER.forEach((a, i) => {
+    for (const b of ORDER.slice(i + 1)) if (!neverTogether(a, b) && !before.get(a).has(b)) unpinned.push(`${a} > ${b}`);
+  });
+  assert.deepEqual(unpinned, [], "no vector, alone or through a chain of others, pins these pairs of checks");
 });
 
 test("test/vectors/identity-v1.json is byte for byte what scripts/make-identity-vectors.mjs writes", () => {

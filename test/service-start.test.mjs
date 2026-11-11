@@ -3,8 +3,10 @@
 // any platform; the file-mode and environment assertions run on POSIX only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -23,11 +25,11 @@ if (!fs.existsSync(path.join(SERVICE, "start.js"))) {
 // pathToFileURL, not a bare path: import() of a Windows absolute path throws.
 const load = (name) => import(pathToFileURL(path.join(SERVICE, name)).href);
 const { parseServiceConfig, ConfigError } = await load("config.js");
-const { preflight, defaultPreflightDeps } = await load("preflight.js");
+const { preflight, defaultPreflightDeps, makeRunVersion, VERSION_TIMEOUT_MS } = await load("preflight.js");
 const { startService } = await load("start.js");
 const { loadPack } = await load("templates.js");
 const {
-  SERVICE_BODY_CAP_BYTES, SERVICE_PNG_CAP_BYTES, RENDER_STILL_DEADLINE_MS, RENDER_KILL_GRACE_MS,
+  SERVICE_BODY_CAP_BYTES, SERVICE_PNG_CAP_BYTES, RENDER_STILL_DEADLINE_MS, RENDER_CLI_TIMEOUT_MS, RENDER_KILL_GRACE_MS,
   RENDER_VERIFY_DEADLINE_MS,
 } = await load("constants.js");
 
@@ -441,6 +443,86 @@ test("defaultPreflightDeps scans a PATH value in-process and runs --version", TI
   assert.equal(await runVersion(path.join(empty, "no-such-browser")), false);
 });
 
+test("defaultPreflightDeps.runVersion bounds the browser's --version at VERSION_TIMEOUT_MS with SIGKILL", TIMED, async () => {
+  // execFile's own options, read off a stand-in: the bound itself is proven on a real process below, with a short one.
+  assert.equal(VERSION_TIMEOUT_MS, 30_000);
+  const seen = [];
+  const realExecFile = childProcess.execFile;
+  childProcess.execFile = (file, args, options, callback) => {
+    seen.push({ file, args, timeout: options.timeout, killSignal: options.killSignal, shell: options.shell });
+    queueMicrotask(() => callback(null, "", ""));
+    return undefined;
+  };
+  // preflight.js imports execFile by name; this makes its binding the stand-in, and later the real one again.
+  syncBuiltinESMExports();
+  let verdict;
+  try {
+    verdict = await defaultPreflightDeps.runVersion("/opt/a-browser");
+  } finally {
+    childProcess.execFile = realExecFile;
+    syncBuiltinESMExports();
+  }
+  assert.equal(verdict, true);
+  assert.deepEqual(seen, [{ file: "/opt/a-browser", args: ["--version"], timeout: VERSION_TIMEOUT_MS, killSignal: "SIGKILL",
+    shell: false }]);
+});
+
+test("runVersion kills a browser whose --version never exits, once its bound has passed, and counts it as not running",
+  { ...TIMED, skip: POSIX ? false : "needs a shell script as the browser; this runs in WSL" }, async (t) => {
+    const BOUND_MS = 1_000;
+    const runVersion = makeRunVersion(BOUND_MS);
+    const dir = tmpDir(t, "preflight-hang-");
+    const pidFile = path.join(dir, "pid");
+    // It records its pid, then becomes cat on execFile's stdin pipe, which never reaches end of file: it waits without
+    // sleeping, and exec keeps the pid, so the recorded process is the one the bound must kill.
+    const hangs = path.join(dir, "hangs");
+    fs.writeFileSync(hangs, `#!/bin/sh\necho $$ > '${pidFile}'\nexec cat > /dev/null\n`, { mode: 0o755 });
+    const quick = path.join(dir, "quick");
+    fs.writeFileSync(quick, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    assert.equal(await runVersion(quick), true, "the control: a browser that answers within the bound runs");
+    const started = performance.now();
+    let settled = false;
+    const pending = runVersion(hangs).then((value) => {
+      settled = true;
+      return value;
+    });
+    // Should the bound fail, the browser would outlive the test and keep this file's process from exiting, so this
+    // kills it. tmpDir's own after hook, which runs first, removes the pid file, so the pid is read before any
+    // assertion. Once runVersion has settled, execFile has reaped the browser, and its pid may already belong to
+    // another process: it is left alone.
+    let pid;
+    t.after(() => {
+      if (settled || !(pid > 1)) return;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    });
+    let deadline;
+    const verdict = await Promise.race([
+      pending,
+      new Promise((resolve) => { deadline = setTimeout(() => resolve("still waiting"), WAIT_MS); }),
+    ]);
+    clearTimeout(deadline);
+    const tookMs = performance.now() - started;
+    pid = await pollFor(() => {
+      const recorded = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, "utf8")) : NaN;
+      return Number.isInteger(recorded) && recorded > 1 ? recorded : undefined;
+    }, "the browser never recorded its pid");
+    assert.equal(verdict, false, `runVersion was ${verdict} ${Math.round(tookMs)} ms after it began, with a ${BOUND_MS} ms `
+      + "bound");
+    assert.ok(tookMs >= BOUND_MS - 50, `it settled after ${Math.round(tookMs)} ms, before its ${BOUND_MS} ms bound`);
+    await pollFor(() => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch (err) {
+        return err.code === "ESRCH" ? true : assert.fail(`process.kill(${pid}, 0) failed with ${err.code}`);
+      }
+    }, `the browser's process ${pid} is still alive after its bound`);
+  });
+
 test("runVersion gives the browser the allowlisted environment, never a key",
   { ...TIMED, skip: POSIX ? false : "needs a shell script as the browser; this runs in WSL" }, async (t) => {
     const dir = tmpDir(t, "preflight-env-");
@@ -617,6 +699,24 @@ test("startService takes its start time once, and refuses a header signed more t
     await assert.rejects(
       stale.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.service.port}/mcp`), { fetch })),
       (err) => /\b401\b/.test(String(err?.message)) || String(err?.code) === "401");
+    // Once: 100 s later on the service's clock, a header signed at before + 60 still verifies. A start time read per
+    // request would be at least before + 100 by now, and would refuse that header, signed more than one skew earlier,
+    // as signed_before_start.
+    const real = Date.now();
+    t.mock.method(Date, "now", () => real + 100_000);
+    assert.ok(Math.floor(Date.now() / 1000) - (before + 60) > 30, "the moved clock is more than one skew past the header");
+    const late = new Client({ name: "service-start-late", version: "0.0.0" });
+    t.after(() => late.close());
+    const lateFetch = makeSigningFetch({ key: Buffer.from(s.env.IDENTITY_HMAC_KEY, "base64url"),
+      audience: s.env.SERVICE_AUDIENCE, principal: "principal-a", tenant: "tenant-a", nowS: before + 60 });
+    try {
+      await late.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.service.port}/mcp`),
+        { fetch: lateFetch }));
+    } catch (err) {
+      assert.fail(`a header signed after the start was refused once the clock had moved on 100 s, so the start time `
+        + `was not taken once: ${err?.message}`);
+    }
+    assert.equal((await late.listTools()).tools.length, 4);
     const auditPath = path.join(path.dirname(s.tempRoot), "log", "service-audit.jsonl");
     // The SDK clients' own GET streams get a 405, which carries no identity and is not audited.
     const refused = fs.readFileSync(auditPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -624,12 +724,14 @@ test("startService takes its start time once, and refuses a header signed more t
     assert.deepEqual(refused.map((e) => e.category), ["signed_before_start"]);
   });
 
-test("the runner prints a configuration error without the key and exits 1", TIMED, async () => {
+// The child imports dist-service, which took 17-19 s under suite load in WSL over /mnt/c, so its deadline is 60 s.
+// spawnSync blocks the event loop, so the test's own timeout cannot fire before it returns; it stays above it anyway.
+test("the runner prints a configuration error without the key and exits 1", { timeout: 90_000 }, async () => {
   const { spawnSync } = await import("node:child_process");
   const result = spawnSync(process.execPath, [path.join(SERVICE, "index.js")], {
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, SERVICE_AUDIENCE: "deploy-test",
       IDENTITY_HMAC_KEY: SENTINELS.IDENTITY_HMAC_KEY },
-    encoding: "utf8", timeout: 20_000,
+    encoding: "utf8", timeout: 60_000,
   });
   assert.equal(result.status, 1, `exit status: ${result.status}; stderr: ${result.stderr}`);
   assert.equal(result.stderr.trim(), "IDENTITY_HMAC_KEY must decode to at least 32 bytes");
@@ -780,16 +882,23 @@ test("startService passes its log to the audit sink: a failing append is logged 
     assert.equal(fs.readFileSync(auditPath, "utf8").split("\n").filter(Boolean).length, 1, "the next line was appended");
   });
 
-test("renders get the kill's grace and verification deadline that the shutdown bound is built from", TIMED, async (t) => {
-  // Without an injection, the constants; with one, the injected values. Either way the bound tracks the kill.
+test("renders get the 45 s deadline, the CLI's 60 s --timeout, and the kill's grace and verification deadline that the "
+  + "shutdown bound is built from", TIMED, async (t) => {
+  // The deadline and the --timeout are the plan's constants, never swapped: the CLI's own timeout must come after
+  // the service's deadline. The kill's timings: without an injection, the constants; with one, the injected values.
+  // Either way the bound tracks the kill.
+  assert.ok(RENDER_STILL_DEADLINE_MS < RENDER_CLI_TIMEOUT_MS, "the deadline must come before the CLI's own timeout");
+  const wired = { deadlineMs: RENDER_STILL_DEADLINE_MS, timeout: `--timeout=${RENDER_CLI_TIMEOUT_MS}` };
   for (const [killTiming, expected] of [
-    [undefined, { graceMs: RENDER_KILL_GRACE_MS, verifyDeadlineMs: RENDER_VERIFY_DEADLINE_MS }],
-    [{ graceMs: 40, verifyDeadlineMs: 60 }, { graceMs: 40, verifyDeadlineMs: 60 }],
+    [undefined, { ...wired, graceMs: RENDER_KILL_GRACE_MS, verifyDeadlineMs: RENDER_VERIFY_DEADLINE_MS }],
+    [{ graceMs: 40, verifyDeadlineMs: 60 }, { ...wired, graceMs: 40, verifyDeadlineMs: 60 }],
   ]) {
     const seen = [];
     const inner = fakeRun();
     const run = (file, args, options) => {
-      seen.push({ graceMs: options.graceMs, verifyDeadlineMs: options.verifyDeadlineMs });
+      const timeouts = args.filter((arg) => arg.startsWith("--timeout="));
+      seen.push({ deadlineMs: options.deadlineMs, timeout: timeouts.length === 1 ? timeouts[0] : timeouts,
+        graceMs: options.graceMs, verifyDeadlineMs: options.verifyDeadlineMs });
       return inner(file, args, options);
     };
     const s = await startFor(t, killTiming === undefined ? { run } : { run, killTiming });

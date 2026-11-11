@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -83,7 +84,8 @@ function latch() {
 
 /**
  * The handler on 127.0.0.1:0 with the good pack, a fake runner and the fixed clock. Servers are counted through
- * `createServer`. Each release of a render slot is counted, so a test can show a slot frees exactly once.
+ * `createServer`. Each release of a render slot is counted, so a test can show a slot frees exactly once. `handler`
+ * is the handler itself, for a test that calls it without a socket.
  */
 async function setup(t, { clock = { nowS: () => NOW, startedAtS: NOW - 600 },
   makeServer = () => new McpServer({ name: "service-http-test", version: "0.0.0" }) } = {}) {
@@ -145,7 +147,7 @@ async function setup(t, { clock = { nowS: () => NOW, startedAtS: NOW - 600 },
   const auditLines = () => (fs.existsSync(auditPath) ? fs.readFileSync(auditPath, "utf8") : "")
     .split("\n").filter((line) => line !== "").map((line) => JSON.parse(line));
   return {
-    ctx, port, url: new URL(`http://127.0.0.1:${port}/mcp`), auditPath, auditLines, logLines, tempRoot,
+    ctx, handler, port, url: new URL(`http://127.0.0.1:${port}/mcp`), auditPath, auditLines, logLines, tempRoot,
     servers: () => servers, releases: () => releases, workDirs: () => fs.readdirSync(tempRoot),
   };
 }
@@ -627,4 +629,64 @@ test("a transport or server close that rejects is logged through ctx.log, never 
     "service: http internal request_id=-: server close failed: server-close-boom",
     "service: http internal request_id=-: transport close failed: transport-close-boom",
   ]);
+});
+
+test("a response that closes after the identity check but before the server connects closes that server, and no tool "
+  + "runs", TIMED, async (t) => {
+  // node:http emits a response's close only on a later turn, so this window, between the server factory and
+  // server.connect, is reached with the handler called directly: a request and a response that are event emitters.
+  let res;
+  let connects = 0;
+  let closes = 0;
+  const s = await setup(t, { makeServer: () => {
+    const server = new McpServer({ name: "service-http-test", version: "0.0.0" });
+    const connect = server.connect.bind(server);
+    server.connect = (transport) => {
+      connects += 1;
+      return connect(transport);
+    };
+    const close = server.close.bind(server);
+    server.close = () => {
+      closes += 1;
+      return close();
+    };
+    // The caller hangs up while this request's server is being made.
+    res.emit("close");
+    return server;
+  } });
+  let runs = 0;
+  const run = s.ctx.run;
+  s.ctx.run = (...args) => {
+    runs += 1;
+    return run(...args);
+  };
+  const request = signed(rpc("tools/call", { name: "render_still", arguments: stillArgs() }));
+  const req = Object.assign(new EventEmitter(), { url: "/mcp", method: "POST", headers: {
+    accept: "application/json, text/event-stream", "content-type": "application/json", [IDENTITY_HEADER]: request.header,
+  } });
+  res = Object.assign(new EventEmitter(), {
+    headersSent: false,
+    writeHead() {
+      this.headersSent = true;
+      return this;
+    },
+    setHeader() {},
+    flushHeaders() {},
+    write: () => true,
+    end() {
+      return this;
+    },
+  });
+  s.handler(req, res);
+  req.emit("data", request.body);
+  req.emit("end");
+
+  await pollFor(() => (closes > 0 ? true : undefined), "the server made for a response already closed was never closed");
+  await ioTurns();
+  assert.equal(s.servers(), 1, "the request passed its identity check and reached the server factory");
+  assert.equal(connects, 0, "the server was connected to a transport for a response already closed");
+  assert.equal(runs, 0, "a render ran for a response already closed");
+  assert.equal(closes, 1);
+  assert.deepEqual(s.logLines, [], "closing a server that never connected logs nothing");
+  assert.deepEqual(s.auditLines(), [], "no tool ran, so nothing was audited");
 });

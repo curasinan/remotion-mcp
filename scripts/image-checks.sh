@@ -30,17 +30,15 @@ else
   fail "setpriv is missing from PATH ($PATH)"
 fi
 
-# 2. No npm in the runtime: the service never installs anything and never falls back to npx.
-if command -v npm >/dev/null 2>&1; then
-  fail "npm is present in the runtime image at $(command -v npm)"
-else
-  pass "npm is absent"
-fi
-if command -v npx >/dev/null 2>&1; then
-  fail "npx is present in the runtime image at $(command -v npx)"
-else
-  pass "npx is absent"
-fi
+# 2. No package manager in the runtime: the service never installs anything and never falls back to npx. The base
+# image's Yarn (yarn, yarnpkg) and Node's corepack, which can fetch npm or pnpm, count too.
+for tool in npm npx yarn yarnpkg corepack; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    fail "$tool is present in the runtime image at $(command -v "$tool")"
+  else
+    pass "$tool is absent"
+  fi
+done
 
 # 3. tini is PID 1, so orphans are reaped and SIGTERM reaches the service.
 pid1=$(tr '\000' ' ' < /proc/1/cmdline 2>/dev/null)
@@ -122,7 +120,8 @@ else
 fi
 
 # 8. Not root: the image's USER node. docker exec runs as the container's user, so this is the user the service
-# runs as, and a render that escapes Chrome's sandbox is not root.
+# runs as. Remotion launches Chrome with --no-sandbox, so there is no sandbox around a render: its code runs as this
+# user, with everything the service itself can do, and this user must not be root.
 case "$uid" in
   '') fail "id -u printed no uid, so the user cannot be checked" ;;
   0) fail "the container runs as root (uid 0, $user): the image must set USER node" ;;

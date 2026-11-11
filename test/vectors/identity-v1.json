@@ -850,6 +850,167 @@
           }
         }
       ]
+    },
+    {
+      "name": "malformed: v 2 under a 42-character signature",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoyLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.BvE_wAzJQ5q2cLNJRUr-FeM0D9dWjK0MwiJtyMIQLZ",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "malformed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "missing: no header, and a body that is not JSON",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": null,
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiw=",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "missing"
+          }
+        }
+      ]
+    },
+    {
+      "name": "missing: no header, and an array body",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": null,
+          "body_base64": "W3sianNvbnJwYyI6IjIuMCIsImlkIjoxLCJtZXRob2QiOiJ0b29scy9jYWxsIiwicGFyYW1zIjp7Im5hbWUiOiJyZW5kZXJfc3RpbGwiLCJhcmd1bWVudHMiOnsidGVtcGxhdGVfaWQiOiJzY29yZWJvYXJkIiwicHJvcHMiOnsidGl0bGUiOiJCZcWfaWt0YcWfIMK3IMSwc3RhbmJ1bCJ9fSwiX21ldGEiOnsiaW8uZ2l0aHViLmN1cmFzaW5hbi9yZXF1ZXN0X2lkIjoici0xIn19fV0=",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "missing"
+          }
+        }
+      ]
+    },
+    {
+      "name": "body_mismatch: the signed body replaced by an array",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdc",
+          "body_base64": "W3sianNvbnJwYyI6IjIuMCIsImlkIjoxLCJtZXRob2QiOiJ0b29scy9jYWxsIiwicGFyYW1zIjp7Im5hbWUiOiJyZW5kZXJfc3RpbGwiLCJhcmd1bWVudHMiOnsidGVtcGxhdGVfaWQiOiJzY29yZWJvYXJkIiwicHJvcHMiOnsidGl0bGUiOiJCZcWfaWt0YcWfIMK3IMSwc3RhbmJ1bCJ9fSwiX21ldGEiOnsiaW8uZ2l0aHViLmN1cmFzaW5hbi9yZXF1ZXN0X2lkIjoici0xIn19fV0=",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "body_mismatch"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool_mismatch: claims tool list_templates, and the _meta id is r-2",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoibGlzdF90ZW1wbGF0ZXMiLCJib2R5X3NoYTI1NiI6IjU4YTk3ODI4NjRiZDJkOTgyNjRkYzZiZTE1ZDk0MmZkOWMzYmVjMjRlNDdiNDJlMjI0MThmZWZhZDNkYWUxNTYiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDA2MH0.Ye7dqr1fS_hme968ZjtawtObabNLlkNW22BtSgc59IQ",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTIifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "tool_mismatch"
+          }
+        }
+      ]
+    },
+    {
+      "name": "request_id_mismatch: an accepted id reused with the _meta id r-2",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdc",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiI1OGE5NzgyODY0YmQyZDk4MjY0ZGM2YmUxNWQ5NDJmZDljM2JlYzI0ZTQ3YjQyZTIyNDE4ZmVmYWQzZGFlMTU2IiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.vfcFSC4NAN7J-fewoULAYz4pinzl3aP1S_VBHfFK3GQ",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTIifX19",
+          "expected": {
+            "ok": false,
+            "status": 401,
+            "reason": "request_id_mismatch"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parse: an accepted id reused with a body that is not JSON",
+      "options": {
+        "audience": "dep-a",
+        "nowS": 1800000000,
+        "skewS": 30,
+        "maxTtlS": 120,
+        "startedAtS": 1799999400
+      },
+      "steps": [
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiJhZDIxZDliZmUwMGVjOWVjOWMzYzZlYWQwNDdiZGFlMzQ4M2UxM2VkZWIzNmM3YTMwZDk1YTQ1M2ZjN2I5ZWIyIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.VQddcIUxPdIvqxSdmNno1XOGgs8qunIrm8zRKIgdrdc",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsIm1ldGhvZCI6InRvb2xzL2NhbGwiLCJwYXJhbXMiOnsibmFtZSI6InJlbmRlcl9zdGlsbCIsImFyZ3VtZW50cyI6eyJ0ZW1wbGF0ZV9pZCI6InNjb3JlYm9hcmQiLCJwcm9wcyI6eyJ0aXRsZSI6IkJlxZ9pa3RhxZ8gwrcgxLBzdGFuYnVsIn19LCJfbWV0YSI6eyJpby5naXRodWIuY3VyYXNpbmFuL3JlcXVlc3RfaWQiOiJyLTEifX19",
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "header": "eyJ2IjoxLCJyZXF1ZXN0X2lkIjoici0xIiwicHJpbmNpcGFsIjoiay0xIiwidGVuYW50IjoidC0xIiwiYXVkIjoiZGVwLWEiLCJ0b29sIjoicmVuZGVyX3N0aWxsIiwiYm9keV9zaGEyNTYiOiIwYzUwNjI3ZTBjZmY1MTMxM2FhODQzZTE2OTBkZTMwOTYyZmU1ZjZiYTE2MWJjN2I0NDVjNTFjODgwNzFmY2Y0IiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDAwNjB9.bZl1orXtnxVCJXXVi8Pq131vsEPADE7Zj02UXFBlsYg",
+          "body_base64": "eyJqc29ucnBjIjoiMi4wIiw=",
+          "expected": {
+            "ok": false,
+            "status": 400,
+            "reason": "parse"
+          }
+        }
+      ]
     }
   ]
 }
