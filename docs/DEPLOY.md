@@ -30,7 +30,17 @@ It has no npm, no pack, no browser and no key. It runs as `node` (uid 1000).
 CI publishes it to `ghcr.io/curasinan/remotion-viz-service` once the owner
 enables publishing (`.github/workflows/service-image-publish.yml`). Each
 publish writes the image's digest to its job summary. Pin that digest, never a
-tag. Until publishing is on, build it from this repository:
+tag.
+
+**No check has run against a published digest.** The publish job rebuilds
+the image on each push to `main`, from the floating `node:22-bookworm-slim`
+base as it is that day. CI's `image` job proves an image it builds itself
+from the same commit, which may sit on a different base than the published
+one. Before you roll out, build your derived image on the digest you pin and
+run `scripts/image-checks.sh` against it
+([below](#what-this-repository-proves-and-what-it-does-not)).
+
+Until publishing is on, build it from this repository:
 
 ```sh
 docker build --platform linux/amd64 -f Dockerfile.service -t remotion-viz-service:local .
@@ -68,8 +78,12 @@ What the recipe does:
   `BROWSER_EXECUTABLE=/pack/browser/chrome-headless-shell`. The service passes
   `--browser-executable` on every render, which is what prevents a download
   at run time. No environment variable disables one.
-- **`.dockerignore`** sends only `dist-pack/` and the Dockerfile: never your
-  sources, a `node_modules` installed on the build host, or a test render.
+- **`.dockerignore`** is an allow-list. It excludes everything, then lets
+  back in only `dist-pack/` (without any `node_modules` inside it) and
+  `Dockerfile.derived`. So nothing else in that directory reaches the
+  builder, which a remote builder would upload: not a `.env`, `.git/`, keys,
+  your sources, a `node_modules` installed on the build host, or a test
+  render.
 
 **Never put keys in a Dockerfile or an image.** Not as `ENV`, not as
 `ARG`, not as a copied file. Keys reach the container in its environment at
@@ -82,8 +96,8 @@ run time, from your secret store.
 | `SERVICE_AUDIENCE` | yes | | This deployment's id: the `aud` your gateway signs. |
 | `IDENTITY_HMAC_KEY` | yes | | The key your gateway signs this deployment's requests with. Unpadded base64url, at least 32 bytes. |
 | `AUDIT_HMAC_KEY` | yes | | The key the audit log's hashes are made with. Unpadded base64url, at least 32 bytes. Its own key, never the identity key. |
-| `SERVICE_PORT` | no | `8080` | A whole number, 0 to 65535. |
-| `SERVICE_HOST` | no | `0.0.0.0` | The healthcheck probes `127.0.0.1`, so the address must include loopback. |
+| `SERVICE_PORT` | no | `8080` | A whole number, 1 to 65535 in a container. The service also accepts 0, a port the system picks, but the healthcheck would then probe port 0 and never report healthy. |
+| `SERVICE_HOST` | no | `0.0.0.0` | Must accept connections on IPv4 `127.0.0.1`, where the healthcheck probes. `0.0.0.0` (the default) and `127.0.0.1` do. `::1`, or a `localhost` that resolves to `::1`, fails every probe. |
 | `AUDIT_LOG_PATH` | no | `/var/log/remotion-viz/service-audit.jsonl` | Must open for appending, or the service refuses to start. |
 | `RENDER_SLOTS` | no | `2` | Renders at once, 1 to 64. A request with no free slot gets `render_busy`; there is no queue. |
 | `IDENTITY_SKEW_S` | no | `30` | Clock skew allowed between your gateway and this host, 0 to 120 seconds. |
@@ -135,6 +149,15 @@ period cuts that short with a `SIGKILL`.
 It is not audited. Kubernetes ignores Docker's `HEALTHCHECK`, so give the pod
 an exec probe with the same command:
 `["node", "dist-service/service/healthcheck.js"]`.
+
+- **Use it as the readiness probe**, so the pod gets traffic only once the
+  service answers.
+- **Set `timeoutSeconds: 5` or more.** Kubernetes' default of 1 s is shorter
+  than the probe's own 3 s request timeout plus Node's startup, so a healthy
+  service would fail it.
+- **As a liveness probe it is optional.** If you add one, give it the same
+  timeout and a `failureThreshold` of 3 or more, so one slow answer does not
+  restart the container.
 
 ### Egress is denied, always (ruling 6)
 
@@ -214,7 +237,8 @@ builds both images from the fixture pack and runs three checks:
 
 - `scripts/image-checks.sh`, inside a running derived container: `setpriv`,
   no npm, `tini` as PID 1, the browser runs and has every library, the
-  renderer's version, and a writable audit directory.
+  renderer's version, a writable audit directory, and a user that is not
+  root.
 - `scripts/image-e2e.mjs`, which drives the derived image directly with this
   repository's test signing client. The owner's gateway is not in it, so it
   is not a test of the backend, gateway and service path. It shows the image

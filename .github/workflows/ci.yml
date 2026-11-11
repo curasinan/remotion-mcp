@@ -240,6 +240,8 @@ jobs:
   image:
     needs: pack
     runs-on: ubuntu-latest
+    # Two image builds and the three checks take minutes; a hang must not hold a runner for GitHub's 360.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

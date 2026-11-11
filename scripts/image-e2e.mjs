@@ -17,9 +17,13 @@
 // Every case runs, each failure says what was missing, and it exits 1 if any failed (2 if it could not start).
 //
 // The orphan scan reads /proc/<pid>/cmdline for every numeric pid through `docker exec <c> node -e <SCAN>`: the image
-// has no ps, and a process's comm is cut to 15 characters. A survivor is any pid not in the case's baseline that is
-// not 1, not the service and not the scan itself. A scan whose docker exec fails fails its case; it never counts as
-// empty.
+// has no ps, and a process's comm is cut to 15 characters. Every case that renders (1, 4, 5 and 7) takes a baseline
+// first, and after each render polls until nothing new survives. A survivor is any pid not in the case's baseline
+// that is not 1, not the service and not the scan itself. A scan whose docker exec fails fails its case; it never
+// counts as empty.
+//
+// Nothing waits unbounded: every docker call is killed after its own bound, every raw POST times out, and every MCP
+// call has its own timeout, so a hung exec or a request that is never answered fails its case.
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -65,6 +69,10 @@ const START_WAIT_MS = 30_000;
  * case's cleanup still holds a slot.
  */
 const BUSY_WAIT_MS = RENDER_KILL_GRACE_MS + RENDER_VERIFY_DEADLINE_MS + 5_000;
+/** How long one docker CLI call may run before it is killed. `docker run -d` gets HEALTHY_WAIT_MS. */
+const DOCKER_CALL_MS = 30_000;
+/** How long a raw POST to /mcp may wait for its answer, body included. */
+const POST_TIMEOUT_MS = 30_000;
 const POLL_MS = 250;
 /** A pixel counts as ink when its brightest channel reaches this: the swatch draws white text on black. */
 const INK_THRESHOLD = 128;
@@ -72,30 +80,45 @@ const INK_THRESHOLD = 128;
 
 /**
  * Lists every process in /proc as JSON. No double quote and no backslash, so it survives every platform's argv
- * quoting on its way through `docker exec`.
+ * quoting on its way through `docker exec`. A process that exits mid-read (ENOENT, ESRCH) is skipped; any other
+ * read error is thrown, so the exec exits non-zero and fails the case rather than reading as a shorter list.
+ * scripts/walk-only-proof.mjs's processes() reads /proc the same way: a fix here belongs there too.
  */
 const SCAN = "const fs=require('fs');const out=[];for(const n of fs.readdirSync('/proc')){"
   + "if(!/^[0-9]+$/.test(n))continue;try{const s=fs.readFileSync('/proc/'+n+'/stat','utf8');"
   + "const f=s.slice(s.lastIndexOf(')')+2).split(' ');"
   + "const c=fs.readFileSync('/proc/'+n+'/cmdline','utf8').split(String.fromCharCode(0)).filter(Boolean).join(' ');"
-  + "out.push({pid:Number(n),ppid:Number(f[1]),state:f[0],cmdline:c})}catch{}}"
+  + "out.push({pid:Number(n),ppid:Number(f[1]),state:f[0],cmdline:c})}"
+  + "catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e}}"
   + "console.log(JSON.stringify({self:process.pid,procs:out}))";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const say = (line) => console.log(`image-e2e: ${line}`);
 
-/** Runs the docker CLI. Rejects on a non-zero exit, naming the command and its stderr, unless `allowFail`. */
-function docker(args, { env = {}, allowFail = false } = {}) {
+/**
+ * Runs the docker CLI. Rejects on a non-zero exit, naming the command and its stderr, unless `allowFail`. A call
+ * still running after `timeoutMs` is killed, and rejects naming the command: a hung exec fails its case.
+ */
+function docker(args, { env = {}, allowFail = false, timeoutMs = DOCKER_CALL_MS } = {}) {
+  const what = `docker ${args.slice(0, 3).join(" ")}`;
   return new Promise((resolve, reject) => {
     const child = spawn("docker", args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`${what} did not finish within ${timeoutMs} ms, and was killed`));
+    }, timeoutMs);
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code !== 0 && !allowFail) {
-        reject(new Error(`docker ${args.slice(0, 3).join(" ")} exited ${code}: ${stderr.trim()}`));
+        reject(new Error(`${what} exited ${code}: ${stderr.trim()}`));
       } else {
         resolve({ code, stdout, stderr });
       }
@@ -150,12 +173,16 @@ let servicePid;
 const pidsOf = (procs) => new Set(procs.map((p) => p.pid));
 const survivorsOf = (procs, baseline) =>
   procs.filter((p) => !baseline.has(p.pid) && p.pid !== 1 && p.pid !== servicePid);
-/** Each process as its pid, state and cmdline, cut to 200 characters: Chrome's run to kilobytes. */
+/**
+ * Each process as its pid, state and cmdline, cut to 200 characters: Chrome's run to kilobytes. A copy of
+ * scripts/walk-only-proof.mjs's describe(): a fix here belongs there too.
+ */
 const describe = (procs) => procs.map((p) => `${p.pid} [${p.state}] ${(p.cmdline || "(no cmdline)").slice(0, 200)}`)
   .join("; ");
 /**
  * Chrome: a process whose argv[0] is the browser. Never a match anywhere in the cmdline, since the CLI's own carries
- * `--browser-executable=<path>/chrome-headless-shell`.
+ * `--browser-executable=<path>/chrome-headless-shell`. A copy of scripts/walk-only-proof.mjs's isLiveChrome(): a
+ * fix here belongs there too.
  */
 const isChrome = (p) => p.state !== "Z" && p.cmdline.split(" ")[0].split("/").pop() === CHROME;
 
@@ -181,7 +208,7 @@ async function startContainer() {
     // Probe every second until the first success, then at the image's own interval, so probes seldom overlap a scan.
     "--health-start-period=120s", "--health-start-interval=1s",
     "-e", `SERVICE_AUDIENCE=${AUDIENCE}`, "-e", "IDENTITY_HMAC_KEY", "-e", "AUDIT_HMAC_KEY", image,
-  ], { env: keyEnv });
+  ], { env: keyEnv, timeoutMs: HEALTHY_WAIT_MS });
   await pollFor(async () => {
     const state = await containerState();
     if (!state.Running) throw new Error(`the container stopped with exit code ${state.ExitCode} before it was healthy`);
@@ -217,13 +244,20 @@ function categoryOf(result) {
   return result.structuredContent?.category;
 }
 
-/** One raw POST to /mcp, as a gateway forwards it. Resolves with the status. */
+/** One raw POST to /mcp, as a gateway forwards it. Resolves with the status, or rejects at POST_TIMEOUT_MS. */
 async function post(url, body, header) {
-  const response = await fetch(url, { method: "POST", body, headers: {
-    accept: "application/json, text/event-stream", "content-type": "application/json", [IDENTITY_HEADER]: header,
-  } });
-  await response.arrayBuffer();
-  return response.status;
+  try {
+    const response = await fetch(url, { method: "POST", body, signal: AbortSignal.timeout(POST_TIMEOUT_MS), headers: {
+      accept: "application/json, text/event-stream", "content-type": "application/json", [IDENTITY_HEADER]: header,
+    } });
+    await response.arrayBuffer();
+    return response.status;
+  } catch (err) {
+    if (err?.name === "TimeoutError") {
+      throw new Error(`POST ${url} was not answered within ${POST_TIMEOUT_MS} ms`, { cause: err });
+    }
+    throw err;
+  }
 }
 
 let client;
@@ -281,6 +315,7 @@ async function main() {
   const turkish = JSON.parse(fs.readFileSync(path.join(REPO, "fixtures", "pack", "props", "turkish.json"), "utf8"));
   let first;
   await step("1 render_still swatch with props/turkish.json returns a 1280 x 720 PNG", async () => {
+    const baseline = pidsOf(await scan());
     const png = pngOf((await still("swatch", turkish)).result);
     check(png.subarray(0, 8).equals(PNG_SIGNATURE), `the first eight bytes are ${png.subarray(0, 8).toString("hex")}`);
     check(png.toString("latin1", 12, 16) === "IHDR", "the first chunk is not IHDR");
@@ -288,6 +323,8 @@ async function main() {
     check(width === 1280 && height === 720, `IHDR says ${width} x ${height}`);
     first = signed.findLast((s) => s.claims.tool === "render_still");
     check(first !== undefined, "the signing client saw no render_still request");
+    // A successful render leaves nothing behind either. Otherwise its leftover would sit in case 4's baseline, unseen.
+    await assertNoSurvivors(baseline, "after the swatch render");
   });
 
   await step("2 a replayed request id gets 401", async () => {
@@ -339,6 +376,17 @@ async function main() {
         check(!text.includes(form), `the audit log contains the props value ${JSON.stringify(form)}`);
       }
     }
+    // A truncated, re-normalised or \u-escaped value passes the check above, so this one needs no list of values.
+    // An audit line is ts, outcome, tool, category, JSON pointer fields, numbers and hex hashes (src/service/audit.ts),
+    // plus the ids this script signs: PRINCIPAL, TENANT and the signing client's UUIDs. All printable ASCII, and
+    // JSON.stringify writes a \u escape only for a control character or a lone surrogate, which none of them holds.
+    // So any other character, or any \u, is something the audit took from a payload.
+    const lines = text.split("\n");
+    const unprintable = lines.findIndex((line) => /[^ -~]/.test(line));
+    check(unprintable === -1, `the audit log's line ${unprintable + 1} holds a character outside printable ASCII: `
+      + lines[unprintable]?.slice(0, 200));
+    const escaped = lines.findIndex((line) => line.includes("\\u"));
+    check(escaped === -1, `the audit log's line ${escaped + 1} holds a \\u escape: ${lines[escaped]?.slice(0, 200)}`);
   });
 
   await step("4 render_still slow gets render_timeout after the deadline and leaves no process", async () => {
@@ -385,8 +433,11 @@ async function main() {
   });
 
   await step("7 Turkish glyphs render, unlike tofu", async () => {
+    const baseline = pidsOf(await scan());
     const glyphs = await renderSwatch({ label: "ŞşİığĞüÜ", color: "#000000" });
+    await assertNoSurvivors(baseline, "after the Turkish render");
     const tofu = await renderSwatch({ label: "\u{10FFFD}".repeat(8), color: "#000000" });
+    await assertNoSurvivors(baseline, "after the tofu render");
     const glyphInk = inkCount(glyphs);
     const tofuInk = inkCount(tofu);
     check(tofuInk > 0, "the tofu render has no ink, so it cannot show what a missing glyph looks like");
@@ -425,7 +476,15 @@ try {
       const logs = await docker(["logs", "--tail", "200", container], { allowFail: true }).catch(() => undefined);
       if (logs?.code === 0) console.error(`image-e2e: the container's last log lines:\n${logs.stdout}${logs.stderr}`);
     }
-    await docker(["rm", "-f", container], { allowFail: true }).catch(() => {});
+    // A container left running still holds the throwaway keys, so a failed removal is said out loud. The verdict
+    // stays what the cases made it.
+    const removed = await docker(["rm", "-f", container], { allowFail: true })
+      .catch((err) => ({ code: undefined, stderr: err instanceof Error ? err.message : String(err) }));
+    if (removed.code !== 0) {
+      console.error(`image-e2e: WARNING: could not remove the container ${container}`
+        + `${removed.code === undefined ? "" : ` (docker rm -f exited ${removed.code})`}: ${removed.stderr.trim()}. `
+        + `Remove it yourself with: docker rm -f ${container}`);
+    }
   }
 }
 if (crashed) process.exit(2);

@@ -87,9 +87,23 @@ test("it exits 0 against a live createServiceHandler, and its GET writes no audi
   };
   const port = await listen(t, http.createServer(createServiceHandler(ctx, cfg)));
 
+  const auditLines = () => (fs.existsSync(auditPath) ? fs.readFileSync(auditPath, "utf8") : "")
+    .split("\n").filter((line) => line !== "");
   const result = await probe(port);
   assert.equal(result.code, 0, `exit code (output: ${result.output})`);
-  assert.equal(fs.existsSync(auditPath) ? fs.readFileSync(auditPath, "utf8") : "", "", "no audit line");
+  assert.deepEqual(auditLines(), [], "no audit line");
+
+  // The positive control: a request that must be audited, a POST without the identity header, adds exactly one
+  // refused line. The sink swallows its write failures, so only this shows the empty log above means the GET was not
+  // audited, rather than that nothing could be written.
+  const refused = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  await refused.arrayBuffer();
+  assert.equal(refused.status, 401, "a POST without the identity header");
+  const lines = auditLines();
+  assert.equal(lines.length, 1, `exactly one audit line for the refused POST: ${JSON.stringify(lines)}`);
+  assert.equal(JSON.parse(lines[0]).outcome, "refused");
 });
 
 test("it exits 1 when nothing listens on SERVICE_PORT", TIMED, async () => {

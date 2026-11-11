@@ -6,7 +6,7 @@
 #
 # The container runs the image's own entrypoint with throwaway configuration (docs/CI.md has the commands). Every
 # check runs, each failure names what was missing, and the script exits 1 if any failed. POSIX sh: `sh -s` runs it
-# under the image's dash.
+# under the image's dash. stdin is the script itself, so every command that could read it gets /dev/null instead.
 set -u
 
 failures=0
@@ -15,6 +15,13 @@ fail() {
   printf 'image-checks: FAIL: %s\n' "$1" >&2
   failures=$((failures + 1))
 }
+
+# The browser calls are bounded with coreutils' timeout (in every Debian image), so a browser or loader that hangs
+# fails its check instead of hanging the job. timeout exits 124 when it stopped the command, and 137 when the
+# command ignored the TERM and the KILL five seconds later stopped it.
+CHECK_TIMEOUT_S=30
+bounded() { timeout -k 5 "$CHECK_TIMEOUT_S" "$@" </dev/null; }
+timed_out() { [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; }
 
 # 1. setpriv, which Remotion wraps Chrome in for its pdeathsig, and which the service's startup check requires.
 if command -v setpriv >/dev/null 2>&1; then
@@ -46,20 +53,28 @@ esac
 if [ -z "${BROWSER_EXECUTABLE:-}" ]; then
   fail "BROWSER_EXECUTABLE is not set in the container's environment"
 else
-  if version=$("$BROWSER_EXECUTABLE" --version 2>&1); then
+  version=$(bounded "$BROWSER_EXECUTABLE" --version 2>&1)
+  status=$?
+  if [ "$status" -eq 0 ]; then
     pass "the browser runs: $version"
+  elif timed_out "$status"; then
+    fail "the browser at $BROWSER_EXECUTABLE timed out: --version did not finish within ${CHECK_TIMEOUT_S} s"
   else
-    fail "the browser at $BROWSER_EXECUTABLE did not run --version: $version"
+    fail "the browser at $BROWSER_EXECUTABLE did not run --version (exit $status): $version"
   fi
-  if libs=$(ldd "$BROWSER_EXECUTABLE" 2>&1); then
+  libs=$(bounded ldd "$BROWSER_EXECUTABLE" 2>&1)
+  status=$?
+  if [ "$status" -eq 0 ]; then
     missing=$(printf '%s\n' "$libs" | grep 'not found')
     if [ -n "$missing" ]; then
       fail "the browser's shared libraries are missing: $(printf '%s' "$missing" | tr '\n' ';')"
     else
       pass "ldd finds every shared library of the browser"
     fi
+  elif timed_out "$status"; then
+    fail "ldd timed out on $BROWSER_EXECUTABLE: it did not finish within ${CHECK_TIMEOUT_S} s"
   else
-    fail "ldd could not read $BROWSER_EXECUTABLE: $libs"
+    fail "ldd could not read $BROWSER_EXECUTABLE (exit $status): $libs"
   fi
 fi
 
@@ -85,21 +100,34 @@ if renderer=$(node -e '
   const below = (have[0] - min[0] || have[1] - min[1] || have[2] - min[2]) < 0;
   console.log(version + (below ? " is below 4.0.458" : " is at least 4.0.458"));
   process.exit(below ? 1 : 0);
-' 2>&1); then
+' </dev/null 2>&1); then
   pass "@remotion/renderer $renderer"
 else
   fail "@remotion/renderer $renderer"
 fi
 
-# 7. The audit log's directory is writable by the user the service runs as, proved by a write.
+# 7. The audit log's directory is writable by the user the service runs as, proved by a write. The write runs in a
+# subshell: a failed redirection on `:`, a special built-in, would make dash exit at once, before this FAIL line and
+# the summary.
+# id -un prints the number, and fails, for a uid with no name.
+uid=$(id -u 2>/dev/null)
+user=$(id -un 2>/dev/null) || user="no name"
 dir=/var/log/remotion-viz
 probe="$dir/.image-checks.$$"
-if [ -d "$dir" ] && [ -w "$dir" ] && : > "$probe" 2>/dev/null; then
+if [ -d "$dir" ] && [ -w "$dir" ] && ( : > "$probe" ) 2>/dev/null; then
   rm -f "$probe"
-  pass "$dir is writable by $(id -un 2>/dev/null || id -u)"
+  pass "$dir is writable by uid $uid ($user)"
 else
-  fail "$dir is missing or not writable by $(id -un 2>/dev/null || id -u)"
+  fail "$dir is missing or not writable by uid $uid ($user)"
 fi
+
+# 8. Not root: the image's USER node. docker exec runs as the container's user, so this is the user the service
+# runs as, and a render that escapes Chrome's sandbox is not root.
+case "$uid" in
+  '') fail "id -u printed no uid, so the user cannot be checked" ;;
+  0) fail "the container runs as root (uid 0, $user): the image must set USER node" ;;
+  *) pass "it runs as uid $uid ($user), not root" ;;
+esac
 
 if [ "$failures" -gt 0 ]; then
   printf 'image-checks: %s check(s) failed\n' "$failures" >&2

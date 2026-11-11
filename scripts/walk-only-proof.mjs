@@ -16,7 +16,8 @@
 //     -v "$PWD/scripts:/proof:ro" rv-pack:dev -- node /proof/walk-only-proof.mjs
 //
 // It imports the service's own modules from dist-service/ under the working directory, the image's /app. Exits 0 when
-// both runs pass, 1 when either fails, and 2 when it cannot start.
+// both runs pass, 1 when either fails (a render that rejects, or whose Chrome never appears, included), and 2 when it
+// cannot start. A run that fails is stopped, and what it left is killed and reaped, before the next run starts.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,8 +53,13 @@ const {
 } = await load("service/constants.js");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const messageOf = (err) => (err instanceof Error ? err.message : String(err));
 
-/** Every process in /proc: pid, parent, group, state and cmdline. One that exits mid-read is skipped. */
+/**
+ * Every process in /proc: pid, parent, group, state and cmdline. One that exits mid-read (ENOENT, ESRCH) is skipped;
+ * any other read error is thrown, so an unreadable process fails the run rather than vanishing from the table.
+ * scripts/image-e2e.mjs's SCAN reads /proc the same way: a fix here belongs there too.
+ */
 function processes() {
   const found = [];
   for (const name of fs.readdirSync("/proc")) {
@@ -64,8 +70,9 @@ function processes() {
       const [state, ppid, pgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       const cmdline = fs.readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
       found.push({ pid: Number(name), ppid: Number(ppid), pgid: Number(pgid), state, cmdline });
-    } catch {
+    } catch (err) {
       // Gone since the listing.
+      if (err?.code !== "ENOENT" && err?.code !== "ESRCH") throw err;
     }
   }
   return found;
@@ -73,12 +80,16 @@ function processes() {
 
 /** The processes not in `baseline`, never this one. A zombie still counts: until it is reaped its pid survives. */
 const newSince = (baseline) => processes().filter((p) => !baseline.has(p.pid) && p.pid !== process.pid);
-/** Each process as its pid, state and cmdline, cut to 200 characters: Chrome's run to kilobytes. */
+/**
+ * Each process as its pid, state and cmdline, cut to 200 characters: Chrome's run to kilobytes. A copy of
+ * scripts/image-e2e.mjs's describe(): a fix here belongs there too.
+ */
 const describe = (procs) => procs.map((p) => `${p.pid} [${p.state}] ${(p.cmdline || "(no cmdline)").slice(0, 200)}`)
   .join("; ");
 /**
  * A live Chrome process: its argv[0] is the browser. Never a match anywhere in the cmdline, since the CLI's own carries
- * `--browser-executable=<path>/chrome-headless-shell`.
+ * `--browser-executable=<path>/chrome-headless-shell`. A copy of scripts/image-e2e.mjs's isChrome(): a fix here
+ * belongs there too.
  */
 const isLiveChrome = (p) => p.state !== "Z" && path.basename(p.cmdline.split(" ")[0]) === CHROME;
 
@@ -143,27 +154,40 @@ function shellFindsSetpriv(pathVar) {
   }
 }
 
+/** SIGKILLs every process not in `baseline`, then polls until tini has reaped them all, or throws naming them. */
+async function reapSince(name, baseline) {
+  for (const p of newSince(baseline)) sigkill(p.pid);
+  await pollFor(() => (newSince(baseline).length === 0 ? true : undefined), GONE_WAIT_MS,
+    () => `${name}: the leftovers were not gone within ${GONE_WAIT_MS} ms: ${describe(newSince(baseline))}`);
+}
+
 /**
  * One aborted render of `slow`, with setpriv hidden from its environment and `makeKill(cliPid)` as its kill. Resolves
  * with the cleanup report, every id the kill was handed, and the processes still new once cleanup has settled.
+ *
+ * Whatever fails, nothing it started reaches the next run: the render is aborted and its cleanup awaited before the
+ * work directory goes, and a run that failed then kills and reaps every process still new.
  */
 async function abortedRender(name, makeKill) {
   fs.mkdirSync(cfg.tempRoot, { recursive: true, mode: 0o700 });
   const workDir = fs.mkdtempSync(path.join(cfg.tempRoot, `proof-${name}-`));
   fs.writeFileSync(path.join(workDir, PROPS_FILE), "{}", { mode: 0o600, flag: "wx" });
+  const controller = new AbortController();
+  let settled;
+  let baseline;
+  let passed = false;
   try {
     // 4. The service's allowlisted environment, with a PATH that holds node's directory but not setpriv's. Remotion
     // looks setpriv up on the CLI's PATH, so it now starts Chrome without the pdeathsig.
     const env = { ...childEnv(process.env, workDir), PATH: "/usr/local/bin" };
     if (shellFindsSetpriv(env.PATH)) throw new Error(`${name}: setpriv is still found on PATH=${env.PATH}`);
 
-    const baseline = new Set(processes().map((p) => p.pid));
-    const controller = new AbortController();
+    baseline = new Set(processes().map((p) => p.pid));
     const handed = [];
-    let kill = () => {
-      throw new Error(`${name}: the kill ran before the CLI was found`);
-    };
-    const settled = runRenderProcess(cli.file, [...cli.prefixArgs, ...argv], {
+    // Until Chrome is up and the run's own kill is chosen, every id is SIGKILLed: a render that ends early, or is
+    // stopped on the way out below, leaves nothing behind.
+    let kill = sigkill;
+    settled = runRenderProcess(cli.file, [...cli.prefixArgs, ...argv], {
       cwd: workDir, env, deadlineMs: RENDER_STILL_DEADLINE_MS, graceMs: RENDER_KILL_GRACE_MS,
       verifyDeadlineMs: RENDER_VERIFY_DEADLINE_MS, signal: controller.signal,
       // Whatever signal runRenderProcess asks for, the kill sends SIGKILL, or nothing.
@@ -172,14 +196,20 @@ async function abortedRender(name, makeKill) {
         kill(id);
       },
     });
+    // Both outcomes are caught: it rejects when no process started (a spawn error, a bad duration), and that must
+    // reach the run's FAIL line, never crash the script as an unhandled rejection.
     let early;
-    void settled.then((result) => { early = result; });
+    void settled.then((result) => { early = { result }; }, (error) => { early = { error }; });
 
     // 5. Chrome is up, launched by the CLI, which is this process's only child.
     const { cliPid, chrome } = await pollFor(() => {
+      if (early !== undefined && "error" in early) {
+        throw new Error(`${name}: the render rejected before Chrome appeared: ${messageOf(early.error)}`);
+      }
       if (early !== undefined) {
-        throw new Error(`${name}: the render settled before Chrome appeared: exit ${early.exitCode}, signal `
-          + `${early.signal}, timed out ${early.timedOut}; output: ${early.outputTail}`);
+        const { exitCode, signal, timedOut, outputTail } = early.result;
+        throw new Error(`${name}: the render settled before Chrome appeared: exit ${exitCode}, signal ${signal}, `
+          + `timed out ${timedOut}; output: ${outputTail}`);
       }
       const fresh = newSince(baseline);
       const cliProc = fresh.find((p) => p.ppid === process.pid && p.state !== "Z");
@@ -195,8 +225,19 @@ async function abortedRender(name, makeKill) {
     const result = await settled;
     if (!result.aborted) throw new Error(`${name}: the result did not settle as aborted`);
     const report = await result.cleanup;
-    return { name, report, handed, cliPid, chrome, baseline, survivors: newSince(baseline) };
+    const survivors = newSince(baseline);
+    passed = true;
+    return { name, report, handed, cliPid, chrome, baseline, survivors };
   } finally {
+    // Stop the render, if it still runs, and wait for its cleanup before its work directory goes.
+    controller.abort();
+    if (settled !== undefined) await settled.then((result) => result.cleanup, () => undefined);
+    if (!passed && baseline !== undefined) {
+      // The run failed: whatever it left must not run on into the next one. This never replaces the run's error.
+      await reapSince(name, baseline).catch((err) => {
+        console.error(`walk-only-proof: ${name}: could not reap what the failed run left: ${messageOf(err)}`);
+      });
+    }
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
@@ -233,10 +274,7 @@ async function controlRun() {
     say(`${name}: cleanup unverified as expected (${run.report.cause}); ${CHROME} survived: ${describe(chrome)}`);
   } finally {
     // Then reap: every process the render left, so the proof run starts from a clean table. tini reaps them.
-    for (const p of run.survivors) sigkill(p.pid);
-    await pollFor(() => (newSince(run.baseline).length === 0 ? true : undefined), GONE_WAIT_MS,
-      () => `${name}: the control's leftovers were not gone within ${GONE_WAIT_MS} ms: `
-        + describe(newSince(run.baseline)));
+    await reapSince(name, run.baseline);
   }
   say(`${name}: PASS (the leftovers were killed and reaped)`);
 }

@@ -1,10 +1,9 @@
-# For Dockerfile.derived, whose build context is this directory. Only dist-pack/ (build-pack's output, which the
-# image installs with npm ci --omit=dev) and the Dockerfile are sent: never the sources, a node_modules installed on
-# the build host, or a test render.
-node_modules
-src
-public
-props
-out.png
-package.json
-package-lock.json
+# For Dockerfile.derived, whose build context is this directory. An allow-list, not a deny-list: deployers copy this
+# file beside their own dist-pack/, into a directory that may also hold a .env, .git/, keys or other sources, and
+# whatever this file does not exclude is sent to the builder (a remote builder uploads it). So everything is excluded,
+# then only dist-pack/ (build-pack's output, which the image installs with npm ci --omit=dev) and the Dockerfile are
+# let back in. A node_modules inside dist-pack/ is excluded again: the pack stage installs its own on Linux.
+*
+!dist-pack/
+!Dockerfile.derived
+dist-pack/node_modules

@@ -308,9 +308,11 @@ name, so no key is in the repository, an image or an argv.
    never copied into the image. It checks that `setpriv` is on PATH, that npm
    and npx are absent, that PID 1 is `tini`, that the browser runs
    `--version`, that `ldd` finds every one of its libraries, that the
-   `@remotion/renderer` the pack's CLI loads is at least 4.0.458, and that
-   `/var/log/remotion-viz` is writable. Every check runs, and each failure
-   names what was missing.
+   `@remotion/renderer` the pack's CLI loads is at least 4.0.458, that
+   `/var/log/remotion-viz` is writable, and that it runs as a user other
+   than root. Every check runs, and each failure names what was missing. The
+   browser's `--version` and `ldd` are bounded at 30 s each, so a hung
+   browser fails its check instead of hanging the job.
 2. **`scripts/image-e2e.mjs rv-pack:dev`** drives the derived image directly
    with this repository's test signing client,
    `test/helpers/signing-client.mjs`. **The owner's gateway is not in it,**
@@ -321,15 +323,17 @@ name, so no key is in the repository, an image or an argv.
    - A replay of that exact request gets 401.
    - A forged header, another tenant's claims under the genuine signature,
      gets 401. The genuine header on the same body then gets 200.
-   - The audit log has the render's `ok` line and both refusals, and no
-     string from the props.
+   - The audit log has the render's `ok` line and both refusals, no string
+     from the props, and no character outside printable ASCII and no `\u`
+     escape, so a truncated or re-encoded value is caught too.
    - `render_still slow` gets `render_timeout`, after the 45 s deadline.
    - A CLI killed with `kill -KILL` mid-render gives `render_failed`.
    - A Turkish label differs from an all-tofu label in at least half of the
      tofu render's ink pixels, measured with `pixelmatch`.
 
-   After the timeout and the crash, an orphan scan polls the container's
-   `/proc` until no new process survives. The scan reads every pid's
+   After every render, the successful ones included, an orphan scan polls
+   the container's `/proc` until no process that was not there before the
+   case survives. The scan reads every pid's
    `cmdline` through `docker exec`, since the image has no `ps`. A failed
    exec fails the case, never counting as an empty scan. Its positive
    control is that it does see the render's Chrome while `slow` runs. It
@@ -359,12 +363,24 @@ gitignored), from the repository root after `npm ci` and
 docker build -f Dockerfile.service -t rv-service:dev .
 docker build -f fixtures/pack/Dockerfile.derived --build-arg SERVICE_IMAGE=rv-service:dev -t rv-pack:dev fixtures/pack
 key() { node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"; }
-IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run -d --name rv \
-  --health-start-period=120s --health-start-interval=1s \
-  -e SERVICE_AUDIENCE=ci -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY rv-pack:dev
-# Polls until the service reports healthy. If it never does, `docker logs rv` names the failed startup check.
-until [ "$(docker inspect --format '{{.State.Health.Status}}' rv)" = healthy ]; do sleep 1; done
-docker exec -i rv sh -s < scripts/image-checks.sh; docker rm -f rv
+# CI's "Image checks" step, in a subshell so its exit leaves your shell open. It polls to a 120 s deadline and stops
+# early if the container exits; on any failure `docker logs rv` names the failed startup check. The subshell exits
+# with the checks' own status, after the trap has removed the container.
+(
+  trap 'status=$?; [ "$status" -eq 0 ] || docker logs rv; docker rm -f rv >/dev/null; exit "$status"' EXIT
+  IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run -d --name rv \
+    --health-start-period=120s --health-start-interval=1s \
+    -e SERVICE_AUDIENCE=ci -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY rv-pack:dev
+  deadline=$((SECONDS + 120))
+  until [ "$(docker inspect --format '{{.State.Health.Status}}' rv)" = healthy ]; do
+    if [ "$(docker inspect --format '{{.State.Running}}' rv)" != true ] || [ "$SECONDS" -ge "$deadline" ]; then
+      echo "the checks container did not report healthy" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  docker exec -i rv sh -s < scripts/image-checks.sh
+)
 node scripts/image-e2e.mjs rv-pack:dev
 IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" MSYS_NO_PATHCONV=1 docker run --rm --entrypoint /usr/bin/tini \
   -e SERVICE_AUDIENCE=proof -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY \
@@ -372,7 +388,14 @@ IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" MSYS_NO_PATHCONV=1 docker run
 ```
 
 `MSYS_NO_PATHCONV=1` matters only in Git Bash on Windows, which would
-otherwise rewrite `/proof`. CI's own wait has a 120 s deadline.
+otherwise rewrite `/proof`. The recipe needs bash, for `$SECONDS`.
+
+Nothing in the job waits unbounded. The job has `timeout-minutes: 30`.
+`image-e2e.mjs` kills a docker call still running after 30 s (`docker run`
+after 120 s) and times out a raw POST after 30 s, so a hung exec or an
+unanswered request fails its case. A walk-only-proof run that fails, a
+rejected render or a Chrome that never appears included, is aborted, its
+cleanup awaited, and what it left killed and reaped, before the next run.
 
 **Recorded evidence: the images have not yet been built.** Docker's engine
 was down when Task 10 was written (2026-11-04), so the local image run, its
@@ -391,6 +414,17 @@ the real service, CLI and Chrome:
   named `tini`, with a PATH without npm. On the plain WSL host it failed the
   six that host does not meet, each naming what was missing, and it failed
   a renderer below 4.0.458, a missing one and a pre-release.
+
+Fix round 1 (2026-11-11) rehearsed the changed scripts the same way, with
+faults planted. Each fault passed unseen before the fix and fails after it:
+a process left behind by a successful render fails case 1; a truncated
+Turkish value, and the same value `\u`-escaped, in the audit fail case 6;
+a hung `docker exec` fails case 6 at its 30 s bound; a failed `docker rm -f`
+prints a warning and leaves the verdict alone. In walk-only-proof, a rejected
+render reaches its FAIL lines, and a run whose Chrome never appears leaves
+nothing alive for the next run. `image-checks.sh` fails a hung browser and
+`ldd` at 30 s, a root user, and, under dash, an audit directory whose write
+fails, with its FAIL line and summary.
 
 The first image run records its own evidence here.
 
@@ -477,7 +511,15 @@ which the owner sets when publishing is approved (design §1, ruling 3); until
 then it is skipped. It holds `contents: read` and `packages: write`, and
 nothing else. The pushed image's digest goes into the job summary, and that
 digest, never the tag, is what a deployer pins as the derived image's
-`SERVICE_IMAGE` ([`DEPLOY.md`](DEPLOY.md)). It has not run yet.
+`SERVICE_IMAGE` ([`DEPLOY.md`](DEPLOY.md)). It has not run yet. It has
+`timeout-minutes: 30`.
+
+**No check runs against the digest it publishes.** It rebuilds the image
+from the floating `node:22-bookworm-slim` base, so the image the `image` job
+proved for the same commit is a separate build, possibly on a different
+base. DEPLOY.md tells deployers to run `scripts/image-checks.sh` against
+their derived image on the pinned digest before rollout. Pinning the base,
+or gating the publish on the `image` job, is an owner decision.
 
 ## `pages.yml` — the landing site
 
