@@ -20,6 +20,8 @@ if (!fs.existsSync(path.join(SERVICE, "templates.js"))) {
 const { loadPack, checkSchemaVocabulary, PackError } =
   await import(pathToFileURL(path.join(SERVICE, "templates.js")).href);
 const { MAX_RASTER_PIXELS } = await import(pathToFileURL(path.join(DIST, "constants.js")).href);
+const { MAX_TEMPLATE_ID } = await import(pathToFileURL(path.join(SERVICE, "constants.js")).href);
+const { TOOL_DEFS } = await import(pathToFileURL(path.join(SERVICE, "tools.js")).href);
 
 const PACKS = path.join(REPO, "test", "fixtures", "packs");
 const GOOD = path.join(PACKS, "good");
@@ -157,7 +159,7 @@ test("checkSchemaVocabulary reports nested and untyped holes at full pointers", 
   }
   // Names are escaped per RFC 6901, and the root is the empty pointer.
   check(obj({ "a/b~c": { type: "string" } }), ["/properties/a~1b~0c: maxLength required"]);
-  check({ type: "string" }, [": maxLength required"]);
+  check({ type: "string" }, [": the root must be type object", ": maxLength required"]);
 });
 
 test("the vocabulary is closed: root-only keywords, literal false, schema-object items, usable limits", () => {
@@ -301,12 +303,15 @@ test("a schema nests at most 64 deep, and a far deeper one is a PackError, never
   const tooDeep = (at) => [`${at}: schema nested too deeply`];
   assert.deepEqual(checkSchemaVocabulary(nested(64)), []);
   assert.deepEqual(checkSchemaVocabulary(nested(65)), tooDeep("/properties/x".repeat(64)));
-  // Every way down counts: items, anyOf branches, and $defs entries, which sit one below the root.
+  // Every way down counts: items, anyOf branches, and $defs entries, which sit one below the root. The root is an
+  // object, so each chain starts one below it.
+  const underRoot = (n, step) => obj({ x: nested(n - 1, step) });
   const items = (child) => ({ type: "array", maxItems: 1, items: child });
-  assert.deepEqual(checkSchemaVocabulary(nested(64, items)), []);
-  assert.deepEqual(checkSchemaVocabulary(nested(65, items)), tooDeep("/items".repeat(64)));
+  assert.deepEqual(checkSchemaVocabulary(underRoot(64, items)), []);
+  assert.deepEqual(checkSchemaVocabulary(underRoot(65, items)), tooDeep(`/properties/x${"/items".repeat(63)}`));
   const anyOf = (child) => ({ anyOf: [child] });
-  assert.deepEqual(checkSchemaVocabulary(nested(65, anyOf)), tooDeep("/anyOf/0".repeat(64)));
+  assert.deepEqual(checkSchemaVocabulary(underRoot(64, anyOf)), []);
+  assert.deepEqual(checkSchemaVocabulary(underRoot(65, anyOf)), tooDeep(`/properties/x${"/anyOf/0".repeat(63)}`));
   assert.deepEqual(checkSchemaVocabulary({ $defs: { d: nested(63) }, ...obj({}) }), []);
   assert.deepEqual(checkSchemaVocabulary({ $defs: { d: nested(64) }, ...obj({}) }),
     tooDeep(`/$defs/d${"/properties/x".repeat(63)}`));
@@ -700,6 +705,62 @@ test("compositionId keeps to Remotion's composition id rule and never starts wit
   }
   // Positive controls: Remotion's own charset, CJK and an inner '-' included.
   for (const id of ["Score-board-2", "比分", "S"]) assert.equal(loadPack(withId(id)).template("scoreboard").compositionId, id);
+});
+
+test("a template id is at most MAX_TEMPLATE_ID characters, the most render_still accepts, in the composition-id charset",
+  (t) => {
+    const templateId = TOOL_DEFS.render_still.inputSchema.template_id;
+    const tooLong = `/templates/0/id: longer than ${MAX_TEMPLATE_ID} characters, the most render_still accepts as a template_id`;
+    const charset = "/templates/0/id: only a-z, A-Z, 0-9, CJK and '-' allowed, and no leading '-'";
+    const withId = (id) => tempPack(t, (m) => { m.templates[0].id = id; });
+
+    // One past render_still's own limit, read from the same constant: the SDK would refuse every call naming it.
+    const over = "s".repeat(MAX_TEMPLATE_ID + 1);
+    assert.equal(templateId.safeParse(over).success, false, "control: render_still refuses this id");
+    const err = refusal(withId(over));
+    assert.ok(err instanceof PackError, String(err));
+    assert.deepEqual(err.problems, [tooLong]);
+    assert.ok(err.message.includes(tooLong), "the problem is located in the manifest");
+    // Counted in UTF-16 units, as zod's max() counts them.
+    assert.deepEqual(refusal(withId("比".repeat(MAX_TEMPLATE_ID + 1))).problems, [tooLong]);
+
+    // The contract's charset: the id reaches logs and the audit, and the CLI refuses a leading '-'.
+    for (const id of ["score board", "score_board", "-scoreboard", "a/b", "Şenol", "x\n", "‮scoreboard"]) {
+      assert.deepEqual(refusal(withId(id)).problems, [charset], JSON.stringify(id));
+    }
+    assert.deepEqual(refusal(withId(`${over} x`)).problems, [charset, tooLong], "both rules are named");
+
+    // Positive controls: exactly the limit, CJK, an inner '-', and one character all load, and render_still accepts each.
+    for (const id of ["s".repeat(MAX_TEMPLATE_ID), "比".repeat(MAX_TEMPLATE_ID), "score-board-2", "S"]) {
+      assert.equal(loadPack(withId(id)).template(id)?.id, id, id);
+      assert.equal(templateId.safeParse(id).success, true, `render_still accepts ${id}`);
+    }
+  });
+
+test("a propsSchema's root must be type object, so no published contract is one render_still can never accept", (t) => {
+  const root = ": the root must be type object";
+  // Each passed the gate and loaded before, yet render_still's props is always an object.
+  for (const schema of [
+    { type: "string", maxLength: 5 },
+    { enum: ["a", "b"] },
+    { type: "array", maxItems: 2, items: { type: "boolean" } },
+    { anyOf: [obj({}), { type: "null" }] },
+    { $defs: { o: obj({}) }, $ref: "#/$defs/o" },
+  ]) {
+    assert.deepEqual(checkSchemaVocabulary(schema), [root], JSON.stringify(schema));
+    const err = refusal(swatchPack(t, schema));
+    assert.ok(err instanceof PackError, String(err));
+    assert.deepEqual(err.problems, [root], JSON.stringify(schema));
+    assert.match(err.message, /\/templates\/1\/propsSchema: the root must be type object/);
+  }
+  // Only the root: an object root with an anyOf of object branches still passes, and a non-object node below the
+  // root is the vocabulary's ordinary business.
+  assert.deepEqual(checkSchemaVocabulary({ type: "object", additionalProperties: false,
+    anyOf: [obj({ a: ONE }), obj({ b: ONE })] }), []);
+  assert.deepEqual(checkSchemaVocabulary(obj({ x: { type: "string", maxLength: 5 } })), []);
+  // Positive control: an object root loads, and ajv validates against it.
+  const pack = loadPack(swatchPack(t, obj({ x: ONE })));
+  assert.deepEqual(pack.validateProps("swatch", { x: "a" }), { ok: true });
 });
 
 test("bundle/index.html is 'file required' only when it is missing; any other stat failure is named", (t) => {

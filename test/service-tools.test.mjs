@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
+import { getEventListeners } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -23,7 +24,7 @@ if (!fs.existsSync(path.join(SERVICE, "registry.js"))) {
 // pathToFileURL, not a bare path: import() of a Windows absolute path throws.
 const load = (name) => import(pathToFileURL(path.join(SERVICE, name)).href);
 const { SERVICE_TOOLS, registerServiceTools } = await load("registry.js");
-const { createAuditSink } = await load("audit.js");
+const { createAuditSink, AUDIT_FAILURE_LOG_INTERVAL_MS } = await load("audit.js");
 const { loadPack } = await load("templates.js");
 const { RenderSlots } = await load("slots.js");
 const {
@@ -102,6 +103,12 @@ function latch() {
   const promise = new Promise((r) => { resolve = r; });
   return { promise, resolve };
 }
+
+/** Resolves when `signal` aborts, at once if it already has. */
+const abortOf = (signal) => new Promise((resolve) => {
+  if (signal.aborted) resolve();
+  else signal.addEventListener("abort", resolve, { once: true });
+});
 
 /**
  * A server with the four tools over an in-memory client that carries CLAIMS. `ctx.tempRoot` is a fresh directory.
@@ -195,6 +202,13 @@ test("tools/list returns exactly SERVICE_TOOLS in order", TIMED, async (t) => {
   for (const name of ["list_templates", "render_video_start"]) {
     assert.deepEqual(tools.find((tool) => tool.name === name).inputSchema.properties ?? {}, {}, `${name} takes nothing`);
   }
+
+  // ajv runs with allErrors off, so invalid_props names the first failing prop, never every one; the description says so.
+  const description = tools.find((tool) => tool.name === "render_still").description;
+  assert.ok(description.includes("invalid_props (with the first failing JSON pointer)"), description);
+  assert.doesNotMatch(description, /pointers of the failing props/);
+  const twoBad = await call(s.client, "render_still", stillArgs({ props: { ...validProps(), label: 7, theme: "neon" } }));
+  assert.deepEqual(twoBad.structuredContent, { category: "invalid_props", paths: ["/label"] }, "two props fail, one is named");
 });
 
 test("render_still's strict schema refuses an unknown argument and runs nothing", TIMED, async (t) => {
@@ -448,10 +462,54 @@ test("the run's signal aborts when the service shuts down", TIMED, async (t) => 
   await entered.promise;
   assert.equal(signal.aborted, false);
   shutdown.abort();
-  // AbortSignal.any propagates synchronously.
+  // The link is an abort listener, and dispatch is synchronous.
   assert.equal(signal.aborted, true, "the run's signal aborts with the service's shutdown");
   assertCategory(await pending, "render_failed");
   await settled(s);
+});
+
+test("each render links to the shutdown signal by one listener, removed once its run settles", TIMED, async (t) => {
+  // AbortSignal.any left a record on the long-lived shutdown signal per render that nothing ever reclaimed.
+  const shutdown = new AbortController();
+  const s = await setup(t, { shutdown: shutdown.signal });
+  const listeners = () => getEventListeners(shutdown.signal, "abort").length;
+  const baseline = listeners();
+  const during = [];
+  const record = (_file, _args, options) => during.push({ shutdown: listeners(), aborted: options.signal.aborted });
+  // Every way a run settles: a PNG, a failed exit, a timeout, an abort, and a run that throws.
+  const runs = [
+    fakeRun({ onCall: record }),
+    fakeRun({ onCall: record, exitCode: 1 }),
+    fakeRun({ onCall: record, timedOut: true }),
+    fakeRun({ onCall: record, aborted: true }),
+    fakeRun({ onCall: record, throwError: new Error("spawn failed") }),
+  ];
+  for (let round = 0; round < 3; round += 1) {
+    for (const run of runs) {
+      s.ctx.run = run;
+      await call(s.client, "render_still", stillArgs());
+      await settled(s);
+    }
+  }
+  assert.deepEqual(during, Array.from({ length: 15 }, () => ({ shutdown: baseline + 1, aborted: false })),
+    "one listener while each run is in flight");
+  assert.equal(listeners(), baseline, "every listener is removed once its run settles");
+
+  // A render refused before it runs adds none.
+  assertCategory(await call(s.client, "render_still", stillArgs({ frame: SCOREBOARD.maxFrames })), "frame_out_of_range");
+  assert.equal(listeners(), baseline);
+  // And the shutdown still reaches a render that is in flight.
+  const entered = latch();
+  let signal;
+  s.ctx.run = fakeRun({ aborted: true, hold: entered.promise.then(() => abortOf(signal)),
+    onCall: (_file, _args, options) => { signal = options.signal; entered.resolve(); } });
+  const pending = call(s.client, "render_still", stillArgs());
+  await entered.promise;
+  shutdown.abort();
+  assert.equal(signal.aborted, true);
+  assertCategory(await pending, "render_failed");
+  await settled(s);
+  assert.equal(listeners(), baseline);
 });
 
 test("failures map to categories, and nothing escapes", TIMED, async (t) => {
@@ -603,6 +661,76 @@ test("the audit holds keyed hashes and sizes, and never the payload", TIMED, asy
   if (POSIX) assert.equal(fs.statSync(s.auditPath).mode & 0o777, 0o600);
 });
 
+test("a failing audit append logs one operator line per streak and one on recovery, rate-limited, never the line",
+  TIMED, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "service-audit-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, "audit", "service-audit.jsonl");
+    const lines = [];
+    let now = 0;
+    const sink = createAuditSink(file, randomBytes(32), { log: (line) => lines.push(line), nowMs: () => now });
+    const event = { ts: new Date(0).toISOString(), outcome: "ok", request_id: "CANARY-req", principal: "CANARY-p",
+      tenant: "CANARY-t", tool: "render_still", params_hash: "ab".repeat(32), params_bytes: 10 };
+    // Appending to a directory throws (EISDIR), as appending to a full volume throws ENOSPC. The lines appended so far
+    // are counted before the file makes way for the directory.
+    let appended = 0;
+    const linesInFile = () => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).length : 0);
+    const fail = () => {
+      appended += linesInFile();
+      fs.rmSync(file, { force: true });
+      fs.mkdirSync(file);
+    };
+    const heal = () => fs.rmdirSync(file);
+    const failed = "service: audit: appending to AUDIT_LOG_PATH failed (EISDIR): audit lines are dropped until an "
+      + "append succeeds";
+    const back = (n) => `service: audit: appending to AUDIT_LOG_PATH works again: ${n} audit line(s) were dropped`;
+    assert.equal(typeof AUDIT_FAILURE_LOG_INTERVAL_MS, "number", "audit.js exports its rate limit");
+
+    sink.record(event);
+    assert.deepEqual(lines, [], "a working append logs nothing");
+    fail();
+    // A flood of failures is one streak and one line.
+    for (let i = 0; i < 1_000; i += 1) sink.record(event);
+    assert.deepEqual(lines, [failed]);
+    heal();
+    sink.record(event);
+    sink.record(event);
+    assert.deepEqual(lines, [failed, back(1_000)], "the recovery is logged once, with what was lost");
+
+    // A volume that flaps within the interval: each streak is counted, none is logged.
+    now += AUDIT_FAILURE_LOG_INTERVAL_MS - 1;
+    for (let i = 0; i < 50; i += 1) {
+      fail();
+      sink.record(event);
+      sink.record(event);
+      heal();
+      sink.record(event);
+    }
+    assert.deepEqual(lines, [failed, back(1_000)], "a flapping volume cannot flood the log");
+    // The first append that works once the interval has passed reports what those streaks dropped.
+    now += 1;
+    sink.record(event);
+    assert.deepEqual(lines, [failed, back(1_000), back(100)]);
+    sink.record(event);
+    assert.equal(lines.length, 3, "nothing is reported twice");
+    // Past the interval, a new streak is logged again.
+    fail();
+    sink.record(event);
+    heal();
+    sink.record(event);
+    assert.deepEqual(lines.slice(3), [failed, back(1)]);
+
+    for (const line of lines) {
+      assert.doesNotMatch(line, /CANARY|service-audit|\n/, `the audit line's content or its path: ${line}`);
+    }
+    // Every append that could succeed did: 1 + 2 + 50 + 1 + 1 + 1.
+    assert.equal(appended + linesInFile(), 56);
+
+    // A log that throws changes nothing: record() still never throws.
+    const quiet = createAuditSink(path.join(root, "audit"), randomBytes(32), { log: () => { throw new Error("down"); } });
+    assert.doesNotThrow(() => quiet.record(event));
+  });
+
 test("render_video_start and render_job_status return not_implemented", TIMED, async (t) => {
   const s = await setup(t);
   assertCategory(await call(s.client, "render_video_start"), "not_implemented");
@@ -706,7 +834,8 @@ test("the operator log gets one line per internal throw, render_failed and unver
 
     s.ctx.run = fakeRun({ throwError: new Error("LOGMARK-throw\nsecond line") });
     await still();
-    const tail = "LOGMARK-tail\r\n\u001b[31mred\u2028back\\slash\u0085";
+    // A bidi override and a zero-width space are format characters (Cf): raw, they would reorder or hide the line.
+    const tail = "LOGMARK-tail\r\n\u001b[31mred\u2028back\\slash\u0085\u202eright-to-left\u200b";
     s.ctx.run = fakeRun({ exitCode: 1, outputTail: tail });
     await still();
     // A tail that escapes to far more than the bound: its end is what stays.
@@ -724,7 +853,7 @@ test("the operator log gets one line per internal throw, render_failed and unver
     assert.deepEqual(rest, [], s.logLines.join("\n"));
     assert.equal(thrown, `${logPrefix("render_still", "internal")}LOGMARK-throw\\u000asecond line`);
     assert.equal(failed, `${logPrefix("render_still", "render_failed")}exit code 1: `
-      + "LOGMARK-tail\\u000d\\u000a\\u001b[31mred\\u2028back\\\\slash\\u0085");
+      + "LOGMARK-tail\\u000d\\u000a\\u001b[31mred\\u2028back\\\\slash\\u0085\\u202eright-to-left\\u200b");
     const boundedHead = `${logPrefix("render_still", "render_failed")}no out.png: `;
     assert.ok(bounded.startsWith(boundedHead), bounded.slice(0, 120));
     const boundedTail = bounded.slice(boundedHead.length);
@@ -735,6 +864,7 @@ test("the operator log gets one line per internal throw, render_failed and unver
 
     for (const line of s.logLines) {
       assert.doesNotMatch(line, RAW_CONTROL, "one line, no raw control character");
+      assert.doesNotMatch(line, /\p{Cf}/u, "no raw format character");
       for (const sentinel of Object.values(KEY_SENTINELS)) assert.ok(!line.includes(sentinel), `${sentinel} logged`);
     }
     assert.deepEqual(results.map((r) => r.structuredContent?.category ?? "ok"),
@@ -857,6 +987,39 @@ test("an out.png that is a FIFO is render_failed without blocking",
     }
     assertCategory(result, "render_failed");
     await settled(s);
+  });
+
+test("an out.png swapped for a FIFO after its lstat is render_failed without blocking, and the slot is freed",
+  { ...TIMED, skip: POSIX ? false : "FIFOs are POSIX only; this runs in WSL" }, async (t) => {
+    const s = await setup(t);
+    // The race, made certain: lstat saw a regular file, and a FIFO is what open() meets. tools.js calls lstat through
+    // this same node:fs/promises object.
+    const realLstat = fsp.lstat;
+    t.mock.method(fsp, "lstat", async (file, ...rest) => (String(file).endsWith(`${path.sep}out.png`)
+      ? { isFile: () => true }
+      : realLstat(file, ...rest)));
+    let fifo;
+    s.ctx.run = fakeRun({
+      noFile: true,
+      onCall: (_file, _args, options) => {
+        fifo = path.join(options.cwd, "out.png");
+        execFileSync("mkfifo", ["-m", "600", fifo]);
+      },
+    });
+    let result;
+    const pending = call(s.client, "render_still", stillArgs()).then((r) => { result = r; });
+    try {
+      await pollFor(() => result, "render_still blocked opening a FIFO that replaced out.png after its lstat");
+    } finally {
+      if (result === undefined && fifo !== undefined) {
+        // Only when it blocked: a writer releases the reader stuck in open(), so the test process can exit.
+        try { fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)); } catch { /* none */ }
+        await pending;
+      }
+    }
+    assertCategory(result, "render_failed");
+    await settled(s);
+    assert.deepEqual(s.logLines, [`${logPrefix("render_still", "render_failed")}out.png is not a regular file: `]);
   });
 
 test("params_hash covers the args as validated, in the schema's key order", TIMED, async (t) => {

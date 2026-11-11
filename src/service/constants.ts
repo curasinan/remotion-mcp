@@ -38,7 +38,8 @@ export const MIN_REMOTION_RENDERER = "4.0.458";
 
 /**
  * The longest `template_id` render_still accepts, in UTF-16 units as zod counts it. A template's id is its
- * composition's id, so scripts/build-pack.mjs refuses a longer one, reading this value from dist-service.
+ * composition's id, so loadPack refuses a longer one at startup, and scripts/build-pack.mjs at build time, reading
+ * this value from dist-service.
  */
 export const MAX_TEMPLATE_ID = 100;
 

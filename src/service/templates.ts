@@ -10,8 +10,9 @@ import path from "node:path";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 
 import { MAX_RASTER_PIXELS } from "../constants.js";
-// The schema depth and node budget live in ./constants.js, so build-pack's zod gate reads the same values.
-import { MAX_EXPANDED_NODES, MAX_SCHEMA_DEPTH } from "./constants.js";
+// The schema depth and node budget live in ./constants.js, so build-pack's zod gate reads the same values, and the
+// template id's length limit is the one render_still's input schema applies.
+import { MAX_EXPANDED_NODES, MAX_SCHEMA_DEPTH, MAX_TEMPLATE_ID } from "./constants.js";
 
 export interface TemplateEntry { id: string; compositionId: string; width: number; height: number;
   defaultFps: number; maxFrames: number; propsSchema: Record<string, unknown> }
@@ -54,9 +55,11 @@ const MAX_VALUE_DEPTH = 64;
 /**
  * Remotion's own composition id rule, `/^([a-zA-Z0-9-\u4E00-\u9FFF])+$/` in remotion 4.0.532's
  * `dist/cjs/validation/validate-composition-id.js`. The id reaches the CLI as a positional argument, so a leading
- * '-' is refused as well: the CLI would read it as a flag.
+ * '-' is refused as well: the CLI would read it as a flag. A template's id is its composition's id (CONTRACT-pack.md),
+ * so it keeps to the same rule.
  */
 const COMPOSITION_ID = /^[a-zA-Z0-9\u4E00-\u9FFF-]+$/;
+const ID_CHARSET_RULE = "only a-z, A-Z, 0-9, CJK and '-' allowed, and no leading '-'";
 
 /** Every keyword a schema node may carry. `format` is absent: strict ajv has no formats loaded. */
 const NODE_KEYWORDS = new Set([
@@ -167,6 +170,8 @@ function walk(node: unknown, ptr: string, depth: number, def: string | undefined
   const { type } = node;
   if (has(node, "type") && typeof type !== "string") out.push(`${ptr}: type must be a single string`);
   if (!has(node, "type") && !TYPE_CARRIERS.some((key) => has(node, key))) out.push(`${ptr}: type required`);
+  // render_still's props is always an object, so any other root publishes a contract no request can meet.
+  if (root && type !== "object") out.push(`${ptr}: the root must be type object`);
   if (has(node, "$ref")) {
     const name = refName(node.$ref);
     if (name === undefined) out.push(`${ptr}: $ref must be #/$defs/<name>`);
@@ -296,8 +301,8 @@ function reportExpansion(nodes: Map<string | undefined, number>, refs: RefEdge[]
 }
 
 /**
- * The closed-vocabulary gate a `propsSchema` must pass before ajv compiles it: every problem as
- * `<pointer>: <rule>`, with the pointer relative to the schema's root (`""`). An empty list passes.
+ * The closed-vocabulary gate a `propsSchema` must pass before ajv compiles it, its root a `type: "object"` node: every
+ * problem as `<pointer>: <rule>`, with the pointer relative to the schema's root (`""`). An empty list passes.
  */
 export function checkSchemaVocabulary(schema: unknown): string[] {
   const state: WalkState = {
@@ -372,13 +377,27 @@ function readManifest(file: string, report: Report): Record<string, unknown> | u
   return parsed;
 }
 
-/** Reports every problem with one template's own fields. */
+/** Whether `id` keeps to Remotion's composition id rule and does not start with '-'. */
+const keepsIdCharset = (id: string): boolean => COMPOSITION_ID.test(id) && !id.startsWith("-");
+
+/**
+ * Reports every problem with one template's own fields. The id must be one render_still can accept: its input schema
+ * caps template_id at MAX_TEMPLATE_ID UTF-16 units (zod's max() counts String#length), so a longer id would be listed
+ * and never renderable.
+ */
 function checkTemplateFields(entry: Record<string, unknown>, at: string, report: Report): void {
-  if (!isText(entry.id)) report(`${at}/id: non-empty string required`);
+  if (!isText(entry.id)) {
+    report(`${at}/id: non-empty string required`);
+  } else {
+    if (!keepsIdCharset(entry.id)) report(`${at}/id: ${ID_CHARSET_RULE}`);
+    if (entry.id.length > MAX_TEMPLATE_ID) {
+      report(`${at}/id: longer than ${MAX_TEMPLATE_ID} characters, the most render_still accepts as a template_id`);
+    }
+  }
   if (!isText(entry.compositionId)) {
     report(`${at}/compositionId: non-empty string required`);
-  } else if (!COMPOSITION_ID.test(entry.compositionId) || entry.compositionId.startsWith("-")) {
-    report(`${at}/compositionId: only a-z, A-Z, 0-9, CJK and '-' allowed, and no leading '-'`);
+  } else if (!keepsIdCharset(entry.compositionId)) {
+    report(`${at}/compositionId: ${ID_CHARSET_RULE}`);
   }
   for (const field of ["width", "height"]) {
     if (!isPositiveInteger(entry[field])) report(`${at}/${field}: positive integer required`);
@@ -421,8 +440,9 @@ export function loadPack(dir: string): LoadedPack {
     }
   }
 
-  // allErrors stays false: ajv then stops a node at its first failing keyword, and maxLength, enum and const all run
-  // before pattern. With allErrors on, a pack's pattern would run on a caller string of any length, and one
+  // allErrors stays false: ajv then stops at the first failing keyword in the whole props object, so invalid_props
+  // names the first failing pointer (plus one per failed anyOf branch), and maxLength, enum and const all run before
+  // pattern. With allErrors on, a pack's pattern would run on a caller string of any length, and one
   // backtracking regex would block the event loop (ajv's security guide gives the same warning). logger is off: when
   // V8 cannot compile a schema's generated code, ajv's default logger prints the whole function (about 600 KB for an
   // object of 1000 properties) to console.error. The throw itself still becomes a problem below.

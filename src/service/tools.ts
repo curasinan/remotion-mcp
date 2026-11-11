@@ -53,8 +53,11 @@ export function errorText(err: unknown): string {
 /** How many characters one message, and one output tail, may take in a log line once escaped. */
 const LOG_PART_CHARS = 2_500;
 const LOG_ID_CHARS = 200;
-/** A backslash, a control character, a line or paragraph separator, or a lone surrogate. */
-const LOG_ESCAPED = /^[\\\p{Cc}\p{Zl}\p{Zp}\p{Cs}]$/u;
+/**
+ * A backslash, a control character, a format character (a bidi override such as U+202E would reorder the rest of the
+ * line as a terminal shows it), a line or paragraph separator, or a lone surrogate.
+ */
+const LOG_ESCAPED = /^[\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]$/u;
 
 /** One character as a log line carries it: itself, or an escape, so the line stays one line. */
 function logChar(c: string): string {
@@ -121,13 +124,18 @@ async function removeDir(dir: string, log: RenderLog): Promise<void> {
   }
 }
 
-/** O_NOFOLLOW where the platform has one (not Windows): a symlink swapped in after the lstat is still not followed. */
-const OUTPUT_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+/**
+ * O_NOFOLLOW and O_NONBLOCK where the platform has them (not Windows). Something swapped in after the lstat is then
+ * still never followed if it is a symlink, and never blocks the open if it is a FIFO: a blocked open would hold the
+ * slot, and keep an unverified cleanup from ever reaching its exit 70.
+ */
+const OUTPUT_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 
 /**
- * The PNG the CLI wrote, or why there is none to return. Only a regular file is opened: lstat, never stat, so a
- * symlink is never followed, and a FIFO, whose open would block, or a directory is never opened. It reads at most
- * `cap + 1` bytes, enough to tell a file over the cap, so an oversized output is never read whole.
+ * The PNG the CLI wrote, or why there is none to return. Only a regular file is read: lstat, never stat, so a symlink
+ * is never followed, and a FIFO or a directory is never opened; then, since the path may have changed in between, the
+ * open descriptor is checked again. It reads at most `cap + 1` bytes, enough to tell a file over the cap, so an
+ * oversized output is never read whole.
  */
 async function readOutput(file: string, cap: number): Promise<Buffer | "missing" | "not_file" | "empty" | "too_large"> {
   const chunks: Buffer[] = [];
@@ -136,6 +144,8 @@ async function readOutput(file: string, cap: number): Promise<Buffer | "missing"
   try {
     if (!(await fs.lstat(file)).isFile()) return "not_file";
     handle = await fs.open(file, OUTPUT_OPEN_FLAGS);
+    // What was opened, not what the path named a moment ago. The finally closes it either way.
+    if (!(await handle.stat()).isFile()) return "not_file";
     // `end` is inclusive.
     for await (const chunk of handle.createReadStream({ end: cap, autoClose: false }) as AsyncIterable<Buffer>) {
       chunks.push(chunk);
@@ -214,6 +224,30 @@ async function afterCleanup(cleanup: Promise<CleanupReport>, dir: string, releas
   release();
 }
 
+/**
+ * One render's stop signal, aborted when any of `sources` aborts, through an abort listener on each source that
+ * `unlink` removes. Not AbortSignal.any: in Node 22 and 24 each call leaves a record on every source, and on the
+ * service's long-lived shutdown signal nothing ever reclaims it, about 170 bytes per render, for as long as the
+ * process lives.
+ */
+function linkedSignal(sources: readonly AbortSignal[]): { signal: AbortSignal; unlink(): void } {
+  const controller = new AbortController();
+  const onAbort = (): void => controller.abort();
+  for (const source of sources) {
+    if (source.aborted) {
+      controller.abort();
+      break;
+    }
+    source.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    unlink: () => {
+      for (const source of sources) source.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 async function renderStill(args: unknown, extra: ToolExtra, ctx: ServiceContext): Promise<CallToolResult> {
   const log: RenderLog = (category, message, outputTail) => serviceLog(ctx, extra, "render_still", category, message,
     outputTail);
@@ -246,15 +280,21 @@ async function renderStill(args: unknown, extra: ToolExtra, ctx: ServiceContext)
       browserExecutable: ctx.browserExecutable,
       timeoutMs: ctx.cliTimeoutMs,
     });
-    result = await ctx.run(ctx.cli.file, [...ctx.cli.prefixArgs, ...argv], {
-      cwd: dir,
-      env: childEnv(process.env, dir),
-      deadlineMs: ctx.stillDeadlineMs,
-      graceMs: ctx.graceMs,
-      verifyDeadlineMs: ctx.verifyDeadlineMs,
-      // A closed connection or a service shutdown stops the render.
-      signal: AbortSignal.any([extra.signal, ctx.shutdown]),
-    });
+    // A closed connection or a service shutdown stops the render.
+    const stop = linkedSignal([extra.signal, ctx.shutdown]);
+    try {
+      result = await ctx.run(ctx.cli.file, [...ctx.cli.prefixArgs, ...argv], {
+        cwd: dir,
+        env: childEnv(process.env, dir),
+        deadlineMs: ctx.stillDeadlineMs,
+        graceMs: ctx.graceMs,
+        verifyDeadlineMs: ctx.verifyDeadlineMs,
+        signal: stop.signal,
+      });
+    } finally {
+      // The run has settled, or never started: it ignores any later abort, and its cleanup runs on regardless.
+      stop.unlink();
+    }
     // Before anything else awaits: see settleCleanup.
     cleanup = settleCleanup(result.cleanup);
   } catch (err) {
@@ -297,7 +337,7 @@ export const TOOL_DEFS = Object.freeze({
     description: "Render one frame of a template as a PNG, returned as image content. template_id is an id from "
       + "list_templates; frame defaults to 0 and must be below the template's frame count; props must match the "
       + "template's propsSchema. Errors are a category and a fixed message: unknown_template, frame_out_of_range, "
-      + "invalid_props (with the JSON pointers of the failing props), render_busy, render_timeout, render_failed, "
+      + "invalid_props (with the first failing JSON pointer), render_busy, render_timeout, render_failed, "
       + "output_too_large or internal.",
     inputSchema: {
       template_id: z.string().max(MAX_TEMPLATE_ID),

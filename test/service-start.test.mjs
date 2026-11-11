@@ -206,8 +206,6 @@ test("parseServiceConfig refuses a RENDER_TEMP_ROOT that is, contains or lies in
       ["PACK_DIR", "is PACK_DIR, with a trailing separator and a dot segment", { tempRoot: `${pack}${path.sep}.${path.sep}` }],
       ["AUDIT_LOG_PATH", "is the audit log's directory, through a `..`",
         { tempRoot: `${logDir}${path.sep}..${path.sep}${path.basename(logDir)}` }],
-      ["PACK_DIR", "is a relative PACK_DIR, resolved against the cwd",
-        { tempRoot: path.resolve("rv-relative-pack"), packDir: "rv-relative-pack" }],
     ];
     for (const [name, what, paths] of overlaps) {
       const bad = envFor(paths);
@@ -225,6 +223,49 @@ test("parseServiceConfig refuses a RENDER_TEMP_ROOT that is, contains or lies in
       assert.equal(parseServiceConfig(envFor({ tempRoot })).tempRoot, tempRoot, `${tempRoot} is a sibling, not an overlap`);
     }
   });
+
+test("parseServiceConfig refuses a relative BROWSER_EXECUTABLE, PACK_DIR or AUDIT_LOG_PATH, naming only the variable",
+  () => {
+    // Preflight ran a relative BROWSER_EXECUTABLE from the service's own cwd and passed it, while every render's CLI,
+    // whose cwd is the render's work dir, then failed to find it. The other two would follow the cwd as well.
+    for (const name of ["BROWSER_EXECUTABLE", "PACK_DIR", "AUDIT_LOG_PATH"]) {
+      for (const value of ["rv-relative-path", `.${path.sep}rv-relative-path`, path.join("rv-dir", "rv-relative-path")]) {
+        const bad = baseEnv({ [name]: value });
+        const error = assertConfigError(() => parseServiceConfig(bad), name, bad, `${name}=${value}`);
+        assert.equal(error.message, `${name} must be an absolute path`);
+        assert.equal(error.message.includes("rv-"), false, `${name}=${value}: the message prints the value`);
+      }
+    }
+    // Positive controls: absolute values pass through as given.
+    const absolute = { BROWSER_EXECUTABLE: path.resolve("/opt/rv-chrome/chrome-headless-shell"),
+      PACK_DIR: path.resolve("/srv/rv-pack"), AUDIT_LOG_PATH: path.resolve("/var/rv-log/service-audit.jsonl") };
+    const cfg = parseServiceConfig(baseEnv(absolute));
+    assert.deepEqual([cfg.browserExecutable, cfg.packDir, cfg.auditLogPath],
+      [absolute.BROWSER_EXECUTABLE, absolute.PACK_DIR, absolute.AUDIT_LOG_PATH]);
+  });
+
+test("parseServiceConfig refuses the published test-vector key and an audit key equal to the identity key", () => {
+  // The key test/vectors/identity-v1.json publishes, so anyone can sign with it.
+  const vectors = JSON.parse(fs.readFileSync(path.join(REPO, "test", "vectors", "identity-v1.json"), "utf8"));
+  const published = vectors.key_base64url;
+  assert.deepEqual(Buffer.from(published, "base64url"), Buffer.alloc(32, 7), "control: the vectors' published key");
+  for (const name of KEY_NAMES) {
+    const bad = baseEnv({ [name]: published });
+    const error = assertConfigError(() => parseServiceConfig(bad), name, bad, `${name} is the published key`);
+    assert.equal(error.message, `${name} must not be the published test-vector key`);
+  }
+
+  const shared = freshKey();
+  const same = baseEnv({ IDENTITY_HMAC_KEY: shared, AUDIT_HMAC_KEY: shared });
+  const error = assertConfigError(() => parseServiceConfig(same), "AUDIT_HMAC_KEY", same, "the two keys are one");
+  assert.equal(error.message, "AUDIT_HMAC_KEY must differ from IDENTITY_HMAC_KEY");
+
+  // Positive control: two different keys, the bytes kept as decoded.
+  const env = baseEnv();
+  const cfg = parseServiceConfig(env);
+  assert.equal(cfg.identityKey.equals(cfg.auditKey), false);
+  assert.deepEqual(cfg.auditKey, Buffer.from(env.AUDIT_HMAC_KEY, "base64url"));
+});
 
 /**
  * A pack built at test time from the good fixture, with a stand-in CLI and renderer under node_modules. Never
@@ -695,10 +736,14 @@ test("shutdown exits 70 when a slot is still held graceMs + verifyDeadlineMs + 2
   let resolved = false;
   let started;
   const exits = [];
-  const exit = (code) => exits.push({ code, resolved, afterMs: performance.now() - started, logged: [...s.logs] });
+  const exit = (code) => exits.push({ code, resolved, afterMs: performance.now() - started, logged: [...s.logs],
+    left: fs.readdirSync(s.tempRoot) });
   const s = await startFor(t, { run, exit, killTiming });
   const pending = s.client.callTool(stillCall());
   await entered.promise;
+  const [heldDir] = fs.readdirSync(s.tempRoot);
+  assert.equal(fs.existsSync(path.join(s.tempRoot, heldDir, "props.json")), true, "the held render's props are on disk");
+  fs.writeFileSync(path.join(s.tempRoot, "stray"), "x");
   started = performance.now();
   const done = s.service.shutdown().then(() => { resolved = true; });
   await pollFor(() => (exits.length > 0 ? true : undefined), "shutdown never called exit with a slot still held");
@@ -708,11 +753,32 @@ test("shutdown exits 70 when a slot is still held graceMs + verifyDeadlineMs + 2
   assert.ok(at.afterMs >= bound - 50, `exit came ${Math.round(at.afterMs)} ms after shutdown began, before the ${bound} ms bound`);
   assert.ok(at.logged.some((line) => /1 render slot\(s\) still held after 2100 ms/.test(line)),
     `the stuck slot was logged before the exit: ${at.logged.join(" | ")}`);
+  // As onUnverifiedCleanup does: the held render's cleanup never settles, so nothing else would take its props off disk.
+  assert.deepEqual(at.left, [], "RENDER_TEMP_ROOT was emptied before the exit, the held render's props included");
+  assert.ok(at.logged.some((line) => /emptying RENDER_TEMP_ROOT and exiting with code 70$/.test(line)),
+    `the emptying was logged: ${at.logged.join(" | ")}`);
   await done;
   assert.equal(exits.length, 1);
   assert.equal(s.service.server.listening, false);
   assert.equal((await pending).structuredContent?.category, "render_failed");
 });
+
+test("startService passes its log to the audit sink: a failing append is logged once, and so is its recovery", TIMED,
+  async (t) => {
+    const s = await startFor(t);
+    const auditPath = path.join(path.dirname(s.tempRoot), "log", "service-audit.jsonl");
+    const auditLines = () => s.logs.filter((line) => line.startsWith("service: audit: "));
+    // Appending to a directory fails, as a full volume would.
+    fs.rmSync(auditPath, { force: true });
+    fs.mkdirSync(auditPath);
+    for (let i = 0; i < 3; i += 1) assert.notEqual((await s.client.callTool({ name: "list_templates" })).isError, true);
+    assert.deepEqual(auditLines(),
+      ["service: audit: appending to AUDIT_LOG_PATH failed (EISDIR): audit lines are dropped until an append succeeds"]);
+    fs.rmdirSync(auditPath);
+    await s.client.callTool({ name: "list_templates" });
+    assert.deepEqual(auditLines().slice(1), ["service: audit: appending to AUDIT_LOG_PATH works again: 3 audit line(s) were dropped"]);
+    assert.equal(fs.readFileSync(auditPath, "utf8").split("\n").filter(Boolean).length, 1, "the next line was appended");
+  });
 
 test("renders get the kill's grace and verification deadline that the shutdown bound is built from", TIMED, async (t) => {
   // Without an injection, the constants; with one, the injected values. Either way the bound tracks the kill.

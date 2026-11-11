@@ -96,7 +96,7 @@ function atLeast(version: unknown, min: string): boolean {
  */
 function rendererPackageJson(packDir: string): string | undefined {
   try {
-    // createRequire needs an absolute path, and PACK_DIR may be relative.
+    // createRequire needs an absolute path. config.ts already refuses a relative PACK_DIR; resolve() also normalises it.
     return createRequire(path.resolve(packDir, "node_modules", "@remotion", "cli", "package.json"))
       .resolve("@remotion/renderer/package.json");
   } catch {

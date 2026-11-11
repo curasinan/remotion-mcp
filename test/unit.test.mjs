@@ -357,13 +357,15 @@ test("GUARD: buildStillArgv refuses a --timeout below 7000 ms or not a whole num
   assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 7000 }).at(-1), "--timeout=7000");
 });
 
-test("GUARD: buildStillArgv refuses a --timeout above Node's timer ceiling of 2147483647 ms", () => {
-  // 2 ** 31 overflows a Node timer; 1e21 would print as --timeout=1e+21.
-  for (const timeoutMs of [2147483648, 1e21]) {
+test("GUARD: buildStillArgv refuses a --timeout above 2147480647 ms, Node's timer ceiling less Remotion's 3000 ms", () => {
+  // Remotion 4.0.532 waits timeout + 3000 ms for the page (@remotion/renderer dist/seek-to-frame.js:45), and a Node
+  // timer past 2 ** 31 - 1 ms fires after 1 ms. So 2147480648 is already one too many; 1e21 would print as 1e+21.
+  for (const timeoutMs of [2147480648, 2147483647, 2147483648, 1e21]) {
     assertInvariantBroken(() => buildStillArgv({ ...STILL_BASE, timeoutMs }), `timeoutMs=${timeoutMs}`);
   }
-  // Positive control: the ceiling itself is accepted.
-  assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 2147483647 }).at(-1), "--timeout=2147483647");
+  // Positive control: the ceiling itself is accepted, and with the addend it is exactly Node's ceiling.
+  assert.equal(2147480647 + 3000, 2 ** 31 - 1);
+  assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 2147480647 }).at(-1), "--timeout=2147480647");
 });
 
 test("GUARD: buildStillArgv refuses a --frame that is not a whole number", () => {

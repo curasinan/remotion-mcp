@@ -119,7 +119,7 @@ export async function startService(env: NodeJS.ProcessEnv, deps: StartDeps = {})
   const slots = new RenderSlots(cfg.slots);
   const ctx: ServiceContext = {
     pack, slots, run: deps.run ?? runRenderProcess, cli, browserExecutable: cfg.browserExecutable,
-    tempRoot: cfg.tempRoot, audit: createAuditSink(cfg.auditLogPath, cfg.auditKey),
+    tempRoot: cfg.tempRoot, audit: createAuditSink(cfg.auditLogPath, cfg.auditKey, { log: note }),
     stillDeadlineMs: cfg.stillDeadlineMs, cliTimeoutMs: RENDER_CLI_TIMEOUT_MS,
     graceMs: deps.killTiming?.graceMs ?? RENDER_KILL_GRACE_MS,
     verifyDeadlineMs: deps.killTiming?.verifyDeadlineMs ?? RENDER_VERIFY_DEADLINE_MS,
@@ -178,10 +178,16 @@ export async function startService(env: NodeJS.ProcessEnv, deps: StartDeps = {})
       ]);
       clearTimeout(timer);
       if (!drained) {
-        // A slot still held is a render whose processes were never verified gone: never an exit 0. Unguarded, as in
-        // onUnverifiedCleanup: should exit throw, shutdown rejects and the runner never reaches its exit 0.
+        // A slot still held is a render whose processes were never verified gone: never an exit 0. Its cleanup never
+        // settled, so nothing else takes its props off disk: empty the temp root first, as onUnverifiedCleanup does.
+        // The exit is unguarded, as there: should it throw, shutdown rejects and the runner never reaches its exit 0.
         note(`service: shutdown: ${slots.inUse} render slot(s) still held after ${boundMs} ms: a render's processes `
-          + `could not be verified gone; exiting with code ${EXIT_CLEANUP_UNVERIFIED}`);
+          + `could not be verified gone; emptying RENDER_TEMP_ROOT and exiting with code ${EXIT_CLEANUP_UNVERIFIED}`);
+        try {
+          removeEntries(cfg.tempRoot, (err) => note(`service: RENDER_TEMP_ROOT entry removal failed: ${errnoOf(err)}`));
+        } catch {
+          // Best effort: the exit below must happen whatever is left on disk.
+        }
         exit(EXIT_CLEANUP_UNVERIFIED);
       }
       // 4. Whatever connections are left, then the server. With a slot still held, only an injected exit gets here.

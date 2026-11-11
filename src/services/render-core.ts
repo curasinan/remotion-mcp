@@ -13,14 +13,18 @@ export interface StillArgvOptions {
   width?: number;             // service: --width=
   height?: number;            // service: --height=
   browserExecutable?: string; // service: --browser-executable=
-  timeoutMs?: number;         // service: --timeout= (Remotion's Node-side wait); integer 7000..2147483647
+  timeoutMs?: number;         // service: --timeout= (Remotion's Node-side wait); integer 7000..2147480647
 }
 
 /** Smallest `--timeout` accepted, in milliseconds. */
 const MIN_TIMEOUT_MS = 7_000;
 
-/** Largest `--timeout` accepted: Node's timer ceiling, 2^31 - 1 ms. */
-const MAX_TIMEOUT_MS = 2_147_483_647;
+/**
+ * Largest `--timeout` accepted: Node's timer ceiling, 2^31 - 1 ms, less the 3 000 ms Remotion adds to its page wait
+ * (`timeout: timeoutInMilliseconds + 3000`, @remotion/renderer 4.0.532 dist/seek-to-frame.js:45). Past the ceiling a
+ * Node timer fires after 1 ms, and every render would fail at once.
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647 - 3_000;
 
 /**
  * No caller argument reaches these checks, only a bug in the calling code, so a broken one
