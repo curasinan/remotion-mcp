@@ -65,8 +65,14 @@ problem found. A problem with a composition starts with its id.
 
 **The output dir is replaced.** An existing `--out` may hold only what
 build-pack writes: `pack-manifest.json`, `bundle/`, `package.json` and
-`package-lock.json`. Anything else is refused, never deleted. A failed build
-leaves no output dir behind.
+`package-lock.json`. Anything else is refused, never deleted. A build that
+fails after it has emptied or created the output dir removes it, so no
+half-built pack is left behind. A build that fails before that point leaves
+an existing output dir as it was: a bad command line, a missing or stale
+`dist-service/`, rules that will not load, a missing `package.json` or
+`package-lock.json`, a dependency rule, an uninstalled renderer, or an output
+dir build-pack refuses. So check build-pack's exit status before you build an
+image.
 
 **Build on Linux.** The derived image runs its own `npm ci --omit=dev`, so a
 pack never ships a `node_modules` built on Windows or macOS (design §5.4).
@@ -93,7 +99,7 @@ pack never ships a `node_modules` built on Windows or macOS (design §5.4).
 
 | Field | What it holds |
 | --- | --- |
-| `packHash` | `sha256:` plus the hex SHA-256 over every file under `bundle/`. Files are sorted by their `/`-separated relative path, compared by UTF-16 code unit. For each file, the hash covers its path, a NUL byte, its byte length, a NUL byte, then its bytes. |
+| `packHash` | `sha256:` plus the hex SHA-256 over every file under `bundle/`. Files are sorted by their `/`-separated relative path, compared by UTF-16 code unit. For each file, the hash covers its path relative to `bundle/` in UTF-8, a NUL byte, its byte length as decimal ASCII digits, a NUL byte, then its bytes. |
 | `remotionVersion` | the `version` of the *installed* `@remotion/renderer`, never the declared range |
 | `templates[].id` | the composition id, verbatim |
 | `templates[].compositionId` | the same id, passed to `remotion still` |
@@ -101,6 +107,12 @@ pack never ships a `node_modules` built on Windows or macOS (design §5.4).
 | `defaultFps` | its `fps` |
 | `maxFrames` | its `durationInFrames`. `render_still` accepts frames from 0 to `maxFrames - 1`. |
 | `propsSchema` | the schema's export: JSON Schema draft 2020-12, from the pack's own `z.toJSONSchema` |
+
+The service checks `packHash` and `remotionVersion` only as non-empty strings.
+It treats `packHash` as an opaque label: it never re-hashes `bundle/`, and
+never compares `remotionVersion` with the renderer installed in the image,
+which its startup check reads for itself. Nor does it check that `id` equals
+`compositionId`; build-pack writes them equal.
 
 `packHash` identifies the exact bundle: it changes whenever any byte of
 `bundle/` does. build-pack bundles with `--disable-git-source`, so the commit a
@@ -123,8 +135,14 @@ same sources.
 - Remotion allows `a-z`, `A-Z`, `0-9`, `-` and CJK characters. The service also
   refuses a leading `-`, because the CLI would read it as a flag.
 - Ids must be unique.
-- An id may be at most 100 characters, the longest `template_id` that
-  `render_still` accepts.
+- An id may be at most 100 characters (`MAX_TEMPLATE_ID`, counted in UTF-16
+  units), the longest `template_id` that `render_still` accepts.
+
+The service's `loadPack` applies the whole rule at startup to each `id`, and
+the character rule to each `compositionId`, so a manifest written by hand
+cannot list a template that `render_still` could never accept. build-pack's
+discovery refuses an id over 100 characters, and its final `loadPack` applies
+the rest.
 
 ## Registering compositions
 
@@ -156,7 +174,10 @@ hand-written modules, not a real Remotion project.
 
 **Every composition must declare a static `width`, `height`, `fps` and
 `durationInFrames`.** The manifest records them, and `render_still` checks a
-request's frame and raster size against them before it renders.
+request's frame and raster size against them before it renders. Width times
+height may be at most 64 000 000 pixels (`MAX_RASTER_PIXELS`). build-pack's
+final `loadPack` refuses a larger composition, and so does the service at
+startup.
 
 **Every composition must declare a `schema`.** One without a schema is
 refused by its id. Props are validated against nothing else.
@@ -239,6 +260,13 @@ from its zod schema.
 The service applies this gate to every `propsSchema` it loads. It refuses to
 start on a pack that fails, because it cannot trust that the deployer ran the
 build gate.
+- The root is `type: "object"`, since `render_still`'s `props` is always an
+  object. A root of another type, or one that is only an `anyOf` or a
+  `$ref`, is refused.
+- Every node is a JSON object: a boolean schema (`true` or `false`) is
+  refused. A node's `type` is one string, never an array such as
+  `["string", "null"]`, and a node without `type` must carry `enum`, `const`,
+  `anyOf` or `$ref`.
 - Every object has `additionalProperties: false`.
 - Every array has `maxItems` and `items`.
 - Every string has `maxLength`, unless it has a `const` or a non-empty `enum`.
@@ -256,10 +284,28 @@ build gate.
 - A schema may nest at most 64 deep, and expand, each `$ref` in place, to at
   most 10 000 nodes. A `default`, `examples`, `const` or `enum` value may nest
   at most 64 deep.
+- ajv must then compile the schema in strict mode. A schema it refuses stops
+  the service too.
+
+The same startup check, `loadPack`, also refuses a manifest whose `packHash`
+or `remotionVersion` is not a non-empty string, whose `templates` is not a
+non-empty array, or that has a template without a positive integer `width`
+and `height`, a positive `defaultFps` and an integer `maxFrames` of at least
+1. It refuses a duplicate id, an id or `compositionId` outside
+[the template-id rule](#the-manifest), a raster over `MAX_RASTER_PIXELS`
+([above](#registering-compositions)), and a pack whose `bundle/index.html` is
+not a file. It names every problem it finds, located in the manifest.
 
 **Props at request time.** Props are validated with ajv against `propsSchema`
-itself, so no zod runs in the service. ajv stops each node at its first failing
-keyword. `invalid_props` names the failing JSON pointers, never their values.
+itself, so no zod runs in the service. ajv runs with `allErrors` off, so it
+stops at the first failing keyword in the whole props object, not at the first
+in each prop. `invalid_props` therefore names the first failing JSON pointer,
+in ajv's order of checks rather than the props' order, never every failing
+prop, and never a value. A failed `anyOf` can add the first failure inside
+each of its branches. A missing required prop and a prop the schema does not
+name each get their own pointer, such as `/label`. A backend that wants every
+failure validates against `propsSchema` itself. `allErrors` stays off so that
+`maxLength`, `enum` and `const` run before `pattern`.
 
 ## One contract for the backend
 
@@ -294,7 +340,7 @@ fine. 1 000 items of 1 000-character strings is a megabyte of props. The
 service caps request bodies at 256 KiB anyway.
 
 **Replacements for Remotion's zod helpers.** `@remotion/zod-types` helpers fail
-the gate, because each is unbounded and carries a refine.
+the gate: each is unbounded, and `zColor` and `zMatrix` also carry a refine.
 
 | Helper | What it is | Use instead |
 | --- | --- | --- |
@@ -317,6 +363,24 @@ ruling 6). A pack must render with no network at all:
   font URL.
 - **No fetches.** No `fetch`, no remote `<Img>` or `<Video>` source, and no
   `calculateMetadata` that calls an API.
+- **Props are untrusted tenant input.** A tenant chooses every value the
+  schema admits. Remotion 4.0.532 launches Chrome with `--no-sandbox`
+  (`@remotion/renderer/dist/open-browser.js:149`), and loopback stays
+  reachable from a render: egress denial leaves it open, and it holds the
+  service's own port and, while the render runs, Remotion's own server, whose
+  `/proxy?src=` downloads any URL it is given
+  ([`DEPLOY.md`](DEPLOY.md#ingress-only-your-proxy-only-service_port)). So
+  pack code must never:
+  - fetch a prop, or use one as a URL: not as the `src` of an `<Img>`,
+    `<OffthreadVideo>`, `<Video>` or `<Audio>`, not as an `href`, and not in
+    a CSS `url()`;
+  - `eval` a prop, or hand one to `new Function` or a `<script>`;
+  - inject a prop as HTML, as `dangerouslySetInnerHTML` does, or as raw CSS
+    text.
+
+  Render a prop as text. To let a tenant pick an asset, give the prop a
+  `z.enum` of the pack's own file names and pass the chosen name to
+  `staticFile()`.
 - **Ship each asset's licence with it.** The fixture pack ships DejaVu Sans
   Bold 2.37 with `public/LICENSE-DejaVu.txt`. That file is the licence text the
   font carries in its own `name` table: name ID 0, the copyright lines, as a

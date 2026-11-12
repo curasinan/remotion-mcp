@@ -80,9 +80,12 @@ That puts four requirements on the build. Spikes of 2026-10-25 (design §2)
 established the first and the fourth:
 
 1. **`tsconfig.service.json` must set `"include": []`.** Its other settings
-   will be `files: ["src/service/index.ts"]`, `noEmitOnError: true` and
-   `outDir: dist-service`, and the entry will land at
-   `dist-service/service/index.js`. A config that extends `tsconfig.json` and
+   are `files: ["src/service/index.ts", "src/service/healthcheck.ts"]`,
+   `noEmitOnError: true` and `outDir: dist-service`, and the entry lands at
+   `dist-service/service/index.js`. The plan's Task 10 added the second root,
+   `src/service/healthcheck.ts`: it is the image's `HEALTHCHECK`, and
+   `index.ts` never imports it, because importing it would run the probe. A
+   config that extends `tsconfig.json` and
    sets only `files` inherits `include: ["src/**/*"]`, which `tsc --showConfig`
    confirms. Its program would then contain every module under `src/`,
    `src/tools/project.ts` included, and the spike saw every tool module compile
@@ -125,14 +128,31 @@ established the first and the fourth:
 
 ### The service schemas delete arguments rather than validate them
 
-- All four input schemas are strict. `render_still` takes
-  `{ template_id, frame?, props }`.
+- `render_still` and `render_job_status` take strict input schemas, so an
+  argument they do not name is refused. `render_still` takes
+  `{ template_id, frame?, props }`. `list_templates` and `render_video_start`
+  take no arguments and declare no schema, so the SDK ignores any arguments
+  sent to them: SDK 1.30.0 validates nothing for a tool without one
+  (`dist/esm/server/mcp.js:166-169`). A tenant or team field among those
+  arguments is still audited as a violation (ADR-6).
 - None has a tenant, team, path, output-name, entry-point or scale field.
 - No service tool accepts a string that reaches a path join. The service mints
   the render's output path itself.
-- No service response carries a filesystem path. Every error a caller sees is a
-  category and a fixed message, never a path, a local-dev tool name or a raw zod
-  or ajv message.
+- No service response carries a filesystem path. Every error the service's own
+  code returns is a category and a fixed message (`invalid_props` adds the
+  failing JSON pointers, never their values), never a path, a local-dev tool
+  name, CLI output or a raw zod or ajv message.
+- One kind of error is not the service's own. The owner approved it with the
+  plan as deviation 2 (`docs/superpowers/plans/final_script.md:42-43`):
+
+  > 2. **The SDK's own argument-validation errors pass through unchanged.** Examples are a non-string `template_id` or a non-object `props`. These messages describe the caller's own arguments. Every error this code raises still follows design §5.5.
+  >    - The same goes for the SDK's `Tool <name> not found` reply to an unknown tool (`server/mcp.js:104`). It echoes back only the caller's own `params.name`.
+
+  Such an error carries the SDK's text, for example
+  `MCP error -32602: Input validation error: Invalid arguments for tool render_still: ...`
+  or `MCP error -32602: Tool viz_render_html not found`, and no
+  `structuredContent.category` (SDK 1.30.0, `dist/esm/server/mcp.js:141` and
+  `:152-162`). `docs/CONTRACT-gateway.md` tells a backend so.
 - `render_video_start` and `render_job_status` will be registered and will
   return a documented `not_implemented`. When `render_job_status` is
   implemented, it looks up `(tenant from the verified identity, job_id)`. A job
@@ -279,12 +299,21 @@ which review, is the operator's to govern, because the risk is theirs.
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the service files and checks this
-  ADR names exist yet: `src/service/`, `tsconfig.service.json`,
-  `scripts/build-pack.mjs`, the fixture pack, both gates, the absence suite and
-  `docs/DEPLOY.md`. What exists is the leaf `src/services/entrypoint.ts` and its
-  tests (PR #20). This ADR records the decision, and
-  `docs/superpowers/plans/final_script.md` builds them.
+- **Build status.** Decided 2026-10-26. As of 2026-11-11,
+  `docs/superpowers/plans/final_script.md` has built on this branch what this
+  ADR names: `src/service/` (the one registration site in `registry.ts`, the
+  four tools in `tools.ts`, the JSON Schema gate and `loadPack` in
+  `templates.ts`), `tsconfig.service.json` with its two roots,
+  `scripts/build-pack.mjs` with the zod gate (`scripts/lib/zod-gate.mjs`,
+  `scripts/lib/pack-templates.mjs`, `scripts/lib/pack-files.mjs`), the fixture
+  pack (`fixtures/pack/`), the absence suite (`test/absence.test.mjs`,
+  `scripts/check-service-closure.mjs`), `docs/CONTRACT-pack.md` and
+  `docs/DEPLOY.md`. They join the leaf `src/services/entrypoint.ts` and its
+  tests (PR #20). Still unproven as of 2026-11-11:
+  - the images have not yet been built or run, locally (Task 10 Step 4,
+    pending a proof round) or in CI's `image` job.
+
+  Context, and the future tense above, describe the tree as of 2026-10-26.
 - **Absence is claimed for the registration closure and the compiled artifact,
   not for the image.**
   - `puppeteer-core` and `@resvg/resvg-js` are production dependencies of this

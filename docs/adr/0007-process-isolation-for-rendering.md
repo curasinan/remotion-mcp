@@ -32,10 +32,13 @@ That pixel check cannot fire. `MAX_RASTER_PIXELS` is
 width and height are each already capped at `MAX_RASTER_DIMENSION`. It is the
 height check that refuses the T-1 SVG.
 
-**The second half did not ship.** `grep -rnE
+**The second half did not ship.** Outside `src/service/`, `grep -rnE
 "child_process|fork\(|Worker|worker_threads" src/` hits only
-`src/services/exec.ts` and `src/services/process.ts`. resvg parses
-(`raster.ts:84`) and renders (`:102`) on the server's main thread.
+`src/services/exec.ts` and `src/services/process.ts`. Inside it, the service
+profile's own `src/service/preflight.ts` runs the browser's `--version`, and
+`src/service/render-process.ts` spawns the Remotion CLI; neither touches
+resvg. resvg parses (`raster.ts:84`) and renders (`:102`) on the stdio
+server's main thread.
 
 **No known input kills the server today.** The cap refuses the T-1 SVG, and
 `test/protocol.test.mjs:111-118` asserts that the server survives it. ADR-3's
@@ -47,7 +50,7 @@ Remotion path is "already a separate process (CLI spawn)" and "cannot crash the
 main process" (`:13`). That is incomplete: a multi-frame
 `remotion_render_still` tiles its frames inside the server process, through
 resvg:
-- `render.ts:243` calls `tilePanels`.
+- `render.ts:244` calls `tilePanels`.
 - `tile.ts:100` calls `rasterizeSvg`.
 - `raster.ts:84` and `:102` follow.
 
@@ -202,7 +205,7 @@ container's memory limit is the outer backstop (below).
   cap of 4 MiB by default, and then deletes the file (design §5.5). There is no
   storage and no download token. That path stays internal: no service
   response carries a filesystem path (ADR-5). A timed-out render's partial
-  output is deleted, as `src/tools/render.ts:175-182` already does for
+  output is deleted, as `src/tools/render.ts:176-183` already does for
   local-dev's CLI.
 - **A crash, a timeout or a busy service surfaces as a tool error,** not a
   protocol error. A crash inside the CLI or Chrome becomes `render_failed`.
@@ -295,10 +298,10 @@ height and frame to the CLI explicitly, so a composition's own computed size
 never decides what renders.
 
 **The video path has no bound in local-dev.**
-- `frames` is an optional string (`src/tools/render.ts:95-99`), and its regex
+- `frames` is an optional string (`src/tools/render.ts:96-100`), and its regex
   admits the open-ended `"100-"`.
 - Omitting it renders the whole composition.
-- A timed-out render's output is deleted (`:175-182`), so a render that the
+- A timed-out render's output is deleted (`:176-183`), so a render that the
   timeout kills yields nothing for its occupancy.
 
 So the service schema for video must not reuse that argument. When video is
@@ -316,12 +319,20 @@ implemented, a frame budget refuses those renders up front:
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the service files and checks this
-  ADR names exist yet: `src/service/render-process.ts`, the startup checks, the
-  image with `tini` and `setpriv`, `docs/DEPLOY.md`, and the tests described
-  above. What exists is `killTree` and the raster cap with its test. This ADR
-  records the decision, and `docs/superpowers/plans/final_script.md` builds
-  them.
+- **Build status.** Decided 2026-10-26. As of 2026-11-11,
+  `docs/superpowers/plans/final_script.md` has built on this branch what this
+  ADR names: the spawner `src/service/render-process.ts`, the render slots
+  `src/service/slots.ts`, the startup checks `src/service/preflight.ts`, the
+  exit 70 in `src/service/start.ts`, `Dockerfile.service` with `tini` and
+  `setpriv`, `docs/DEPLOY.md`, the stub-CLI tests in
+  `test/render-process.test.mjs`, and `scripts/walk-only-proof.mjs`.
+  They join `killTree` and the raster cap with its test. Still unproven as of
+  2026-11-11:
+  - the images have not yet been built or run, locally (Task 10 Step 4,
+    pending a proof round) or in CI's `image` job, so neither has the walk-only
+    proof with `setpriv` hidden, which runs inside the image.
+
+  Context, and the future tense above, describe the tree as of 2026-10-26.
 
 ## Scope
 

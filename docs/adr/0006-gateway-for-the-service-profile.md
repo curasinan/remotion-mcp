@@ -284,7 +284,7 @@ slowest probe was 30 seconds.
 From this ADR on, "gateway" means the network policy point in front of the
 deployments. The local, read-only view of a laptop's audit log keeps a legacy
 name for now:
-- `npm run gateway` (`package.json:29`)
+- `npm run gateway` (`package.json:31`)
 - `README.md:280` and `:283`, which tell users to ask for "the gateway" and to
   run `npm run gateway`
 - `docs/GATEWAY.md`, titled "Audit log and gateway dashboard"
@@ -295,10 +295,22 @@ change.
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the service files and checks this
-  ADR names exist yet: the service itself, the test signer and vectors, the live
-  `tools/list` check, and the service's audit log. This ADR records the
-  decision, and `docs/superpowers/plans/final_script.md` builds them.
+- **Build status.** Decided 2026-10-26. As of 2026-11-11,
+  `docs/superpowers/plans/final_script.md` has built on this branch what this
+  ADR names: the service (`src/service/http.ts` checks the route, the body cap
+  and the identity before any server exists; `src/service/identity.ts` holds
+  the verifier and the replay set), the test signer and vectors
+  (`scripts/sign-identity.mjs`, `scripts/make-identity-vectors.mjs`,
+  `test/vectors/identity-v1.json`), the live `tools/list` check (T2 in
+  `test/absence.test.mjs`), the service's audit log (`src/service/audit.ts`,
+  written through the wrapper in `src/service/registry.ts`) and
+  `docs/CONTRACT-gateway.md`. Still unproven as of 2026-11-11:
+  - the owner's gateway has not been checked against the vectors, an owner
+    checkpoint (owner ruling 5);
+  - the images have not yet been built or run, locally (Task 10 Step 4,
+    pending a proof round) or in CI's `image` job.
+
+  Context, and the future tense above, describe the tree as of 2026-10-26.
 - **The gateway is a single point of failure for the service path, for every
   deployment.** It is the owner's component, and this repository does not ship
   it. Losing it does not affect local-dev, which is a deliberate asymmetry.
@@ -320,9 +332,15 @@ change.
   possible: bound retention by time rather than size, or rate-limit
   unauthenticated refusals per source address. That is the owner's to decide.
 - **Open risk: unauthenticated requests, at the service.** A caller that can
-  reach a deployment's port without a valid header costs the service a bounded
-  body read and the identity check, and nothing else, because no server is
-  created. Keeping the port off the internet is the deployer's.
+  reach a deployment's service port without a valid header costs the service a
+  bounded body read and the identity check, and no server is created. Each
+  such request it refuses with a 400, a 401 or a 413 also writes one audit line
+  (`src/service/http.ts:108-112`), so a flood grows the audit log;
+  `docs/DEPLOY.md` asks the deployer to rotate it and to rate-limit refused
+  requests at the edge. The service port is not the only listener: while each
+  render runs, the Remotion CLI listens on every interface, on a port from
+  3000 to 3100, and checks no identity (ADR-4). Admitting only the TLS proxy,
+  and only to the service port, is the deployer's (`docs/DEPLOY.md`).
 - **Stale readers.** These readers explain the absence of enforcement by citing
   ADR-2, and need repointing:
   - `docs/GATEWAY.md:78-81`

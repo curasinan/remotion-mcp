@@ -100,7 +100,7 @@ build for forbidden names would fail a correct closure.
 | T1 | `SERVICE_TOOLS` in `dist-service/service/registry.js` is exactly the four, in order, and frozen. |
 | T2 | A live `tools/list` returns exactly the four. It goes through the built `createServiceHandler` on 127.0.0.1, with the SDK client and every POST signed. |
 | T3 | `verdict` on `dist-service/` is empty, although `services/exec.js` names `remotion_list_compositions`. |
-| T4 | There is exactly one registration call site. It is in `service/registry.js`, inside its loop over `SERVICE_TOOLS`, and nothing else references `registerTool`. |
+| T4 | There is exactly one registration call site, through `registerTool`, `registerToolTask` or `.tool`. It is a `registerTool` call in `service/registry.js`, inside its loop over `SERVICE_TOOLS`, and nothing else references `registerTool` or `registerToolTask`. |
 | T5 | **Poisoned build.** A type-only `import type {} from` of `tools/project.js` and `services/entrypoint.js` is added to `src/service/tools.ts`. `verdict` must report `tools/project.js`, its `remotion_init_project`, `services/environment.js`, `services/browser.js`, and `browser.js`'s non-literal `import()`. |
 | T6 | **Poisoned registry.** `"viz_render_html"` is appended to `SERVICE_TOOLS`, with a matching `TOOL_DEFS` entry. T1's equality must fail, matched by its own message, since T1's freeze check throws an `AssertionError` too. A live `tools/list` must return five, and `verdict` must report `viz_render_html` and nothing else. |
 | fixtures | Hand-written `.js` fixtures, one evasion each, must each yield exactly their one problem. They include an alias, `["registerTool"](`, `.tool.bind`, destructuring, a registration outside the registry, and every one of those forms again for `registerToolTask`. They also include a shadowed loop variable, a `let` loop variable reassigned before the call, a `let` list reassigned before the loop, an unfrozen list, each forbidden name, module and package, a non-literal `import()`, and both `createRequire` forms. Positive controls must yield none: `claims.tool !== toolOf(m)`, a string that names a forbidden tool, and preflight's `createRequire(...).resolve`. |
@@ -278,7 +278,8 @@ zod 4.5.4's own `z.toJSONSchema`.
     `.regex()` itself; `test/build-pack.test.mjs` now plants the `allOf`
     with `.meta()`, and removing the step turns it red.
 - 114 single-guard mutations each turned the three unit test files red on
-  Windows, as recorded in the task 9 report's fix rounds 2 and 3:
+  Windows, in the pack work's fix rounds 2 and 3 (commits `1f8e2cb` to
+  `70aac09`):
   - 71 of `scripts/lib/zod-gate.mjs`
   - 12 of `scripts/lib/pack-templates.mjs`
   - 8 of `scripts/lib/pack-files.mjs`
@@ -286,7 +287,7 @@ zod 4.5.4's own `z.toJSONSchema`.
   - 9 of `test/build-pack.test.mjs`'s own hermetic CLI runs
   - 3 of the service's own limits, in the built `dist-service/`
 
-  Each mutation removes or loosens one guard the reports name. They are not
+  Each mutation removes or loosens one guard of those files. They are not
   every possible mutation. An earlier count of 45 missed five guards that a
   review then showed could be deleted with every test still green. The 96 of
   fix round 2 then missed three guards that round had added. All eight are
@@ -305,9 +306,10 @@ name, so no key is in the repository, an image or an argv.
 
 1. **`scripts/image-checks.sh`**, piped into a running derived container
    (`docker exec -i rv sh -s`), once that container reports healthy. It is
-   never copied into the image. It checks that `setpriv` is on PATH, that npm
-   and npx are absent, that PID 1 is `tini`, that the browser runs
-   `--version`, that `ldd` finds every one of its libraries, that the
+   never copied into the image. It checks that `setpriv` is on PATH, that no
+   package manager is on PATH (npm, npx, yarn, yarnpkg or corepack), that
+   PID 1 is `tini`, that the browser runs `--version`, that `ldd` finds every
+   one of its libraries, that the
    `@remotion/renderer` the pack's CLI loads is at least 4.0.458, that
    `/var/log/remotion-viz` is writable, and that it runs as a user other
    than root. Every check runs, and each failure names what was missing. The
@@ -363,10 +365,12 @@ gitignored), from the repository root after `npm ci` and
 docker build -f Dockerfile.service -t rv-service:dev .
 docker build -f fixtures/pack/Dockerfile.derived --build-arg SERVICE_IMAGE=rv-service:dev -t rv-pack:dev fixtures/pack
 key() { node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"; }
-# CI's "Image checks" step, in a subshell so its exit leaves your shell open. It polls to a 120 s deadline and stops
-# early if the container exits; on any failure `docker logs rv` names the failed startup check. The subshell exits
-# with the checks' own status, after the trap has removed the container.
+# CI's "Image checks" step, in a subshell so its exit leaves your shell open. `set -e`, as CI's bash runs its steps,
+# stops it at the first failed command, a failed `docker run` included. It polls to a 120 s deadline and stops early if
+# the container exits; on any failure `docker logs rv` names the failed startup check. The subshell exits with the
+# checks' own status, after the trap has removed the container.
 (
+  set -e
   trap 'status=$?; [ "$status" -eq 0 ] || docker logs rv; docker rm -f rv >/dev/null; exit "$status"' EXIT
   IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run -d --name rv \
     --health-start-period=120s --health-start-interval=1s \
@@ -517,9 +521,18 @@ digest, never the tag, is what a deployer pins as the derived image's
 **No check runs against the digest it publishes.** It rebuilds the image
 from the floating `node:22-bookworm-slim` base, so the image the `image` job
 proved for the same commit is a separate build, possibly on a different
-base. DEPLOY.md tells deployers to run `scripts/image-checks.sh` against
-their derived image on the pinned digest before rollout. Pinning the base,
-or gating the publish on the `image` job, is an owner decision.
+base. DEPLOY.md tells deployers to run `image-e2e.mjs` and
+`walk-only-proof.mjs` on the fixture pack built over the pinned digest, and
+`scripts/image-checks.sh` against their own derived image, before rollout.
+Pinning the base, or gating the publish on the `image` job, is an owner
+decision.
+
+**The first publish creates a private package.** GHCR makes every new
+package private, whatever its repository's visibility. The image's
+`org.opencontainers.image.source` label links the package to this
+repository, so it inherits the repository's access permissions, but not its
+visibility. After the first publish, the owner sets the package's visibility
+in its settings ([`DEPLOY.md`](DEPLOY.md#the-images)).
 
 ## `pages.yml` — the landing site
 

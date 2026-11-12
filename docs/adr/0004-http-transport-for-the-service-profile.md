@@ -168,11 +168,26 @@ That is acceptable only because the pack is code its operator chose to bake
 (ADR-5, owner ruling 7). Closing the gap would take render children under a uid
 of their own. Nothing in the design does this.
 
+**The header guards the service's port, not every port.** While each render
+runs, the Remotion CLI the service spawns opens an HTTP server of its own, and
+it checks no identity. Remotion 4.0.532 binds it to every interface, `0.0.0.0`,
+or `::` when the container has a non-loopback IPv6 address
+(`@remotion/renderer/dist/port-config.js:23-28`), on the first free port from
+3000 to 3100 (`serve-static.js:57-71`). Remotion offers no option to bind it
+to loopback alone. It serves the pack's `bundle/`. Its `/proxy?src=` endpoint
+(`serve-static.js:24-25`) downloads any
+`http:` or `https:` URL, or writes a `data:` URL to disk, and hands the bytes
+to Remotion's compositor, which decodes them with ffmpeg
+(`offthread-video-server.js:81-101`). Its error replies carry stack traces
+(`:161`). So a request's network of origin still matters for this listener: a
+deployment admits only its TLS proxy, and only to the service's port
+(`docs/DEPLOY.md`, "Ingress: only your proxy, only `SERVICE_PORT`").
+
 ### Where it runs
 
 - **The deployer runs it.** This repository hosts nothing (design §1). The
-  deployer terminates TLS, and denies the container egress (ADR-5, owner
-  ruling 6).
+  deployer terminates TLS, denies the container egress (ADR-5, owner
+  ruling 6), and admits only its TLS proxy, to the service's port (above).
 - **x86-64 glibc,** on `node:22-bookworm-slim`. The published image is
   linux/amd64 only (owner ruling 8). arm64 can be added later. Constraint 4
   keeps spark, which is linux-arm64, from being a render host.
@@ -250,12 +265,22 @@ it: the header check refuses a browser's request whatever its origin.
 
 ## Consequences
 
-- **Build status.** As of 2026-10-26 none of the service files and checks this
-  ADR names exist yet: `src/service/`, `tsconfig.service.json`, the image, the
-  absence suite, and the test signer and vectors. This ADR records the decision,
-  and `docs/superpowers/plans/final_script.md` builds them. What exists is the
+- **Build status.** Decided 2026-10-26. As of 2026-11-11,
+  `docs/superpowers/plans/final_script.md` has built on this branch what this
+  ADR names: `src/service/` (the HTTP root `http.ts`, the verifier
+  `identity.ts`, the entry `index.ts`), `tsconfig.service.json`,
+  `Dockerfile.service`, the absence suite (`test/absence.test.mjs`,
+  `scripts/check-service-closure.mjs`), the test signer and vectors
+  (`scripts/sign-identity.mjs`, `scripts/make-identity-vectors.mjs`,
+  `test/vectors/identity-v1.json`) and `docs/DEPLOY.md`. They join the
   `tsconfig.json` exclusion and `test/profiles.test.mjs` (PR #18), and the leaf
-  `src/services/entrypoint.ts` (PR #20).
+  `src/services/entrypoint.ts` (PR #20). Still unproven as of 2026-11-11:
+  - the images have not yet been built or run, locally (Task 10 Step 4,
+    pending a proof round) or in CI's `image` job;
+  - the owner's gateway has not been checked against the vectors, an owner
+    checkpoint (owner ruling 5).
+
+  Context, and the future tense above, describe the tree as of 2026-10-26.
 - **The service build loads hono; the stdio build still does not.** SDK
   1.30.0's Node transport imports `@hono/node-server`
   (`dist/esm/server/streamableHttp.js:9`), which loads `hono`. That is the
@@ -283,7 +308,7 @@ it: the header check refuses a browser's request whatever its origin.
   that reason, and it is accepted here. The absence suite (design §5.7) is what
   will keep the two from silently converging. It will check call sites and
   modules as well as names (ADR-5).
-- **Remotion's licence is unverified in this repository.** The owner has read
+- **Remotion's licence is UNVERIFIED in this repository.** The owner has read
   the current text and is asking Remotion for written confirmation. An
   unfavourable answer could stop the service profile from running at all. No
   technical decision in this ADR depends on it.
