@@ -406,7 +406,8 @@ cleanup awaited, and what it left killed and reaped, before the next run.
 **Recorded evidence: the images were built and run locally on 2026-11-13.
 This job has not yet run on GitHub.** The run was Task 10's Step 4, on Docker
 Desktop's Linux engine on a Windows 11 host (`docker version`: Docker
-Desktop 4.57.0, Engine 29.1.3, linux/amd64), with the commands above. The
+Desktop 4.57.0, Engine 29.1.3, linux/amd64), with the commands above, from
+commit `a534d13`'s tree. The
 fixture pack was built in WSL Ubuntu with Node 22, and its `packHash` was
 `sha256:1974bbdb8107eaadec20b40d1cd090ec95ce2ce590e3baf0e7871b91dbcab93a`, as
 in Task 9. Both images' `node:22-bookworm-slim` stages resolved to
@@ -418,7 +419,9 @@ in Task 9. Both images' `node:22-bookworm-slim` stages resolved to
   `Chromium 149.0.7790.0`, the renderer was 4.0.532, and the user was uid 1000
   (`node`).
 - `image-e2e.mjs` passed every case. The timed-out render's result arrived
-  45378 ms after its request on the container's clock. Case 7 measured 18076
+  at most 45378 ms after its request on the container's clock. The bracket
+  includes two `docker exec` calls, so it overstates the interval by up to a
+  few hundred milliseconds. Case 7 measured 18076
   ink pixels for the Turkish label and 10758 for the tofu, and the two differ
   at 7461 of the tofu's.
 - `walk-only-proof.mjs` passed both runs. In the control, which killed only
