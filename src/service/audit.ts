@@ -32,7 +32,8 @@ export interface AuditSinkOptions {
 
 /**
  * The least time between two "append failed" lines. A volume that flips between full and not, under a flood of
- * calls, would otherwise log a line pair per call. A streak that starts sooner is counted, not logged.
+ * calls, would otherwise log a line pair per call. A streak that starts sooner is counted, and logged only if it is
+ * still failing once the interval has passed.
  */
 export const AUDIT_FAILURE_LOG_INTERVAL_MS = 60_000;
 
@@ -47,8 +48,8 @@ function errnoOf(err: unknown): string {
  * A failing append never fails the call, but the operator hears of it: one log line when a streak of failures starts,
  * one when an append works again, saying how many lines were dropped. Both name the variable and the error code, never
  * the path or anything from the audit line. A streak that starts within AUDIT_FAILURE_LOG_INTERVAL_MS of the last
- * "append failed" line is not logged; its dropped lines are reported by the first append that works once the interval
- * has passed.
+ * "append failed" line is not logged at its start. Its first failing append once the interval has passed logs it; a
+ * streak that ends sooner has its dropped lines reported by the first append that works once the interval has passed.
  */
 export function createAuditSink(file: string, key: Buffer, options: AuditSinkOptions = {}): AuditSink {
   // A copy, so a caller that later zeroes or reuses its buffer cannot change the key.
@@ -89,7 +90,9 @@ export function createAuditSink(file: string, key: Buffer, options: AuditSinkOpt
       } catch (err) {
         // Auditing must never be the reason a tool call fails.
         dropped += 1;
-        if (failing) return;
+        // A streak already logged stays quiet. One the interval held back is logged by its first append once the
+        // interval has passed, so the operator's last line never says appends work while they still fail.
+        if (failing && logged) return;
         failing = true;
         const now = nowMs();
         logged = now - lastFailureLineAt >= AUDIT_FAILURE_LOG_INTERVAL_MS;

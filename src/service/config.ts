@@ -3,6 +3,7 @@
  * from the environment only. No error here ever prints a variable's value, so a key can never reach a log.
  */
 
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,9 +28,11 @@ export class ConfigError extends Error {
 const MIN_KEY_BYTES = 32;
 /**
  * The throwaway key test/vectors/identity-v1.json publishes (`key_base64url`, 32 bytes of 0x07). Anyone can sign
- * with it, so neither key may be it.
+ * with it, so neither key may be it, or any key HMAC treats as it.
  */
 const PUBLISHED_VECTOR_KEY = Buffer.alloc(32, 7);
+/** SHA-256's block size, the length HMAC-SHA256 brings every key to. */
+const HMAC_BLOCK_BYTES = 64;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const DIGITS = /^\d{1,6}$/;
 const MAX_SLOTS = 64;
@@ -61,6 +64,20 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, min: nu
 }
 
 /**
+ * Whether two keys sign every message alike under HMAC-SHA256. HMAC first replaces a key longer than the block with
+ * its SHA-256, then zero-pads it to the block (RFC 2104, section 2), so a key and the same key followed by 0x00 are
+ * one key, and so are a long key and its SHA-256. The keys are compared in that form, never as given.
+ */
+function sameHmacKey(a: Buffer, b: Buffer): boolean {
+  const asHmacUsesIt = (k: Buffer): Buffer => {
+    const block = Buffer.alloc(HMAC_BLOCK_BYTES);
+    (k.length > HMAC_BLOCK_BYTES ? createHash("sha256").update(k).digest() : k).copy(block);
+    return block;
+  };
+  return asHmacUsesIt(a).equals(asHmacUsesIt(b));
+}
+
+/**
  * An HMAC key: unpadded base64url in its one canonical spelling, decoding to at least 32 bytes. Node's decoder skips
  * characters outside the alphabet and ignores a last character's spare bits, so both are checked before trusting it.
  */
@@ -71,8 +88,10 @@ function key(env: NodeJS.ProcessEnv, name: string): Buffer {
     throw new ConfigError(`${name} must be unpadded base64url`);
   }
   if (decoded.length < MIN_KEY_BYTES) throw new ConfigError(`${name} must decode to at least ${MIN_KEY_BYTES} bytes`);
-  // The decoded bytes, never the spelling.
-  if (decoded.equals(PUBLISHED_VECTOR_KEY)) throw new ConfigError(`${name} must not be the published test-vector key`);
+  // The key as HMAC uses it, never the spelling or the bytes as given.
+  if (sameHmacKey(decoded, PUBLISHED_VECTOR_KEY)) {
+    throw new ConfigError(`${name} must not be the published test-vector key`);
+  }
   return decoded;
 }
 
@@ -126,8 +145,8 @@ export function parseServiceConfig(env: NodeJS.ProcessEnv): ServiceConfig {
   const identityKey = key(env, "IDENTITY_HMAC_KEY");
   const auditKey = key(env, "AUDIT_HMAC_KEY");
   // Its own key (DEPLOY.md): whoever holds the audit key to check the audit's hashes must not be able to sign
-  // identity headers with it.
-  if (auditKey.equals(identityKey)) throw new ConfigError("AUDIT_HMAC_KEY must differ from IDENTITY_HMAC_KEY");
+  // identity headers with it, in any spelling HMAC treats as the same key.
+  if (sameHmacKey(auditKey, identityKey)) throw new ConfigError("AUDIT_HMAC_KEY must differ from IDENTITY_HMAC_KEY");
   return {
     host,
     port,

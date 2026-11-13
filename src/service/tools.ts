@@ -338,7 +338,8 @@ export const TOOL_DEFS = Object.freeze({
       + "list_templates; frame defaults to 0 and must be below the template's frame count; props must match the "
       + "template's propsSchema. Errors are a category and a fixed message: unknown_template, frame_out_of_range, "
       + "invalid_props (with the first failing JSON pointer), render_busy, render_timeout, render_failed, "
-      + "output_too_large or internal.",
+      + "output_too_large or internal; arguments that fail this input schema get the SDK's own validation error "
+      + "instead.",
     inputSchema: {
       template_id: z.string().max(MAX_TEMPLATE_ID),
       frame: z.number().int().min(0).optional(),

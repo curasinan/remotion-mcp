@@ -1,7 +1,8 @@
 /**
  * The errors the service's tools return (design 5.5). A caller sees a category and a fixed message, plus, for
- * `invalid_props`, the JSON pointers of the failing props. Never a filesystem path, a local-dev tool name, CLI output,
- * a raw zod or ajv message, or a value the caller sent.
+ * `invalid_props`, the first failing JSON pointer, plus one per failed `anyOf` branch where the validator reports them
+ * (each distinct pointer once; templates.ts validateProps). Never a filesystem path, a local-dev tool name, CLI
+ * output, a raw zod or ajv message, or a value the caller sent.
  */
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";

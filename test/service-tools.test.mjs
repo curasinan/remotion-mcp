@@ -207,6 +207,9 @@ test("tools/list returns exactly SERVICE_TOOLS in order", TIMED, async (t) => {
   const description = tools.find((tool) => tool.name === "render_still").description;
   assert.ok(description.includes("invalid_props (with the first failing JSON pointer)"), description);
   assert.doesNotMatch(description, /pointers of the failing props/);
+  // Deviation 2 (ADR-5): arguments the input schema refuses get the SDK's own error, not a category.
+  assert.match(description, /arguments that fail this input schema get the SDK's own validation error instead\.$/,
+    description);
   const twoBad = await call(s.client, "render_still", stillArgs({ props: { ...validProps(), label: 7, theme: "neon" } }));
   assert.deepEqual(twoBad.structuredContent, { category: "invalid_props", paths: ["/label"] }, "two props fail, one is named");
 });
@@ -218,6 +221,7 @@ test("render_still's strict schema refuses an unknown argument and runs nothing"
   const result = await call(s.client, "render_still", stillArgs({ tenant: "tenant-b" }));
   assert.equal(result.isError, true);
   assert.match(textOf(result), /Input validation error/);
+  assert.equal(result.structuredContent, undefined, "the SDK's own error, as the description says, not a category");
   assert.equal(calls, 0);
   // Positive control: the same call without the extra key renders.
   pngOf(await call(s.client, "render_still", stillArgs()));
@@ -730,6 +734,58 @@ test("a failing audit append logs one operator line per streak and one on recove
     const quiet = createAuditSink(path.join(root, "audit"), randomBytes(32), { log: () => { throw new Error("down"); } });
     assert.doesNotThrow(() => quiet.record(event));
   });
+
+test("a failure streak held back by the rate limit is logged once the interval has passed, so the last line is never "
+  + "a false recovery", TIMED, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "service-audit-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "audit", "service-audit.jsonl");
+  const lines = [];
+  let now = 0;
+  const sink = createAuditSink(file, randomBytes(32), { log: (line) => lines.push(line), nowMs: () => now });
+  const event = { ts: new Date(0).toISOString(), outcome: "ok", request_id: "CANARY-req", tool: "list_templates" };
+  // Appending to a directory throws EISDIR, as a full volume throws ENOSPC.
+  const fail = () => {
+    fs.rmSync(file, { force: true });
+    fs.mkdirSync(file);
+  };
+  const heal = () => fs.rmdirSync(file);
+  const failed = "service: audit: appending to AUDIT_LOG_PATH failed (EISDIR): audit lines are dropped until an "
+    + "append succeeds";
+  const back = (n) => `service: audit: appending to AUDIT_LOG_PATH works again: ${n} audit line(s) were dropped`;
+  const SECOND = 1_000;
+
+  // Failed at 0 s, works again at 10 s, failed again at 30 s: inside the interval, so that streak is held back.
+  fail();
+  sink.record(event);
+  now = 10 * SECOND;
+  heal();
+  sink.record(event);
+  now = 30 * SECOND;
+  fail();
+  sink.record(event);
+  assert.deepEqual(lines, [failed, back(1)], "a streak inside the interval is counted, not logged");
+  // Still failing, one append per second, up to just before the interval since the last failed line.
+  for (now = 31 * SECOND; now < AUDIT_FAILURE_LOG_INTERVAL_MS; now += SECOND) sink.record(event);
+  assert.deepEqual(lines, [failed, back(1)], "still inside the interval: nothing more is logged");
+
+  // The interval has passed and the volume still fails: the held-back streak gets its failed line.
+  now = AUDIT_FAILURE_LOG_INTERVAL_MS;
+  sink.record(event);
+  assert.deepEqual(lines, [failed, back(1), failed], "the held-back streak is logged once the interval has passed");
+  assert.equal(lines.at(-1), failed, "the operator's last line says appends are failing, not that they work");
+  // Only once: an hour more of failing appends adds no line.
+  for (let i = 0; i < 3_600; i += 1) {
+    now += SECOND;
+    sink.record(event);
+  }
+  assert.deepEqual(lines, [failed, back(1), failed], "one failed line per streak");
+  // Its recovery reports every line dropped since the last recovery line: 1 + 29 + 1 + 3 600.
+  heal();
+  sink.record(event);
+  assert.deepEqual(lines, [failed, back(1), failed, back(3_631)]);
+  for (const line of lines) assert.doesNotMatch(line, /CANARY|service-audit/, `the event or the path: ${line}`);
+});
 
 test("render_video_start and render_job_status return not_implemented", TIMED, async (t) => {
   const s = await setup(t);

@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
@@ -268,6 +268,58 @@ test("parseServiceConfig refuses the published test-vector key and an audit key 
   assert.equal(cfg.identityKey.equals(cfg.auditKey), false);
   assert.deepEqual(cfg.auditKey, Buffer.from(env.AUDIT_HMAC_KEY, "base64url"));
 });
+
+test("parseServiceConfig compares keys as HMAC-SHA256 uses them, so a zero-padded or pre-hashed spelling is refused",
+  () => {
+    // HMAC-SHA256 zero-pads a key of at most 64 bytes to 64, and first hashes a longer key with SHA-256 (RFC 2104).
+    // Two keys with the same padded form sign every message alike.
+    const b64 = (bytes) => bytes.toString("base64url");
+    const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
+    const vector = Buffer.alloc(32, 7);
+    const sign = (key) => createHmac("sha256", key).update("rv-message").digest("hex");
+    const paddedVectors = [Buffer.concat([vector, Buffer.alloc(1)]), Buffer.concat([vector, Buffer.alloc(32)])];
+    for (const padded of paddedVectors) {
+      assert.equal(sign(padded), sign(vector), `control: ${padded.length} bytes sign as the published key`);
+      for (const name of KEY_NAMES) {
+        const bad = baseEnv({ [name]: b64(padded) });
+        const what = `${name} is the published key plus ${padded.length - 32} zero byte(s)`;
+        const error = assertConfigError(() => parseServiceConfig(bad), name, bad, what);
+        assert.equal(error.message, `${name} must not be the published test-vector key`);
+      }
+    }
+
+    const identity = randomBytes(32);
+    const longIdentity = randomBytes(65);
+    const sameAsIdentity = [
+      ["the identity key plus one zero byte", identity, Buffer.concat([identity, Buffer.alloc(1)])],
+      ["the identity key padded to 64 bytes", identity, Buffer.concat([identity, Buffer.alloc(32)])],
+      ["the SHA-256 of a 65-byte identity key", longIdentity, sha256(longIdentity)],
+      ["a 65-byte identity key, given as the audit key's SHA-256 form padded to 64", longIdentity,
+        Buffer.concat([sha256(longIdentity), Buffer.alloc(32)])],
+    ];
+    for (const [what, identityKey, auditKey] of sameAsIdentity) {
+      assert.equal(sign(auditKey), sign(identityKey), `control: ${what} signs as the identity key`);
+      const bad = baseEnv({ IDENTITY_HMAC_KEY: b64(identityKey), AUDIT_HMAC_KEY: b64(auditKey) });
+      const error = assertConfigError(() => parseServiceConfig(bad), "AUDIT_HMAC_KEY", bad, what);
+      assert.equal(error.message, "AUDIT_HMAC_KEY must differ from IDENTITY_HMAC_KEY");
+      assert.equal(error.message.includes(b64(auditKey)), false);
+    }
+
+    // Positive controls. A 65-byte key is hashed first, so the published key followed by 33 zero bytes is another
+    // key; so is a 65-byte key beside a different one, and so are two fresh keys. Each is kept as decoded.
+    const longVector = Buffer.concat([vector, Buffer.alloc(33)]);
+    assert.notEqual(sign(longVector), sign(vector), "control: a 65-byte key is hashed, not padded");
+    const accepted = [
+      [longVector, randomBytes(32)],
+      [randomBytes(32), longVector],
+      [longIdentity, randomBytes(65)],
+      [randomBytes(32), randomBytes(32)],
+    ];
+    for (const [identityKey, auditKey] of accepted) {
+      const cfg = parseServiceConfig(baseEnv({ IDENTITY_HMAC_KEY: b64(identityKey), AUDIT_HMAC_KEY: b64(auditKey) }));
+      assert.deepEqual([cfg.identityKey, cfg.auditKey], [identityKey, auditKey]);
+    }
+  });
 
 /**
  * A pack built at test time from the good fixture, with a stand-in CLI and renderer under node_modules. Never
