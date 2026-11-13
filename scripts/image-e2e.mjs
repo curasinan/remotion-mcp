@@ -12,7 +12,8 @@
 //   3. a forged header gets 401, and the genuine header on the same body gets 200
 //   6. the audit log has case 1's ok line, both refusals, and no string value from the props; every line is
 //      printable ASCII and holds no \u escape
-//   4. render_still slow gets render_timeout, after the deadline, and leaves no process behind
+//   4. render_still slow gets render_timeout, after the deadline on the container's own clock, and leaves no process
+//      behind
 //   5. a CLI killed mid-render gives render_failed, and leaves no process behind
 //   7. Turkish glyphs render as glyphs, not as the tofu an unrenderable label gives
 // Every case runs, each failure says what was missing, and it exits 1 if any failed (2 if it could not start).
@@ -77,7 +78,8 @@ const POST_TIMEOUT_MS = 30_000;
 const POLL_MS = 250;
 /** A pixel counts as ink when its brightest channel reaches this: the swatch draws white text on black. */
 const INK_THRESHOLD = 128;
-// Measured on the derived image: not yet. The first passing run records its ink counts here.
+// Measured on the derived image (rv-pack:dev on Docker Engine 29.1.3, 2026-11-13), in the first run that passed case
+// 7: glyph ink 18076, tofu ink 10758, 22804 pixels changed, 7461 of them at the tofu's ink (the check needs 5379).
 
 /**
  * Lists every process in /proc as JSON. No double quote and no backslash, so it survives every platform's argv
@@ -92,6 +94,13 @@ const SCAN = "const fs=require('fs');const out=[];for(const n of fs.readdirSync(
   + "out.push({pid:Number(n),ppid:Number(f[1]),state:f[0],cmdline:c})}"
   + "catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e}}"
   + "console.log(JSON.stringify({self:process.pid,procs:out}))";
+/**
+ * Prints the container's CLOCK_MONOTONIC in microseconds. That clock is one for every process in the container, and
+ * the service's deadline timer runs on it. Docker Desktop runs the engine in a VM whose clock can run a few percent
+ * fast against the host's: there, a 45 s timer in the container lasted about 43.6 s on the host's clock. So a deadline
+ * is measured on this clock, never on the host's. No double quote and no backslash, like SCAN.
+ */
+const CLOCK = "console.log(String(process.hrtime.bigint()/1000n))";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const say = (line) => console.log(`image-e2e: ${line}`);
@@ -196,6 +205,14 @@ async function assertNoSurvivors(baseline, what) {
   }, GONE_WAIT_MS, () => `${what}: processes survived ${GONE_WAIT_MS} ms after the result: ${describe(last)}`);
 }
 
+/** The container's monotonic clock, in ms. A failed exec or unreadable output throws. */
+async function containerNowMs() {
+  const { stdout } = await docker(["exec", container, "node", "-e", CLOCK]);
+  const us = Number(stdout.trim());
+  check(Number.isSafeInteger(us) && us > 0, `the container's clock read ${JSON.stringify(stdout.trim())}`);
+  return us / 1000;
+}
+
 async function containerState() {
   const { stdout } = await docker(["inspect", "--format", "{{json .State}}", container]);
   return JSON.parse(stdout);
@@ -264,16 +281,21 @@ async function post(url, body, header) {
 let client;
 /**
  * render_still, retried while it gets render_busy (whose contract is "retry later") until BUSY_WAIT_MS. Resolves with
- * the result and how long the attempt that produced it took.
+ * the result and how long the attempt that produced it took on this host's clock, `ms`. Given a `clock`, it also
+ * resolves with `inside`: that attempt on the clock, from a reading taken before its request to one taken after its
+ * result, so it can only overstate the attempt.
  */
-async function still(templateId, props) {
+async function still(templateId, props, { clock } = {}) {
   const until = performance.now() + BUSY_WAIT_MS;
   for (;;) {
+    const before = clock === undefined ? undefined : await clock();
     const started = performance.now();
     const result = await client.callTool({ name: "render_still", arguments: { template_id: templateId, props } },
       undefined, { timeout: CALL_TIMEOUT_MS });
     const ms = performance.now() - started;
-    if (result.structuredContent?.category !== "render_busy" || performance.now() >= until) return { result, ms };
+    if (result.structuredContent?.category !== "render_busy" || performance.now() >= until) {
+      return { result, ms, inside: before === undefined ? undefined : (await clock()) - before };
+    }
     await delay(POLL_MS);
   }
 }
@@ -393,11 +415,14 @@ async function main() {
   await step("4 render_still slow gets render_timeout after the deadline and leaves no process", async () => {
     const baseline = pidsOf(await scan());
     let settled;
-    const call = still("slow", {}).then((done) => { settled = done; }, (error) => { settled = { error }; });
+    // Timed on the container's clock, the one the service's deadline runs on (CLOCK).
+    const call = still("slow", {}, { clock: containerNowMs })
+      .then((done) => { settled = done; }, (error) => { settled = { error }; });
     // The scan's positive control: it does see the render's Chrome, before the deadline.
     let seen = [];
     await pollFor(async () => {
-      check(settled === undefined, "the call settled before the scan saw Chrome");
+      check(settled === undefined, "the call settled before the scan saw Chrome"
+        + (settled?.error === undefined ? "" : `: it threw: ${settled.error}`));
       seen = survivorsOf(await scan(), baseline);
       return seen.some(isChrome) ? true : undefined;
     }, BUSY_WAIT_MS + RENDER_STILL_DEADLINE_MS,
@@ -406,8 +431,11 @@ async function main() {
     check(settled.error === undefined, `the call threw: ${settled.error}`);
     const category = categoryOf(settled.result);
     check(category === "render_timeout", `the category was ${category}`);
-    check(settled.ms >= RENDER_STILL_DEADLINE_MS,
-      `the result arrived after ${Math.round(settled.ms)} ms, before the ${RENDER_STILL_DEADLINE_MS} ms deadline`);
+    const timing = `${Math.round(settled.inside)} ms on the container's clock (${Math.round(settled.ms)} ms on this `
+      + "host's)";
+    check(settled.inside >= RENDER_STILL_DEADLINE_MS,
+      `the result arrived after ${timing}, before the ${RENDER_STILL_DEADLINE_MS} ms deadline`);
+    say(`render_timeout arrived after ${timing}`);
     await assertNoSurvivors(baseline, "after render_timeout");
   });
 
