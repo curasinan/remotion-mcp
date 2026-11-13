@@ -290,8 +290,8 @@ build gate.
 The same startup check, `loadPack`, also refuses a manifest whose `packHash`
 or `remotionVersion` is not a non-empty string, whose `templates` is not a
 non-empty array, or that has a template without a positive integer `width`
-and `height`, a positive `defaultFps` and an integer `maxFrames` of at least
-1. It refuses a duplicate id, an id or `compositionId` outside
+and `height`, a positive `defaultFps` and an integer `maxFrames` of at
+least 1. It refuses a duplicate id, an id or `compositionId` outside
 [the template-id rule](#the-manifest), a raster over `MAX_RASTER_PIXELS`
 ([above](#registering-compositions)), and a pack whose `bundle/index.html` is
 not a file. It names every problem it finds, located in the manifest.

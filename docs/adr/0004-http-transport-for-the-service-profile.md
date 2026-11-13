@@ -146,7 +146,15 @@ The service refuses every request whose `X-Render-Identity` header does not
 verify. The header is an HMAC-SHA256 over claims that bind a request to one
 deployment, one tool, one body and a short time window. The service checks it
 against the raw body bytes, before it parses anything and before any
-`McpServer` exists. A failure is a 401 with no detail, and no tool runs.
+`McpServer` exists. A refusal is an empty answer with no detail, and no tool
+runs. It is a 401 when the request fails checks 1 to 10 of
+[the gateway contract](../CONTRACT-gateway.md#check-order-and-refusals), the
+header, its signature and claims, and the body's hash
+(`src/service/identity.ts:194`), or checks 13 to 15, the signed `tool` and
+`request_id` against the parsed message, then replay (`identity.ts:205`,
+`:208`). It is a 400 when a body that matches a verified header is not JSON,
+or is a JSON array: checks 11 and 12 (`identity.ts:200`, `:202`).
+`src/service/http.ts:141` answers each with its verdict's status.
 [ADR-6](0006-gateway-for-the-service-profile.md) specifies the header and the
 full list of refusals.
 

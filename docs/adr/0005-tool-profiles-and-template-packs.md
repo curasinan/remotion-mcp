@@ -140,7 +140,8 @@ established the first and the fourth:
   the render's output path itself.
 - No service response carries a filesystem path. Every error the service's own
   code returns is a category and a fixed message (`invalid_props` adds the
-  failing JSON pointers, never their values), never a path, a local-dev tool
+  first failing JSON pointer, plus one per failed `anyOf` branch where the
+  validator reports them, never their values), never a path, a local-dev tool
   name, CLI output or a raw zod or ajv message.
 - One kind of error is not the service's own. The owner approved it with the
   plan as deviation 2 (`docs/superpowers/plans/final_script.md:42-43`):
