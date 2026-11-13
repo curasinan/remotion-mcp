@@ -3,7 +3,9 @@ name: Service image
 # Builds Dockerfile.service for linux/amd64 and pushes it to GHCR (design 5.9, docs/DEPLOY.md). Off until the owner
 # sets the repository variable PUBLISH_SERVICE_IMAGE to 'true' (design 1, ruling 3). Deployers pin the image by the
 # digest this job writes to its summary. It rebuilds from the floating node:22-bookworm-slim base, so no check runs
-# against the digest it publishes; docs/DEPLOY.md tells deployers to run scripts/image-checks.sh before rollout.
+# against the digest it publishes. Before rollout, docs/DEPLOY.md tells deployers to run scripts/image-e2e.mjs and
+# scripts/walk-only-proof.mjs against the pinned digest, with the fixture pack built on it, and scripts/image-checks.sh
+# against their own derived image.
 on:
   push:
     branches: [main]
