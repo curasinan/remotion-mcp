@@ -105,7 +105,7 @@ run time, from your secret store.
 | --- | --- | --- | --- |
 | `SERVICE_AUDIENCE` | yes | | This deployment's id: the `aud` your gateway signs. |
 | `IDENTITY_HMAC_KEY` | yes | | The key your gateway signs this deployment's requests with. Unpadded base64url, at least 32 bytes. Never the published test-vector key (`Buffer.alloc(32, 7)`, in `test/vectors/identity-v1.json`). |
-| `AUDIT_HMAC_KEY` | yes | | The key the audit log's hashes are made with. Unpadded base64url, at least 32 bytes. Its own key: the service refuses to start when it equals `IDENTITY_HMAC_KEY`, or when it is the published test-vector key. Both checks compare the decoded bytes. |
+| `AUDIT_HMAC_KEY` | yes | | The key the audit log's hashes are made with. Unpadded base64url, at least 32 bytes. Its own key: the service refuses to start when it equals `IDENTITY_HMAC_KEY`, or when it is the published test-vector key. Both checks compare the decoded keys as HMAC-SHA256 uses them: zero-padded to 64 bytes, after a key longer than 64 bytes is first replaced by its SHA-256 (`src/service/config.ts:71`). So a key with zero bytes appended, or a long key's SHA-256, counts as the same key. |
 | `SERVICE_PORT` | no | `8080` | A whole number, 1 to 65535 in a container. The service also accepts 0, a port the system picks, but the healthcheck would then probe port 0 and never report healthy. |
 | `SERVICE_HOST` | no | `0.0.0.0` | Must accept connections on IPv4 `127.0.0.1`, where the healthcheck probes. `0.0.0.0` (the default) and `127.0.0.1` do. `::1`, or a `localhost` that resolves to `::1`, fails every probe. |
 | `AUDIT_LOG_PATH` | no | `/var/log/remotion-viz/service-audit.jsonl` | An absolute path. Must open for appending, or the service refuses to start. |

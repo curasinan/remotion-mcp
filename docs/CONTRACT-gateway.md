@@ -237,7 +237,10 @@ configure it on a deployment or a gateway that serves traffic. A deployment
 refuses to start with the published test-vector key as either
 `IDENTITY_HMAC_KEY` or `AUDIT_HMAC_KEY`. It also refuses an
 `AUDIT_HMAC_KEY` equal to its `IDENTITY_HMAC_KEY`. Both checks compare the
-decoded bytes, and each message names the variable, never the value.
+decoded keys as HMAC-SHA256 uses them: zero-padded to 64 bytes, after a key
+longer than 64 bytes is first replaced by its SHA-256
+(`src/service/config.ts:71`). Each message names the variable, never the
+value.
 
 **The record shape:**
 

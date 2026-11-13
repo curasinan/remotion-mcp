@@ -328,7 +328,9 @@ name, so no key is in the repository, an image or an argv.
    - The audit log has the render's `ok` line and both refusals, no string
      from the props, and no character outside printable ASCII and no `\u`
      escape, so a truncated or re-encoded value is caught too.
-   - `render_still slow` gets `render_timeout`, after the 45 s deadline.
+   - `render_still slow` gets `render_timeout`, after the 45 s deadline,
+     timed on the container's own monotonic clock, the one the service's
+     deadline runs on.
    - A CLI killed with `kill -KILL` mid-render gives `render_failed`.
    - A Turkish label differs from an all-tofu label in at least half of the
      tofu render's ink pixels, measured with `pixelmatch`.
@@ -401,14 +403,47 @@ unanswered request fails its case. A walk-only-proof run that fails, a
 rejected render or a Chrome that never appears included, is aborted, its
 cleanup awaited, and what it left killed and reaped, before the next run.
 
-**Recorded evidence: the images have not yet been built.** Docker's engine
-was down when Task 10 was written (2026-11-04), so the local image run, its
-Step 4, has not happened, and this job has not yet run in CI. What has run is
-a rehearsal of the three scripts in WSL Ubuntu with Node 22, natively and
-not in Docker: the service and the proof ran from `dist-service/` in their
-own pid and mount namespaces, with a reaper as PID 1, and a stand-in for the
-`docker` CLI. It is not the image, but it is the scripts' own logic against
-the real service, CLI and Chrome:
+**Recorded evidence: the images were built and run locally on 2026-11-13.
+This job has not yet run on GitHub.** The run was Task 10's Step 4, on Docker
+Desktop's Linux engine on a Windows 11 host (`docker version`: Docker
+Desktop 4.57.0, Engine 29.1.3, linux/amd64), with the commands above. The
+fixture pack was built in WSL Ubuntu with Node 22, and its `packHash` was
+`sha256:1974bbdb8107eaadec20b40d1cd090ec95ce2ce590e3baf0e7871b91dbcab93a`, as
+in Task 9. Both images' `node:22-bookworm-slim` stages resolved to
+`sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee`.
+
+- `rv-service:dev` built as `sha256:df28c38e85b8…`, and `rv-pack:dev` as
+  `sha256:733d0dff55b0…`.
+- `image-checks.sh` passed all of its checks. The browser printed
+  `Chromium 149.0.7790.0`, the renderer was 4.0.532, and the user was uid 1000
+  (`node`).
+- `image-e2e.mjs` passed every case. The timed-out render's result arrived
+  45378 ms after its request on the container's clock. Case 7 measured 18076
+  ink pixels for the Turkish label and 10758 for the tofu, and the two differ
+  at 7461 of the tofu's.
+- `walk-only-proof.mjs` passed both runs. In the control, which killed only
+  the CLI's group, four Chrome processes survived and cleanup reported
+  unverified. In the proof, the walk also handed the kill Chrome's own group,
+  cleanup reported verified, and no new process survived.
+- The derived build's allow-list held: with a stray file planted in
+  `fixtures/pack/` and a `node_modules/` in `dist-pack/`, neither reached the
+  build context or the image. A copy of the same context without the
+  `.dockerignore` sent both.
+
+**Case 4 is timed on the container's clock.** In the first run it failed:
+`render_timeout` arrived 43587 ms after the request on the host's clock,
+before the 45 000 ms deadline. Docker Desktop runs the engine in a VM whose
+clock ran fast against the host's. A 45 s timer inside a container measured
+44277 ms on the host's clock, with the `docker exec` around it. The deadline
+was right on the service's own clock, so the case now reads the container's
+monotonic clock before its request and after its result. On a native Linux
+engine, as in CI, the two are one clock.
+
+Before the engine was up, the three scripts were rehearsed in WSL Ubuntu
+with Node 22, natively and not in Docker (2026-11-04): the service and the
+proof ran from `dist-service/` in their own pid and mount namespaces, with a
+reaper as PID 1, and a stand-in for the `docker` CLI. It is not the image,
+but it is the scripts' own logic against the real service, CLI and Chrome:
 
 - `walk-only-proof.mjs` passed both runs. With the walk disabled in the
   built `render-process.js`, both runs failed.
@@ -429,8 +464,6 @@ render reaches its FAIL lines, and a run whose Chrome never appears leaves
 nothing alive for the next run. `image-checks.sh` fails a hung browser and
 `ldd` at 30 s, a root user, and, under dash, an audit directory whose write
 fails, with its FAIL line and summary.
-
-The first image run records its own evidence here.
 
 ### The browser-presence assertion is not decoration
 

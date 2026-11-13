@@ -310,9 +310,12 @@ which review, is the operator's to govern, because the risk is theirs.
   pack (`fixtures/pack/`), the absence suite (`test/absence.test.mjs`,
   `scripts/check-service-closure.mjs`), `docs/CONTRACT-pack.md` and
   `docs/DEPLOY.md`. They join the leaf `src/services/entrypoint.ts` and its
-  tests (PR #20). Still unproven as of 2026-11-11:
-  - the images have not yet been built or run, locally (Task 10 Step 4,
-    pending a proof round) or in CI's `image` job.
+  tests (PR #20). The images were built and run locally on 2026-11-13, on
+  Docker Desktop's Linux engine 29.1.3, with the fixture pack built on top
+  (Task 10 Step 4, [`CI.md`](../CI.md#the-image-job-the-images-proved-on-linux)):
+  `image-checks.sh`, every case of `image-e2e.mjs` and both runs of
+  `walk-only-proof.mjs` passed. Still unproven as of 2026-11-13:
+  - CI's `image` job has not yet run on GitHub.
 
   Context, and the future tense above, describe the tree as of 2026-10-26.
 - **Absence is claimed for the registration closure and the compiled artifact,

@@ -326,11 +326,17 @@ implemented, a frame budget refuses those renders up front:
   exit 70 in `src/service/start.ts`, `Dockerfile.service` with `tini` and
   `setpriv`, `docs/DEPLOY.md`, the stub-CLI tests in
   `test/render-process.test.mjs`, and `scripts/walk-only-proof.mjs`.
-  They join `killTree` and the raster cap with its test. Still unproven as of
-  2026-11-11:
-  - the images have not yet been built or run, locally (Task 10 Step 4,
-    pending a proof round) or in CI's `image` job, so neither has the walk-only
-    proof with `setpriv` hidden, which runs inside the image.
+  They join `killTree` and the raster cap with its test. The images were built
+  and run locally on 2026-11-13, on Docker Desktop's Linux engine 29.1.3
+  (Task 10 Step 4, [`CI.md`](../CI.md#the-image-job-the-images-proved-on-linux)),
+  and the walk-only proof ran inside the derived image with `setpriv` hidden
+  from the CLI's `PATH` and a kill that only sends `SIGKILL`. The control run,
+  which killed only the CLI's group, left four Chrome processes alive, and
+  cleanup reported unverified. The proof run's walk handed the kill Chrome's
+  own group as well as the CLI's; cleanup reported verified, and no new
+  process survived. In `image-e2e.mjs`, a timed-out render and a CLI killed
+  mid-render each left no process behind. Still unproven as of 2026-11-13:
+  - CI's `image` job has not yet run on GitHub.
 
   Context, and the future tense above, describe the tree as of 2026-10-26.
 

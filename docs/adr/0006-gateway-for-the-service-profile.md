@@ -150,12 +150,13 @@ The service will handle each request with a `node:http` server, in this order
 3. **Identity on raw bytes.** The header must parse, the signature must match,
    and `aud`, `iat`, `exp` and `body_sha256` must hold. On failure the service
    answers 401 with no detail. No server is created.
-4. **Parse.** The body is parsed once. An array body gets 400, so a batch cannot
-   run several calls under one request.
+4. **Parse.** The body is parsed once. A body that does not parse gets 400
+   (`src/service/identity.ts:200`). An array body gets 400 too
+   (`identity.ts:202`), so a batch cannot run several calls under one request.
 5. **Identity against the body.** The signed `tool` and `request_id` must match
-   the parsed body.
+   the parsed body. A mismatch of either gets 401 (`identity.ts:205`).
 6. **Replay.** Only after every other check passes is `request_id` added to the
-   seen set. A replay gets 401.
+   seen set. A replay gets 401 (`identity.ts:208`).
 7. **Server and transport.** A fresh `McpServer` and a fresh transport are
    created (ADR-4). The verified identity reaches the tools as `authInfo`.
 8. **Cancellation.** When the response closes, the transport is closed, which
@@ -304,11 +305,15 @@ change.
   `test/vectors/identity-v1.json`), the live `tools/list` check (T2 in
   `test/absence.test.mjs`), the service's audit log (`src/service/audit.ts`,
   written through the wrapper in `src/service/registry.ts`) and
-  `docs/CONTRACT-gateway.md`. Still unproven as of 2026-11-11:
+  `docs/CONTRACT-gateway.md`. The images were built and run locally on
+  2026-11-13, on Docker Desktop's Linux engine 29.1.3 (Task 10 Step 4,
+  [`CI.md`](../CI.md#the-image-job-the-images-proved-on-linux)). There,
+  `image-e2e.mjs`, signing with the test client in place of the owner's
+  gateway, got a PNG for a signed request, 401 for a replay and for a forged
+  header, and an audit line for each. Still unproven as of 2026-11-13:
   - the owner's gateway has not been checked against the vectors, an owner
     checkpoint (owner ruling 5);
-  - the images have not yet been built or run, locally (Task 10 Step 4,
-    pending a proof round) or in CI's `image` job.
+  - CI's `image` job has not yet run on GitHub.
 
   Context, and the future tense above, describe the tree as of 2026-10-26.
 - **The gateway is a single point of failure for the service path, for every

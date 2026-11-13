@@ -282,9 +282,13 @@ it: the header check refuses a browser's request whatever its origin.
   (`scripts/sign-identity.mjs`, `scripts/make-identity-vectors.mjs`,
   `test/vectors/identity-v1.json`) and `docs/DEPLOY.md`. They join the
   `tsconfig.json` exclusion and `test/profiles.test.mjs` (PR #18), and the leaf
-  `src/services/entrypoint.ts` (PR #20). Still unproven as of 2026-11-11:
-  - the images have not yet been built or run, locally (Task 10 Step 4,
-    pending a proof round) or in CI's `image` job;
+  `src/services/entrypoint.ts` (PR #20). The images were built and run
+  locally on 2026-11-13, on Docker Desktop's Linux engine 29.1.3 (Task 10
+  Step 4, [`CI.md`](../CI.md#the-image-job-the-images-proved-on-linux)):
+  `image-checks.sh`, every case of `image-e2e.mjs` (with the test signing
+  client in place of the owner's gateway) and both runs of
+  `walk-only-proof.mjs` passed. Still unproven as of 2026-11-13:
+  - CI's `image` job has not yet run on GitHub;
   - the owner's gateway has not been checked against the vectors, an owner
     checkpoint (owner ruling 5).
 
