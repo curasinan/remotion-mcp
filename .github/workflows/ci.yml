@@ -35,6 +35,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The service tests import dist-service/, and this is the only type-check of src/service/.
+      - name: Build service
+        run: npm run build:service
+
       # Browser tests skip without Chrome, so fail early if the runner has none.
       - name: Assert a browser is available
         run: >
@@ -54,12 +58,15 @@ jobs:
         env:
           # Shared runners are slow to start Chrome; raise the 45 s page deadline.
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+          # test/render-process.test.mjs fails instead of skipping its Linux-only cases. Never "1" off ubuntu.
+          REQUIRE_LINUX_PROCESS_TESTS: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
       - name: Test (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run test:coverage
         env:
           REMOTION_MCP_PAGE_TIMEOUT_MS: "90000"
+          REQUIRE_LINUX_PROCESS_TESTS: "1"
 
       # Check tools/list with an independent client (pinned); update the count when adding a tool.
       - name: MCP conformance (independent client)
@@ -200,6 +207,88 @@ jobs:
       - name: Run the shipped artifact
         run: node scripts/verify-bundle-runtime.mjs ./artifact ./extracted
 
+  # Build the fixture template pack on Linux, as a deployer would (docs/CONTRACT-pack.md): the zod 4 gate, the
+  # export, the service's own JSON Schema gate, and loadPack on the result. The image job builds from this artifact.
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            fixtures/pack/package-lock.json
+      - run: npm ci
+      # build-pack imports the JSON Schema gate and loadPack from dist-service/.
+      - run: npm run build:service
+      - run: npm ci --prefix fixtures/pack
+      - run: node scripts/build-pack.mjs fixtures/pack
+      # packHash covers every file under bundle/, dotfiles included, and loadPack never re-hashes: upload them all,
+      # and fail rather than upload nothing.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pack
+          path: fixtures/pack/dist-pack/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  # Build the service image, then the derived image from the pack artifact, and prove both on Linux (docs/CI.md):
+  # image-checks.sh inside a running derived container, image-e2e.mjs driving the derived image directly with the
+  # repo's test signing client (the owner's gateway is not in it), and walk-only-proof.mjs below the service.
+  image:
+    needs: pack
+    runs-on: ubuntu-latest
+    # Two image builds and the three checks take minutes; a hang must not hold a runner for GitHub's 360.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # image-e2e.mjs reads the service's constants from dist-service/.
+      - run: npm run build:service
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pack
+          path: fixtures/pack/dist-pack
+      - name: Build the service image
+        run: docker build -f Dockerfile.service -t rv-service:dev .
+      - name: Build the derived image
+        run: >
+          docker build -f fixtures/pack/Dockerfile.derived --build-arg SERVICE_IMAGE=rv-service:dev
+          -t rv-pack:dev fixtures/pack
+      # Throwaway keys, generated here and passed by name, so they never appear in an argv. Without them the service
+      # exits at once. The checks run once the service reports healthy, polled to a deadline.
+      - name: Image checks
+        run: |
+          key() { node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"; }
+          trap 'status=$?; [ "$status" -eq 0 ] || docker logs rv; docker rm -f rv >/dev/null; exit "$status"' EXIT
+          IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run -d --name rv \
+            --health-start-period=120s --health-start-interval=1s \
+            -e SERVICE_AUDIENCE=ci -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY rv-pack:dev
+          deadline=$((SECONDS + 120))
+          until [ "$(docker inspect --format '{{.State.Health.Status}}' rv)" = healthy ]; do
+            if [ "$(docker inspect --format '{{.State.Running}}' rv)" != true ] || [ "$SECONDS" -ge "$deadline" ]; then
+              echo "the checks container did not report healthy" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          docker exec -i rv sh -s < scripts/image-checks.sh
+      - name: End-to-end against the derived image
+        run: node scripts/image-e2e.mjs rv-pack:dev
+      # tini stays PID 1, so the orphans the control run leaves are reaped.
+      - name: The /proc walk alone
+        run: |
+          key() { node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"; }
+          IDENTITY_HMAC_KEY="$(key)" AUDIT_HMAC_KEY="$(key)" docker run --rm --entrypoint /usr/bin/tini \
+            -e SERVICE_AUDIENCE=proof -e IDENTITY_HMAC_KEY -e AUDIT_HMAC_KEY \
+            -v "$PWD/scripts:/proof:ro" rv-pack:dev -- node /proof/walk-only-proof.mjs
+
   # Lint every workflow with actionlint (image pinned by digest).
   lint-workflows:
     runs-on: ubuntu-latest
@@ -212,7 +301,7 @@ jobs:
 
   # Single required status check; always runs and fails if any needed job did not succeed.
   ci-ok:
-    needs: [build-and-test, sbom, bundle, verify-bundle, lint-workflows]
+    needs: [build-and-test, sbom, bundle, verify-bundle, pack, image, lint-workflows]
     if: always()
     runs-on: ubuntu-latest
     steps:

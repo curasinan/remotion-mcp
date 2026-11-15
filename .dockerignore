@@ -1,0 +1,8 @@
+# For Dockerfile.service, whose build context is the repository root. Its build stage copies only package.json,
+# package-lock.json, the two tsconfigs and src/, so this keeps the context small rather than the image clean.
+# fixtures/ is excluded whole: the derived image is built with fixtures/pack as its own context and ignore file.
+node_modules
+dist
+tmp-*
+.git
+fixtures/

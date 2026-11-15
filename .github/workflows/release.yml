@@ -43,6 +43,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The service tests import dist-service/, and this is the only type-check of src/service/.
+      - name: Build service
+        run: npm run build:service
+
       # Browser tests skip without Chrome, so fail early if the runner has none.
       - name: Assert a browser is available
         run: >

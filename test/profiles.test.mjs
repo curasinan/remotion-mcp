@@ -115,3 +115,33 @@ test("project.ts re-exports the one requireEntryPoint rather than a copy", async
     "src/tools/project.ts exports a different requireEntryPoint from the leaf's. Two copies "
     + "means two argv-injection guards that can drift apart; re-export the leaf's instead.");
 });
+
+test("render-core.ts reaches no tool module, and none of environment, browser or tile", () => {
+  const entry = path.join(SRC, "services", "render-core.ts");
+  assert.ok(fs.existsSync(entry),
+    "src/services/render-core.ts does not exist, so there is no shared still argv builder for "
+    + "the service profile to import.");
+
+  // The service never needs these; reaching any of them would compile it into the service build.
+  const forbidden = ["services/environment.ts", "services/browser.ts", "services/tile.ts"];
+
+  // Positive control: each forbidden name is a real module the walker reaches from the stdio
+  // root, so a misspelt or moved one cannot pass the check below vacuously.
+  const fromRoot = importClosure(path.join(SRC, "index.ts"));
+  for (const p of forbidden) {
+    assert.ok(fromRoot.includes(p),
+      `the import walk from src/index.ts did not reach ${p}, so checking for it proves nothing.`);
+  }
+
+  const reached = importClosure(entry);
+  // Positive control: the walk from render-core.ts follows its own imports.
+  assert.ok(reached.includes("services/exec.ts"),
+    `the import walk from render-core.ts did not reach services/exec.ts (found ${reached.join(", ")}), `
+    + "so it is not following imports and the check below proves nothing.");
+
+  const offenders = reached.filter((p) => p.startsWith("tools/") || forbidden.includes(p));
+  assert.deepEqual(offenders, [],
+    `src/services/render-core.ts reaches ${offenders.join(", ")} through its imports `
+    + `(closure: ${reached.join(", ")}). The service profile imports render-core.ts, so each of `
+    + "those would be compiled into its build.");
+});

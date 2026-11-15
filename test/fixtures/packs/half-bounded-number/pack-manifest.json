@@ -1,0 +1,28 @@
+{
+  "packHash": "3062c5eca76de9110788b4d81a15cebdd775623ee1cbac8e178c10533a874347",
+  "remotionVersion": "4.0.532",
+  "templates": [
+    {
+      "id": "t",
+      "compositionId": "T",
+      "width": 100,
+      "height": 100,
+      "defaultFps": 30,
+      "maxFrames": 1,
+      "propsSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "x"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

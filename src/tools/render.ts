@@ -27,6 +27,7 @@ import { displayPath, ensureParentDirectory, resolveExistingDirectory, resolveIn
 import { tilePanels } from "../services/tile.js";
 import { ToolInputError } from "../types.js";
 import { requireEntryPoint } from "../services/entrypoint.js";
+import { buildStillArgv } from "../services/render-core.js";
 
 /** Largest file inlined as a base64 image content block. */
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
@@ -350,17 +351,15 @@ Error Handling:
       const frame = input.frame ?? 0;
       const args = [
         ...cli.prefixArgs,
-        "still",
-        ctx.entry,
-        input.composition_id,
-        ctx.outputArg,
-        `--frame=${frame}`,
-        `--scale=${input.scale}`,
-        "--image-format=png",
-        "--overwrite",
-        "--log=info",
+        ...buildStillArgv({
+          source: ctx.entry,
+          compositionId: input.composition_id,
+          output: ctx.outputArg,
+          frame,
+          scale: input.scale,
+          propsJson: props ?? undefined,
+        }),
       ];
-      if (props) args.push(`--props=${props}`);
 
       const result = await runCommand(cli.file, args, {
         cwd: ctx.dir,

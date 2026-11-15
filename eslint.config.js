@@ -11,11 +11,26 @@ const nodeGlobals = {
   fetch: "readonly", // global since Node 18; used by build-bundle.mjs
   setTimeout: "readonly",
   clearTimeout: "readonly",
+  setInterval: "readonly",
+  clearInterval: "readonly",
+  setImmediate: "readonly",
+  clearImmediate: "readonly",
+  AbortController: "readonly",
+  AbortSignal: "readonly",
+  TextEncoder: "readonly",
+  TextDecoder: "readonly",
+  structuredClone: "readonly",
+  queueMicrotask: "readonly",
+  performance: "readonly",
+  Headers: "readonly",
+  Response: "readonly",
+  crypto: "readonly",
 };
 
 export default tseslint.config(
-  // Generated output: build/ staging, plus extracted/, artifact/ and tmp-*/ from bundle verification.
-  { ignores: ["dist/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb", "extracted/**", "artifact/**", "tmp-*/**"] },
+  // Generated output: dist-service/, build/ staging, plus extracted/, artifact/ and tmp-*/ from bundle verification.
+  // fixtures/pack/ is a separate Remotion project (React and TSX), with its own dependencies; build-pack checks it.
+  { ignores: ["dist/**", "dist-service/**", "build/**", "node_modules/**", "coverage/**", "*.mcpb", "extracted/**", "artifact/**", "tmp-*/**", "fixtures/pack/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
