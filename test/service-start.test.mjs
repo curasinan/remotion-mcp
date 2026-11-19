@@ -588,13 +588,20 @@ test("runVersion gives the browser the allowlisted environment, never a key",
         else process.env[name] = value;
       }
     });
+    // Node's child_process copies this process's NODE_V8_COVERAGE into every child's environment, even an explicit one
+    // that leaves it out, so coverage reaches children too. Only a coverage run sets it here, and then only the value
+    // this test began with may reach the browser: any other value is a leak. Read before runVersion, so a change it
+    // made to process.env would not count.
+    const coverage = process.env.NODE_V8_COVERAGE ? `NODE_V8_COVERAGE=${process.env.NODE_V8_COVERAGE}` : undefined;
     process.env.IDENTITY_HMAC_KEY = SENTINELS.IDENTITY_HMAC_KEY;
     process.env.AUDIT_HMAC_KEY = SENTINELS.AUDIT_HMAC_KEY;
     assert.equal(await defaultPreflightDeps.runVersion(browser), true);
-    const names = fs.readFileSync(out, "utf8").split("\n").filter((line) => line.includes("="))
-      .map((line) => line.slice(0, line.indexOf("=")));
+    const lines = fs.readFileSync(out, "utf8").split("\n").filter((line) => line.includes("="));
     const allowed = new Set(["PATH", "HOME", "LANG", "NODE_ENV", "TMPDIR", "PWD", "SHLVL", "_"]);
-    for (const name of names) assert.ok(allowed.has(name) || name.startsWith("REMOTION_"), `${name} reached the browser`);
+    for (const line of lines) {
+      const name = line.slice(0, line.indexOf("="));
+      assert.ok(allowed.has(name) || name.startsWith("REMOTION_") || line === coverage, `${name} reached the browser`);
+    }
     const text = fs.readFileSync(out, "utf8");
     assert.equal(text.includes("SENTINEL"), false);
     assert.ok(text.includes(`TMPDIR=${os.tmpdir()}`));
