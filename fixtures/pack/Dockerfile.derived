@@ -1,0 +1,24 @@
+# check=skip=FromPlatformFlagConstDisallowed,InvalidDefaultArgInFrom
+# A deployment's image: the service image plus one template pack (docs/DEPLOY.md). This is the recipe to copy. Put it
+# beside your build-pack output, dist-pack/, with this directory's .dockerignore, and build with that directory as
+# the context:
+#
+#   docker build --platform linux/amd64 -f Dockerfile.derived \
+#     --build-arg SERVICE_IMAGE=ghcr.io/curasinan/remotion-viz-service@sha256:<digest> -t <your image> .
+#
+# SERVICE_IMAGE has no default on purpose: pin the service image by digest. linux/amd64 only, like the service image,
+# so the pack's native packages and its browser match the platform they run on.
+ARG SERVICE_IMAGE
+
+# Pack: the pack's own production dependencies, installed on Linux, and Remotion's pinned Chrome Headless Shell.
+FROM --platform=linux/amd64 node:22-bookworm-slim AS pack
+WORKDIR /pack
+COPY dist-pack/ /pack/
+# `browser ensure` takes no destination, so the mv gives the browser a fixed path, and test -x fails the build if
+# Remotion's download layout ever changes.
+RUN npm ci --omit=dev && npx remotion browser ensure && mv /pack/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64 /pack/browser && test -x /pack/browser/chrome-headless-shell
+
+FROM --platform=linux/amd64 ${SERVICE_IMAGE}
+COPY --from=pack /pack /pack
+# --browser-executable on every render is what prevents a runtime download. No variable disables one.
+ENV PACK_DIR=/pack BROWSER_EXECUTABLE=/pack/browser/chrome-headless-shell

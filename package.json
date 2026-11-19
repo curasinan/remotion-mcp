@@ -17,18 +17,21 @@
   ],
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+    "build:service": "tsc -p tsconfig.service.json",
     "start": "node dist/index.js",
+    "start:service": "node dist-service/service/index.js",
     "dev": "tsx watch src/index.ts",
     "clean": "rm -rf dist",
     "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
-    "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs test/version-sync.test.mjs",
-    "test:coverage": "node --test --experimental-test-coverage test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs test/version-sync.test.mjs",
+    "test": "node --test test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs test/version-sync.test.mjs test/profiles.test.mjs test/identity.test.mjs test/templates.test.mjs test/render-process.test.mjs test/service-tools.test.mjs test/service-http.test.mjs test/service-start.test.mjs test/absence.test.mjs test/zod-gate.test.mjs test/pack-files.test.mjs test/build-pack.test.mjs test/healthcheck.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage test/unit.test.mjs test/protocol.test.mjs test/process-leak.test.mjs test/audit.test.mjs test/dashboard.test.mjs test/audit-isolation.test.mjs test/limits.test.mjs test/timeouts.test.mjs test/html.test.mjs test/studio.test.mjs test/engines.test.mjs test/version-sync.test.mjs test/profiles.test.mjs test/identity.test.mjs test/templates.test.mjs test/render-process.test.mjs test/service-tools.test.mjs test/service-http.test.mjs test/service-start.test.mjs test/absence.test.mjs test/zod-gate.test.mjs test/pack-files.test.mjs test/build-pack.test.mjs test/healthcheck.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:smoke": "node smoke-test.mjs",
     "gateway": "node scripts/build-dashboard.mjs",
     "bundle": "node scripts/build-bundle.mjs",
-    "test:bundle": "node --test test/bundle.test.mjs"
+    "test:bundle": "node --test test/bundle.test.mjs",
+    "test:absence": "node --test test/absence.test.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -36,6 +39,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@resvg/resvg-js": "^2.6.2",
+    "ajv": "^8.17.1",
     "fast-xml-parser": "^4.5.0",
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
