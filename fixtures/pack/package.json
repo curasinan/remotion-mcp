@@ -1,0 +1,17 @@
+{
+  "name": "remotion-mcp-fixture-pack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The repository's fixture template pack (swatch, slow), built with scripts/build-pack.mjs.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@remotion/bundler": "4.0.532",
+    "@remotion/cli": "4.0.532",
+    "@remotion/fonts": "4.0.532",
+    "@remotion/renderer": "4.0.532",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.532",
+    "zod": "4.5.4"
+  }
+}

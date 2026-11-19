@@ -1,5 +1,7 @@
 # TacticLens Render Service Implementation Plan
 
+> **Superseded 2026-10-26 by docs/superpowers/plans/final_script.md.** Kept for its history; do not execute.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend `remotion-viz-mcp` with a four-tool service profile behind a thin authenticating gateway, reachable over HTTP by the TacticLens backend, while the thirteen-tool local-dev profile stays stdio-only and unchanged.

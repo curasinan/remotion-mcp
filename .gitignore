@@ -8,3 +8,11 @@ build
 /extracted/
 /tmp-verify/
 /tmp-broken/
+
+# Output of `npm run build:service`, and scratch trees service tests create inside the repo.
+/dist-service/
+/tmp-poison-*/
+
+# The fixture pack's build output and its Linux install (scripts/build-pack.mjs, the CI pack job).
+/fixtures/pack/dist-pack/
+/fixtures/pack/node_modules/

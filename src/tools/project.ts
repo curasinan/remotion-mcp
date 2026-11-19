@@ -6,8 +6,9 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { TIMEOUT_BUNDLE_MS } from "../constants.js";
 import { entryPointField, projectDirField, responseFormatField } from "../schemas/common.js";
-import { findEntryPoint, isRemotionProject } from "../services/environment.js";
-import { assertSafePositional, diagnoseCliFailure, fenceUntrusted, resolveNpmCli, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
+import { requireEntryPoint } from "../services/entrypoint.js";
+import { isRemotionProject } from "../services/environment.js";
+import { diagnoseCliFailure, fenceUntrusted, resolveNpmCli, resolveRemotionCli, runCommand, tailOutput } from "../services/exec.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -18,7 +19,6 @@ import {
 import { displayPath, resolveExistingDirectory, resolveInWorkspace } from "../services/paths.js";
 import { PROJECT_TEMPLATE } from "../templates/remotionProject.js";
 import type { CompositionSummary } from "../types.js";
-import { ToolInputError } from "../types.js";
 
 const InitProjectShape = {
   project_dir: z
@@ -46,30 +46,8 @@ const ListCompositionsShape = {
 };
 type ListCompositionsInput = z.infer<z.ZodObject<typeof ListCompositionsShape>>;
 
-/** Resolve the entry point for a project, or explain why it could not be found. */
-export function requireEntryPoint(projectDir: string, explicit?: string): string {
-  if (explicit) {
-    const absolute = resolveInWorkspace(path.join(displayPath(projectDir), explicit));
-    if (!fs.existsSync(absolute)) {
-      throw new ToolInputError(
-        `Entry point '${explicit}' does not exist inside the project.`,
-        `Looked at '${displayPath(absolute)}'. Call remotion_check_environment to see which entry points were auto-detected.`,
-      );
-    }
-    assertSafePositional(explicit, "entry point");
-    return explicit;
-  }
-
-  const detected = findEntryPoint(projectDir);
-  if (!detected) {
-    throw new ToolInputError(
-      "No Remotion entry point could be auto-detected.",
-      "Create src/index.ts containing `registerRoot(RemotionRoot)`, or pass entry_point explicitly.",
-    );
-  }
-  assertSafePositional(detected, "entry point");
-  return detected;
-}
+// Lives in a leaf so the service profile can use it without compiling this module's tools.
+export { requireEntryPoint };
 
 /** Leniently parses the `remotion compositions` table, whose layout is not a stable contract. */
 export function parseCompositionsOutput(stdout: string): CompositionSummary[] {

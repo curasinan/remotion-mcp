@@ -270,3 +270,123 @@ test("GUARD: composition_id regex forbids a leading hyphen", () => {
   assert.equal(re.test("--config"), false);
   assert.equal(re.test("-h"), false);
 });
+
+// The still argv: one builder for both profiles, so their CLI calls cannot drift apart.
+import { buildStillArgv } from "../dist/services/render-core.js";
+import { ToolInputError } from "../dist/types.js";
+
+/** Minimal valid options; each test overrides what it probes. */
+const STILL_BASE = { source: "src/index.ts", compositionId: "Main", output: "out/a.png", frame: 0 };
+
+test("buildStillArgv reproduces the argv remotion_render_still has always built", () => {
+  const argv = buildStillArgv({
+    source: "src/index.ts", compositionId: "Main", output: "out/a.png",
+    frame: 3, scale: 1, propsJson: '{"a":1}',
+  });
+  assert.deepEqual(argv, [
+    "still", "src/index.ts", "Main", "out/a.png",
+    "--frame=3", "--scale=1", "--image-format=png", "--overwrite", "--log=info",
+    '--props={"a":1}',
+  ]);
+  assert.equal(argv.some((a) => a.startsWith("--timeout")), false,
+    "the local-dev still gained a --timeout it never passed");
+});
+
+test("buildStillArgv appends the service options after --log and --props, in order", () => {
+  const argv = buildStillArgv({
+    source: "bundle", compositionId: "slow", output: "out.png", frame: 0,
+    propsFile: "props.json", width: 64, height: 64, browserExecutable: "/x/chrome", timeoutMs: 60000,
+  });
+  // The whole argv, so a stray middle token (such as --scale=undefined) or a missing one fails.
+  assert.deepEqual(argv, [
+    "still", "bundle", "slow", "out.png", "--frame=0",
+    "--image-format=png", "--overwrite", "--log=info", "--props=props.json",
+    "--width=64", "--height=64", "--browser-executable=/x/chrome", "--timeout=60000",
+  ]);
+  // The brief's own check: the service options end the argv, in the interface's order.
+  assert.deepEqual(argv.slice(-6), [
+    "--log=info", "--props=props.json", "--width=64", "--height=64",
+    "--browser-executable=/x/chrome", "--timeout=60000",
+  ]);
+});
+
+/**
+ * Asserts that `fn` breaks a builder invariant. No caller argument reaches these checks, only a
+ * bug in the calling code, so the throw must be a plain Error. A ToolInputError is a caller
+ * refusal: safeHandler logs it as tool_rejected and shows its hint to the caller.
+ */
+function assertInvariantBroken(fn, what) {
+  let thrown;
+  try {
+    fn();
+  } catch (error) {
+    thrown = error;
+  }
+  assert.notEqual(thrown, undefined, `${what} reached the argv`);
+  assert.ok(thrown instanceof Error, `${what} threw a non-Error: ${String(thrown)}`);
+  assert.equal(thrown instanceof ToolInputError, false,
+    `${what} threw a ToolInputError, which reports a bug in the calling code as a caller refusal`);
+}
+
+test("GUARD: buildStillArgv refuses a positional the CLI would read as an option", () => {
+  for (const key of ["source", "compositionId", "output"]) {
+    for (const value of ["-h", "--config=evil.js"]) {
+      assert.throws(() => buildStillArgv({ ...STILL_BASE, [key]: value }),
+        (e) => e instanceof ToolInputError && e.category === "argv_injection",
+        `${key}='${value}' reached the argv as a positional the CLI would parse as an option`);
+      // Positive control: the same value without the dash passes, so only the dash is refused.
+      const undashed = value.replace(/^-+/, "");
+      assert.equal(buildStillArgv({ ...STILL_BASE, [key]: undashed }).includes(undashed), true);
+    }
+  }
+});
+
+test("GUARD: buildStillArgv refuses props given both inline and as a file", () => {
+  assertInvariantBroken(
+    () => buildStillArgv({ ...STILL_BASE, propsJson: '{"a":1}', propsFile: "props.json" }),
+    "inline props together with a props file (two --props flags)");
+  // Positive control: each alone is accepted.
+  assert.equal(buildStillArgv({ ...STILL_BASE, propsJson: '{"a":1}' }).at(-1), '--props={"a":1}');
+  assert.equal(buildStillArgv({ ...STILL_BASE, propsFile: "props.json" }).at(-1), "--props=props.json");
+});
+
+test("GUARD: buildStillArgv refuses a --timeout below 7000 ms or not a whole number", () => {
+  for (const timeoutMs of [6999, 7000.5]) {
+    assertInvariantBroken(() => buildStillArgv({ ...STILL_BASE, timeoutMs }), `timeoutMs=${timeoutMs}`);
+  }
+  assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 7000 }).at(-1), "--timeout=7000");
+});
+
+test("GUARD: buildStillArgv refuses a --timeout above 2147480647 ms, Node's timer ceiling less Remotion's 3000 ms", () => {
+  // Remotion 4.0.532 waits timeout + 3000 ms for the page (@remotion/renderer dist/seek-to-frame.js:45), and a Node
+  // timer past 2 ** 31 - 1 ms fires after 1 ms. So 2147480648 is already one too many; 1e21 would print as 1e+21.
+  for (const timeoutMs of [2147480648, 2147483647, 2147483648, 1e21]) {
+    assertInvariantBroken(() => buildStillArgv({ ...STILL_BASE, timeoutMs }), `timeoutMs=${timeoutMs}`);
+  }
+  // Positive control: the ceiling itself is accepted, and with the addend it is exactly Node's ceiling.
+  assert.equal(2147480647 + 3000, 2 ** 31 - 1);
+  assert.equal(buildStillArgv({ ...STILL_BASE, timeoutMs: 2147480647 }).at(-1), "--timeout=2147480647");
+});
+
+test("GUARD: buildStillArgv refuses a --frame that is not a whole number", () => {
+  for (const frame of [1.5, NaN, Infinity]) {
+    assertInvariantBroken(() => buildStillArgv({ ...STILL_BASE, frame }), `frame=${frame}`);
+  }
+  assert.equal(buildStillArgv({ ...STILL_BASE, frame: 0 })[4], "--frame=0");
+  // Local-dev's frame field documents negative frames ("-1 is the last frame") and its zod schema
+  // allows them, so the shared builder must pass them through unchanged.
+  assert.equal(buildStillArgv({ ...STILL_BASE, frame: -1 })[4], "--frame=-1",
+    "the builder refused local-dev's documented negative frame");
+});
+
+test("GUARD: buildStillArgv refuses a --width or --height that is not a positive whole number", () => {
+  // 1e21 is a JS integer, but it would print as --width=1e+21.
+  for (const key of ["width", "height"]) {
+    for (const value of [0, -5, 1.5, NaN, 1e21]) {
+      assertInvariantBroken(() => buildStillArgv({ ...STILL_BASE, [key]: value }), `${key}=${value}`);
+    }
+  }
+  // Positive control: the smallest valid size passes.
+  assert.deepEqual(buildStillArgv({ ...STILL_BASE, width: 1, height: 1 }).slice(-2),
+    ["--width=1", "--height=1"]);
+});

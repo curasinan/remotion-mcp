@@ -6,8 +6,14 @@
 
 ## Context
 
-The TacticLens project needs a render service its backend can call over a
-network. The owner's fixed constraints of 2026-10-17 say who calls it. They are
+The service profile is a render service that backends install and call over a
+network. The group's TacticLens backend is the first of them. This ADR follows
+the owner's rulings of 2026-10-26, which are §1 of the
+[v2 design](../superpowers/specs/2026-10-26-service-profile-v2-design.md). The
+numbered rulings are cited here by number. The unnumbered ones in the same
+section are cited as design §1.
+
+The owner's fixed constraints of 2026-10-17 say who calls the service. They are
 not committed anywhere else, so the clauses this ADR rests on are quoted here:
 
 > 1. Exactly three principals: (a) the owner via Claude Code, local stdio;
@@ -24,9 +30,17 @@ not committed anywhere else, so the clauses this ADR rests on are quoted here:
 > 4. Deployed to a cloud provider (course requirement). spark (DGX Spark,
 >    linux-arm64) is NOT the render host.
 
-Principal (c) needs HTTP, which ADR-1 removed. ADR-1 numbers only its Options,
-so the clause reversed here is cited by that number and by line. ADR-1 adopted
-**Option 1** (`0001-transport-stdio-only.md:24-25`):
+Two things moved on 2026-10-26 (design §1). The service profile is now a
+product that other backends install and run in their own systems, and the
+TacticLens group is one deployer among them. The gateway in constraint 1 is one
+central gateway that the owner controls, and it is outside this repository.
+This repository hosts nothing, so constraint 4's cloud provider is a deployer's
+choice.
+
+Principal (c), and any backend that installs the service, needs HTTP, which
+ADR-1 removed. ADR-1 numbers only its Options, so the clause reversed here is
+cited by that number and by line. ADR-1 adopted **Option 1**
+(`0001-transport-stdio-only.md:24-25`):
 
 > 1. **Keep stdio, remove HTTP.** Surface stays at the process boundary; loses
 >    claude.ai web/mobile.
@@ -54,11 +68,12 @@ reversed too, for the service profile only:
   whether the attack surface stays behind a single trusted client. [...] Over
   HTTP the thing that can reach it is the network, and the only thing in
   between is a bearer token." For the service profile, a bearer token is no
-  longer the only thing in between; see Decision.
+  longer the only thing in between: a signed identity header is. See Decision.
 - **The severity rule** (`:44-45`): "The same defect is not worth the same over
   the two transports." It applies to every finding against the service profile.
 - **The claude.ai consequence** (`:49-50`). It is not reversed: no claude.ai
-  connector returns, and principal (c) is the TacticLens backend.
+  connector returns. The service's callers are backends, reached through the
+  owner's gateway.
 
 ## Decision
 
@@ -74,14 +89,20 @@ and two artifacts:
 | | local-dev | service |
 | --- | --- | --- |
 | entry | `src/index.ts` → `dist/` | `src/service/index.ts` → `dist-service/` |
-| transport | stdio | streamable HTTP, stateless |
+| transport | stdio | streamable HTTP, stateless, on a TCP port |
 | artifact | the `.mcpb` | a container image, never the `.mcpb` |
 | tools | 13 | 4 ([ADR-5](0005-tool-profiles-and-template-packs.md)) |
 
-### The service listens on a unix domain socket, with no TCP listener
+### The service listens on a TCP port, behind the deployer's TLS
 
-A `node:http` server is bound to the socket path. It answers every HTTP method
-other than POST with 405, before it creates anything.
+A `node:http` server is bound to a TCP port. It speaks plain HTTP inside its
+deployment, and the deployer terminates TLS in front of it. The service does not
+take a request's network of origin as a reason to trust it. It trusts a request
+only when the request's identity header verifies (below).
+
+Only `POST /mcp` passes. Any other method gets 405 and any other path gets 404,
+before anything is created. The service serves no health endpoint over HTTP; the
+image's Docker `HEALTHCHECK` will check the process from inside the container.
 
 For each POST it creates a fresh `McpServer`, registers the four tools on it,
 and connects it to a fresh SDK streamable-HTTP transport with
@@ -89,14 +110,22 @@ and connects it to a fresh SDK streamable-HTTP transport with
 - no `Mcp-Session-Id` and no session affinity
 - no standalone server-to-client stream, because GET is refused
 
-The GET refusal is needed because stateless mode alone does not prevent the
-stream. SDK 1.30.0 skips session validation when `sessionIdGenerator` is unset
+The refusals are needed because stateless mode alone prevents none of these
+(spikes of 2026-10-25, design §2):
+- a GET opens a stream that never closes
+- a DELETE returns a silent 200
+- a JSON-RPC batch runs several tool calls under one HTTP request
+
+The service answers the first two with 405, and an array body with 400. SDK
+1.30.0 skips session validation when `sessionIdGenerator` is unset
 (`dist/esm/server/webStandardStreamableHttp.js:725-730`), and it dispatches GET
-to its stream handler (`:186-187`).
+to its stream handler (`:186-187`). The SDK client opens that GET by itself
+after initialize, and it tolerates a 405.
 
 Notifications that belong to a request travel on that request's own response
-in SSE mode, which is the SDK default (`:73`). In JSON response mode they are
-not sent.
+in SSE mode, which is the SDK default (`:73`), and the service uses it. In JSON
+response mode they are not sent. SSE mode also sends a keep-alive every 15 s,
+where JSON mode sends nothing at all until the result.
 
 A fresh server and a fresh transport are both needed per request, because SDK
 1.30.0 refuses both kinds of reuse:
@@ -105,74 +134,104 @@ A fresh server and a fresh transport are both needed per request, because SDK
 - a server that is already connected to a transport
   (`dist/esm/shared/protocol.js:217`)
 
-**This amends plan Task 6 Step 4.** That step constructs one transport
-"listening on the unix socket path" and calls `registerServiceTools` once. A
-transport does not listen, and one long-lived server would fail on the second
-concurrent request.
+**Cancellation.** When the response closes, the service closes the transport.
+That aborts the tool's `AbortSignal`, which stops the render (ADR-7). A
+`notifications/cancelled` message does nothing in stateless mode, and only a
+closed connection cancels. So every hop between a caller and the service must
+pass a disconnect on (ADR-6).
 
-### Who can connect
+### The identity header is the trust boundary
 
-`connect()` needs write permission on the socket file. The service creates the
-socket, so the service's uid owns it. A plain `0600` socket would refuse a
-gateway running as another user, and handing the file to the gateway's uid
-needs privilege the service should not have.
+The service refuses every request whose `X-Render-Identity` header does not
+verify. The header is an HMAC-SHA256 over claims that bind a request to one
+deployment, one tool, one body and a short time window. The service checks it
+against the raw body bytes, before it parses anything and before any
+`McpServer` exists. A refusal is an empty answer with no detail, and no tool
+runs. It is a 401 when the request fails checks 1 to 10 of
+[the gateway contract](../CONTRACT-gateway.md#check-order-and-refusals), the
+header, its signature and claims, and the body's hash
+(`src/service/identity.ts:194`), or checks 13 to 15, the signed `tool` and
+`request_id` against the parsed message, then replay (`identity.ts:205`,
+`:208`). It is a 400 when a body that matches a verified header is not JSON,
+or is a JSON array: checks 11 and 12 (`identity.ts:200`, `:202`).
+`src/service/http.ts:141` answers each with its verdict's status.
+[ADR-6](0006-gateway-for-the-service-profile.md) specifies the header and the
+full list of refusals.
 
-The form that works has two parts:
-- **The socket:** mode `0660`, with a group that only the gateway and the
-  service share.
-- **Its directory:** owned by the service's uid and that group, at mode `2750`.
-  The file mode and the directory both govern `connect()`. A uid outside the
-  group has no search permission on a `2750` directory, so it cannot reach the
-  socket whatever the socket's own mode is. The directory's write bit, which
-  only the service's uid holds, governs who can unlink the socket and bind an
-  impostor in its place.
-
-The service binds inside that directory, so the moment between `bind()` and
-setting the mode exposes nothing to a uid outside the group.
-
-**This amends plan Task 16 Step 2,** which says `0600`. Task 16 must also show
-that a third uid on the host is refused.
+Each deployment has its own key, from the environment only. An operator of one
+deployment cannot forge a request to another. The spike ran an HMAC check in
+the HTTP handler, ahead of any server, against 12 forgery and replay cases. It
+refused all 12, and no tool ran for any of them (design §2).
 
 **What this does not cover.** Every process the service starts runs as the
-service's uid, and so can connect too. That covers its render workers, the
-Remotion CLI, Chrome, and the pack code they run.
+service's uid. That covers the Remotion CLI, Chrome, and the pack code they run.
 
-**They also start with the service's whole environment,** including
-`TL_IDENTITY_HMAC_KEY` (ADR-6). ADR-7's fork sets no `env`, so the worker gets
-`process.env`. `runCommand` then spawns the CLI with
-`{ ...process.env, CI: "1", ...env }` (`src/services/exec.ts:73`). Even a child
-forked with a scrubbed environment could read the service's own environment
-through `/proc`, because it runs as the same uid. So code that runs inside a
-render can do whatever the service can.
+The service will spawn them with an allowlisted environment: `PATH`, `HOME`,
+`LANG`, `NODE_ENV`, `REMOTION_*`, and `TMPDIR` set to the render's own work
+directory. Keys are never passed on. Even so, a child could read the service's
+own environment through `/proc`, because it runs as the same uid. So code that
+runs inside a render can do whatever the service can.
 
-That is acceptable only because the pack is code the operators chose to bake
-(ADR-5). Closing the gap would take two things:
-- render children under a uid of their own
-- a child environment built from an allowlist instead of inherited
+That is acceptable only because the pack is code its operator chose to bake
+(ADR-5, owner ruling 7). Closing the gap would take render children under a uid
+of their own. Nothing in the design does this.
 
-A uid alone would still hand the key to every render. Switching uid needs
-privilege the service should not have, so it would take a separate launcher.
-No plan task does any of this.
+**The header guards the service's port, not every port.** While each render
+runs, the Remotion CLI the service spawns opens an HTTP server of its own, and
+it checks no identity. Remotion 4.0.532 binds it to every interface, `0.0.0.0`,
+or `::` when the container has a non-loopback IPv6 address
+(`@remotion/renderer/dist/port-config.js:23-28`), on the first free port from
+3000 to 3100 (`serve-static.js:57-71`). Remotion offers no option to bind it
+to loopback alone. It serves the pack's `bundle/`. Its `/proxy?src=` endpoint
+(`serve-static.js:24-25`) downloads any
+`http:` or `https:` URL, or writes a `data:` URL to disk, and hands the bytes
+to Remotion's compositor, which decodes them with ffmpeg
+(`offthread-video-server.js:81-101`). Its error replies carry stack traces
+(`:161`). So a request's network of origin still matters for this listener: a
+deployment admits only its TLS proxy, and only to the service's port
+(`docs/DEPLOY.md`, "Ingress: only your proxy, only `SERVICE_PORT`").
 
 ### Where it runs
 
-- **The public endpoint is Caddy, then the gateway, never the service.** The
-  gateway is [ADR-6](0006-gateway-for-the-service-profile.md).
-- **x86-64 glibc at a cloud provider,** on `node:22-bookworm-slim`.
+- **The deployer runs it.** This repository hosts nothing (design §1). The
+  deployer terminates TLS, denies the container egress (ADR-5, owner
+  ruling 6), and admits only its TLS proxy, to the service's port (above).
+- **x86-64 glibc,** on `node:22-bookworm-slim`. The published image is
+  linux/amd64 only (owner ruling 8). arm64 can be added later. Constraint 4
+  keeps spark, which is linux-arm64, from being a render host.
 - **Never Alpine.** Every Linux native target this project ships and tests is
   glibc: `scripts/build-bundle.mjs:63-65` keeps resvg's musl entries disabled.
   v1.2.1 shipped an accidental musl binary.
-- **The demo fallback runs the same x86-64 image on the owner's laptop.** spark
-  is not a render host, as primary or as fallback. That reads fixed constraint 4
-  as covering the fallback too, and **it settles plan Task 15 Step 5 as option
-  (a).**
+- **Distribution.** This repository's CI will publish the image to GitHub
+  Container Registry, pinned by digest, once the owner enables it (owner
+  ruling 3). A deployer builds a small derived image that adds their template
+  pack (ADR-5).
+
+### One gateway, outside this repository, fronts many deployments
+
+The owner owns and controls one central gateway (design §1). It is not in this
+repository. It authenticates callers, applies the owner's tenant grants, and
+signs one identity header per deployment. It reaches each deployment over HTTPS
+through that deployer's TLS proxy. This repository specifies the contract the
+gateway signs to (ADR-6) and will ship a test signer and test vectors for it
+(design §5.3). It does not ship a gateway.
+
+**Considered and not chosen: a unix domain socket.** The earlier framing put
+the gateway in this repository, beside the service, on a socket. The owner ruled
+that framing wrong (design §1): the gateway is central and outside the
+repository, and the service trusts a request by its identity header, whatever
+network the request arrived from (design §5.1).
 
 ### The stdio guarantee is verified, not intended
 
-PR #18 (plan Task 1) added `src/service/**` and `gateway/**` to
-`tsconfig.json`'s `exclude` before any service code existed. Without it,
-`include: ["src/**/*"]` compiles `src/service/` into `dist/`, and
-`scripts/build-bundle.mjs:269` copies `dist/` into the `.mcpb` wholesale.
+PR #18 added `src/service/**` to `tsconfig.json`'s `exclude` before any service
+code existed. It added a second pattern, `gateway/**`, that no longer names
+anything in this repository, because the gateway is outside it.
+`test/profiles.test.mjs` asserts both exclusions.
+
+Without the exclusion, `include: ["src/**/*"]` compiles `src/service/` into
+`dist/`, and `scripts/build-bundle.mjs:269` copies `dist/` into the `.mcpb`
+wholesale.
 
 Both halves were watched locally:
 - **No exclusion.** A planted `src/service/index.ts` constructed
@@ -188,35 +247,52 @@ against the committed tree, which has no service code, and they passed.
 later one. That it keeps passing unmodified is the evidence that this ADR did
 not widen the laptop artifact.
 
-`gateway/**` is defence in depth. `include` is `src/**/*` and `rootDir` is
-`./src`, so tsc compiles no `gateway/` file even without it.
-
 ### OAuth 2.1 is deferred, not absent
 
 ADR-1's Option 2 (`:26-27`) names the bill for exposing this server over HTTP:
 "OAuth 2.1, token audience validation, a passthrough ban, rate limiting and
 per-request audit". Its first Consequences bullet adds origin checks and
-DNS-rebinding defence. For three fixed principals with pre-shared keys, each
-item is paid as follows:
+DNS-rebinding defence. Callers authenticate to the owner's gateway, and the
+service authenticates the gateway. Each item is paid as follows:
 
-| ADR-1 item | How the service profile pays it | Built by, as of 2026-10-17 |
+| ADR-1 item | How the service profile pays it | Specified in |
 | --- | --- | --- |
-| OAuth 2.1 | **Deferred.** A pre-shared 256-bit key per principal, held as a SHA-256 hash from the environment, compared with `crypto.timingSafeEqual`, over TLS | plan Tasks 8, 16; no plan task fixes the key length or how keys are minted |
-| Token audience | One audience: the keys are minted for this gateway alone | by construction |
-| Passthrough ban | The gateway never forwards the caller's key; it mints its own signed identity (ADR-6) | no plan task tests it yet |
-| Rate limiting | Per-key limits at the gateway, and per-principal render slots in the service (ADR-6, [ADR-7](0007-process-isolation-for-rendering.md)) | **no plan task yet** |
-| Per-request audit | The gateway's envelope (ADR-6) | plan Task 9 for calls that reach the service; refused calls have no plan task yet |
-| Origin checks, DNS rebinding | The service has no TCP listener. Every MCP request to the gateway needs a bearer key, which a browser never attaches on its own, so a rebound or cross-site request gets 401. Plan Task 17's health endpoint is the exception, and nothing yet says whether it needs a key | plan Tasks 6, 8; the health endpoint has no plan task for this |
+| OAuth 2.1 | **Deferred.** The service has no caller credentials of its own. It verifies an HMAC identity header from the gateway, with a key per deployment, compared with `crypto.timingSafeEqual` | design §5.3; ADR-6 |
+| Token audience | The `aud` claim names one deployment, and the service refuses any other | design §5.3 |
+| Passthrough ban | The service accepts only a header signed for its own deployment, and it holds no caller credential to pass on | ADR-6 |
+| Rate limiting | Per-key limits at the owner's gateway. In the service, a global count of render slots that refuses at once when none is free | ADR-6; [ADR-7](0007-process-isolation-for-rendering.md) |
+| Per-request audit | The owner's envelope at the gateway, and the service's own hash-only audit log | design §5.8; ADR-6 |
+| Origin checks, DNS rebinding | A browser holds no key. A rebound or cross-site request cannot carry a header that verifies against its own body, so it gets 401. The service also refuses GET | design §5.2 |
 
-The deferral expires when a fourth principal appears, or when any principal
-appears that the owner does not control.
+The design does not build OAuth 2.1 and sets no trigger for revisiting it, so
+this ADR records none.
 
-That a browser never calls the service (fixed constraint 1) is a property of
-the TacticLens architecture, where only Celery workers hold the backend key.
-This repository does not enforce it.
+That a browser never calls the service (fixed constraint 1) is a property of the
+callers' architecture. This repository does not enforce it, and does not rely on
+it: the header check refuses a browser's request whatever its origin.
 
 ## Consequences
 
+- **Build status.** Decided 2026-10-26. As of 2026-11-11,
+  `docs/superpowers/plans/final_script.md` has built on this branch what this
+  ADR names: `src/service/` (the HTTP root `http.ts`, the verifier
+  `identity.ts`, the entry `index.ts`), `tsconfig.service.json`,
+  `Dockerfile.service`, the absence suite (`test/absence.test.mjs`,
+  `scripts/check-service-closure.mjs`), the test signer and vectors
+  (`scripts/sign-identity.mjs`, `scripts/make-identity-vectors.mjs`,
+  `test/vectors/identity-v1.json`) and `docs/DEPLOY.md`. They join the
+  `tsconfig.json` exclusion and `test/profiles.test.mjs` (PR #18), and the leaf
+  `src/services/entrypoint.ts` (PR #20). The images were built and run
+  locally on 2026-11-13, on Docker Desktop's Linux engine 29.1.3 (Task 10
+  Step 4, [`CI.md`](../CI.md#the-image-job-the-images-proved-on-linux)):
+  `image-checks.sh`, every case of `image-e2e.mjs` (with the test signing
+  client in place of the owner's gateway) and both runs of
+  `walk-only-proof.mjs` passed. Still unproven as of 2026-11-13:
+  - CI's `image` job has not yet run on GitHub;
+  - the owner's gateway has not been checked against the vectors, an owner
+    checkpoint (owner ruling 5).
+
+  Context, and the future tense above, describe the tree as of 2026-10-26.
 - **The service build loads hono; the stdio build still does not.** SDK
   1.30.0's Node transport imports `@hono/node-server`
   (`dist/esm/server/streamableHttp.js:9`), which loads `hono`. That is the
@@ -225,25 +301,26 @@ This repository does not enforce it.
   - The load is confined to `dist-service/`.
   - The packages are already on disk in the `.mcpb`, as SDK dependencies.
     Nothing in the stdio graph loads them, and ADR-1 measured that graph.
-  - Plan Task 6 may use `WebStandardStreamableHTTPServerTransport` instead,
-    which imports no hono.
-- **Long requests are unmeasured.** `render_still` holds a POST open for the
-  whole bundle and render. Whether bytes flow meanwhile depends on SSE versus
-  JSON response mode, and on every hop forwarding a stream. No plan task does
-  either of the two things this needs:
-  - a measurement through Caddy and the gateway
-  - a documented synchronous ceiling for `render_still`
-
-  There is no asynchronous tool for stills, so a still that cannot finish
-  under the ceiling fails rather than being deferred to a job. It fails as a
-  timeout, not a refusal, because nothing predicts a still's duration at
-  admission. If the ceiling is the child's deadline, the error is ADR-7's
-  `render_timeout`.
+  - The design connects the Node transport (design §5.2).
+    `WebStandardStreamableHTTPServerTransport` imports no hono, if that cost
+    ever matters.
+- **A long request meets a 60 s client default.** `render_still` holds a POST
+  open for the whole render. The SDK client's default request timeout is 60 s,
+  and after it the client gives up while the server keeps working. So the
+  service will enforce its own deadline of 45 s and answer `render_timeout` at
+  once (ADR-7), which leaves room within 60 s for the hops and the error path.
+  - The spikes measured this against the SDK client (design §2).
+  - The deployer's TLS proxy is one more hop. This repository has no
+    measurement through one. Whether a proxy buffers SSE or cuts a quiet
+    connection is for the deployer to check, and the gateway's side of the same
+    problem is in ADR-6.
+  - There is no asynchronous tool for stills, so a still that cannot finish
+    under the deadline fails rather than being deferred to a job.
 - **Two build variants is a maintenance cost.** ADR-1 declined Option 3 for
-  that reason, and it is accepted here. The absence suite (plan Task 7) is what
-  will keep the two from silently converging, once it checks modules as well as
-  names (ADR-5, closure requirement 4).
-- **Remotion's licence is unverified in this repository.** The owner has read
+  that reason, and it is accepted here. The absence suite (design §5.7) is what
+  will keep the two from silently converging. It will check call sites and
+  modules as well as names (ADR-5).
+- **Remotion's licence is UNVERIFIED in this repository.** The owner has read
   the current text and is asking Remotion for written confirmation. An
   unfavourable answer could stop the service profile from running at all. No
   technical decision in this ADR depends on it.
@@ -259,5 +336,6 @@ This repository does not enforce it.
   made here.
 
 **Reversal cost: medium.** Reverting deletes `src/service/`,
-`tsconfig.service.json` and the image. The leaf modules that plan Tasks 3 and 5
-extract change no behaviour, so they would stay.
+`tsconfig.service.json` and the image, and every deployment that runs it. The
+leaf modules extracted for the service, such as `src/services/entrypoint.ts`,
+change no behaviour, so they would stay.
