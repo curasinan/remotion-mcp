@@ -563,12 +563,12 @@ base. DEPLOY.md tells deployers to run `image-e2e.mjs` and
 Pinning the base, or gating the publish on the `image` job, is an owner
 decision.
 
-**The first publish creates a private package.** GHCR makes every new
-package private, whatever its repository's visibility. The image's
-`org.opencontainers.image.source` label links the package to this
-repository, so it inherits the repository's access permissions, but not its
-visibility. After the first publish, the owner sets the package's visibility
-in its settings ([`DEPLOY.md`](DEPLOY.md#the-images)).
+**The package is public.** This section used to say the first publish would
+create a private package. It did not: the first publish, on 2026-11-26 from
+`b44ac0f`, created a public package. Its manifest and blobs answer anonymous
+pulls, and a package made public cannot be made private again. The image's
+`org.opencontainers.image.source` label links the package to this repository
+([`DEPLOY.md`](DEPLOY.md#the-images)).
 
 ## `pages.yml` — the landing site
 
