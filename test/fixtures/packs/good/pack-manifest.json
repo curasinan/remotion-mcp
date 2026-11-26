@@ -1,0 +1,99 @@
+{
+  "packHash": "3062c5eca76de9110788b4d81a15cebdd775623ee1cbac8e178c10533a874347",
+  "remotionVersion": "4.0.532",
+  "templates": [
+    {
+      "id": "scoreboard",
+      "compositionId": "Scoreboard",
+      "width": 1280,
+      "height": 720,
+      "defaultFps": 30,
+      "maxFrames": 90,
+      "propsSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "color": {
+            "type": "string",
+            "maxLength": 7,
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "players": {
+            "maxItems": 22,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                "number": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 99
+                }
+              },
+              "required": [
+                "name",
+                "number"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ]
+          },
+          "opacity": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "short": {
+            "type": "string",
+            "maxLength": 5
+          }
+        },
+        "required": [
+          "label",
+          "color",
+          "players",
+          "theme",
+          "opacity"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "swatch",
+      "compositionId": "Swatch",
+      "width": 640,
+      "height": 360,
+      "defaultFps": 30,
+      "maxFrames": 1,
+      "propsSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": "string",
+            "maxLength": 7,
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
