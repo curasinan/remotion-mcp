@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>remotion-viz — local video &amp; visualization tools for MCP clients</title>
-<meta name="description" content="A local MCP server that gives any MCP client programmatic video rendering (Remotion) and SVG/HTML rasterization — stdio-only, sandboxed, audited, signed.">
+<meta name="description" content="A local MCP server that gives any MCP client programmatic video rendering (Remotion) and SVG/HTML rasterization — a stdio-only .mcpb, sandboxed, audited, signed.">
 <style>
   :root {
     --bg: #f7f6f3; --fg: #1c1b19; --muted: #6b675f; --card: #ffffff;
@@ -123,8 +123,10 @@
     <p class="sub">A server that spawns processes and writes files should be hard
     to reach and easy to audit. That is most of the engineering here.</p>
     <ul class="env">
-      <li><b>stdio only.</b> The HTTP transport was removed by decision, not omission —
-        the only thing that can reach this server is the client that launched it.</li>
+      <li><b>stdio only, in the .mcpb.</b> It has no HTTP transport, by decision, not omission —
+        the only thing that can reach it is the client that launched it. HTTP belongs only to a
+        separate service profile for backends, which never ships in the .mcpb and accepts only
+        requests a gateway has signed.</li>
       <li><b>Deny-all network for rendered HTML.</b> Every request a page makes is
         aborted before egress and recorded as a <code>network_block</code> audit event.</li>
       <li><b>A pixel budget before allocation.</b> A 120-byte SVG declaring an absurd
@@ -161,22 +163,38 @@
 
   <section>
     <h2>Why it is shaped this way</h2>
-    <p class="sub">Three architecture decision records carry the reasoning; the
-    short version:</p>
+    <p class="sub">Seven architecture decision records carry the reasoning. The
+    first three shaped the .mcpb and still govern it; the other four decide a
+    separate service profile that backends deploy themselves. The short version:</p>
     <div class="adr">
-      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0001-transport-stdio-only.md">ADR-1 — stdio only, no HTTP.</a></b>
+      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0001-transport-stdio-only.md">ADR-1 — stdio only, no HTTP, in the .mcpb.</a></b>
       <span>For a server that runs code, the transport question is whether the attack
-      surface stays behind one trusted client. It does.</span>
+      surface stays behind one trusted client. In the .mcpb it does.
+      <a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0004-http-transport-for-the-service-profile.md">ADR-4</a>
+      adds HTTP for the service profile only.</span>
     </div>
     <div class="adr">
-      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0002-no-gateway.md">ADR-2 — no gateway.</a></b>
+      <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0002-no-gateway.md">ADR-2 — no gateway in the .mcpb.</a></b>
       <span>With no network boundary there is nothing for a gateway to guard; rate
-      limiting and audit live in-process, where the context is.</span>
+      limiting and audit live in-process, where the context is. The service profile
+      has a network boundary, so
+      <a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0006-gateway-for-the-service-profile.md">ADR-6</a>
+      has it trust only requests a gateway has signed.</span>
     </div>
     <div class="adr">
       <b><a href="https://github.com/curasinan/remotion-mcp/blob/main/docs/adr/0003-isolation-boundary.md">ADR-3 — validate first, isolate what’s left.</a></b>
       <span>The only native code in-process is the rasterizer; its one known crash
       path was closed by input validation, and the residual risk is stated, not hidden.</span>
+    </div>
+    <div class="adr">
+      <b><a href="https://github.com/curasinan/remotion-mcp/tree/main/docs/adr">ADR-4 to ADR-7 — a separate service profile.</a></b>
+      <span>A second build of the same source, made into a container image and never
+      put in the .mcpb, that backends deploy themselves and call over HTTP (ADR-4).
+      It registers four tools of its own, four dangerous local tools are absent from
+      its build rather than refused, and it renders only templates its operator bakes
+      into the image (ADR-5). It trusts a request only when a gateway has signed it (ADR-6), and
+      when a render stops, every process it started is killed (ADR-7). This project
+      hosts none of it.</span>
     </div>
   </section>
 

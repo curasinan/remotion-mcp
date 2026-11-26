@@ -2,6 +2,8 @@
 
 Every interaction with the remotion-viz MCP server is logged to a local audit trail. This document describes what is recorded, where it lives, how to view it, and the design decisions that shape it.
 
+**About the name.** "Gateway" in this file's name, its title and `npm run gateway` is a legacy name for the **audit dashboard**, kept for now. Since [ADR-6](adr/0006-gateway-for-the-service-profile.md), "gateway" means the network policy point in front of service-profile deployments, which this document does not describe.
+
 ## What is recorded
 
 The audit log records multiple events per tool call: a `tool_call` event on entry, followed by one of `tool_result`, `tool_rejected`, or `tool_failed`, plus a `network_block` event for any HTTP request blocked by network policy. Together these capture:
@@ -75,11 +77,13 @@ Every event in the audit log includes a `decision` field set to `"observe"`. Thi
 
 **Why it exists:** The audit schema was designed to support real-time blocking — a future version could record `decision: "allow"` or `decision: "block"` alongside `decision: "observe"`. Because the schema anticipates this, neither the log format nor the dashboard need to change if enforcement is added later.
 
-**Why enforcement is not built yet:** See [`docs/adr/0002-no-gateway.md`](adr/0002-no-gateway.md). In brief:
+**Why the local-dev profile does not enforce:** See [`docs/adr/0002-no-gateway.md`](adr/0002-no-gateway.md), which still governs that profile. In brief:
 
-- Today, this server runs as a trusted, single-user subprocess over stdio.
-- Enforcement (allow/block policies per tool) makes sense only if a future design introduces multi-user access or a network boundary — neither of which exist now.
+- The local-dev profile (`dist/` and the `.mcpb`) runs as a trusted, single-user subprocess over stdio.
+- Enforcement (allow/block policies per tool) makes sense only where there is multi-user access or a network boundary. The local-dev profile has neither.
 - Audit logging is more valuable in a local context where it lives on your machine and you decide what to do with it.
+
+The service profile has both: backends reach it over HTTP, for tenants the owner grants. So [ADR-6](adr/0006-gateway-for-the-service-profile.md) puts it behind the owner's gateway, which holds the keys, the tenant grants, the per-key limits and the per-call audit envelope, and the service accepts only requests that gateway has signed. That gateway is not part of this repository, and it is unrelated to the audit dashboard this document describes.
 
 **The seam for redaction:** The `detail` field in each event is designed to support redaction. A future cloud deployment could redact sensitive information before sending the log elsewhere, but the local audit log always contains full detail.
 

@@ -1,6 +1,6 @@
 # Tool reference
 
-Twelve tools in three groups. Every tool takes `response_format` (`markdown` |
+Thirteen tools in three groups. Every tool takes `response_format` (`markdown` |
 `json`, default `markdown`). Annotations shown are the MCP hints a client reads;
 they are UX signals, not access control — the enforcement is in the server.
 
@@ -8,7 +8,7 @@ they are UX signals, not access control — the enforcement is in the server.
 types, defaults, ranges and per-field explanations live in the tool's `inputSchema`,
 which every MCP client sends to the model alongside the description. The descriptions
 used to restate all of it in an `Args:` block — 4,256 characters of duplication across
-the twelve tools, re-sent on every conversation. That block is gone. This file
+the twelve tools there were then, re-sent on every conversation. That block is gone. This file
 deliberately does not reproduce it either: a third copy is a third thing to keep in
 step with `src/schemas/common.ts`, and the schema is the one that cannot go stale.
 `smoke-test.mjs` asserts no description reintroduces an `Args:` block, and that
