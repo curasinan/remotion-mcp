@@ -28,18 +28,17 @@ linux/amd64 only, never Alpine. It holds the compiled service, `tini` as PID
 It has no package manager (no npm, npx, Yarn or corepack), no pack, no browser
 and no key. It runs as `node` (uid 1000).
 
-CI publishes it to `ghcr.io/curasinan/remotion-viz-service` once the owner
-enables publishing (`.github/workflows/service-image-publish.yml`). Each
-publish writes the image's digest to its job summary. Pin that digest, never a
-tag.
+CI publishes it to `ghcr.io/curasinan/remotion-viz-service` on every push to
+`main` while the repository variable `PUBLISH_SERVICE_IMAGE` is `true`, which
+it has been since 2026-11-26 (`.github/workflows/service-image-publish.yml`).
+Each publish writes the image's digest to its job summary. Pin that digest,
+never a tag.
 
-**The first publish creates a private package.** GHCR makes a new package
-private, and a package does not take its repository's visibility. The image's
-`org.opencontainers.image.source` label links the package to this
-repository. After the first publish, the owner sets the package's visibility
-in its Package settings on GitHub. A package made public cannot be made
-private again. Until it is public, the `FROM` of your derived build needs
-`docker login ghcr.io` with a token that can read the package.
+**The package is public.** The first publish, on 2026-11-26 from `b44ac0f`,
+created a public package, so a derived build's `FROM` pulls it without
+`docker login`. A package made public cannot be made private again. The
+image's `org.opencontainers.image.source` label links the package to this
+repository.
 
 **No check has run against a published digest.** The publish job rebuilds
 the image on each push to `main`, from the floating `node:22-bookworm-slim`
@@ -49,7 +48,7 @@ one. Before you roll out, run this repository's proofs on the digest you pin,
 and `scripts/image-checks.sh` against your own derived image
 ([below](#running-the-proofs-on-the-digest-you-pin)).
 
-Until publishing is on, build it from this repository:
+To build it yourself instead, from this repository:
 
 ```sh
 docker build --platform linux/amd64 -f Dockerfile.service -t remotion-viz-service:local .
