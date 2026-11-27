@@ -19,6 +19,7 @@ TLS proxy, and only to the service port
 | Test signer | `scripts/sign-identity.mjs` |
 | Test vectors | `test/vectors/identity-v1.json`, written by `scripts/make-identity-vectors.mjs` |
 | Tests | `test/identity.test.mjs` runs every vector against the verifier |
+| Gateway checker | `scripts/check-gateway.mjs`, which checks a running gateway ([below](#checking-a-running-gateway)) |
 
 ## The header
 
@@ -200,6 +201,9 @@ These transport obligations are required (design §5.3):
 - Use upstream timeouts of at least 60 s.
 - Close the upstream connection when its caller disconnects.
 
+`scripts/check-gateway.mjs` checks each of these against a running gateway
+([below](#checking-a-running-gateway)).
+
 ## The test signer
 
 ```sh
@@ -287,4 +291,100 @@ fixed at 1 800 000 000 (2027-01-15T08:00:00Z), so the vectors never age.
    `npm run build:service`. A port of the verifier must reproduce every
    step's `expected`.
 4. **Transport.** The vectors cannot check the obligations above. Check
-   those against a test deployment.
+   those against a running gateway with `scripts/check-gateway.mjs`
+   ([below](#checking-a-running-gateway)).
+
+## Checking a running gateway
+
+`scripts/check-gateway.mjs` checks a running gateway from the deployment's
+side. It stands in for a deployment: it runs the service's own request handler
+from `dist-service/` on `--listen`, with the route, the body cap, the
+verifier, the replay set, the SDK transport and the four tools. Behind the
+handler is a fake renderer and the test pack `test/fixtures/packs/good`, whose
+templates are `scoreboard` and `swatch`. The checker sends MCP requests to the
+gateway the way a backend does. Then it reports, check by check, what reached
+the stand-in. For each refused request it says what the gateway did wrong,
+for example "the claims part ends in = padding" or "body_sha256 is the hash
+of the caller's body, before the gateway injected _meta".
+
+1. **Make a test key.** Generate a fresh one. Never use the published vector
+   key, which the checker refuses, and never use a key a deployment uses:
+
+   ```sh
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+   ```
+
+2. **Add a test route to the gateway.** It signs for audience
+   `gateway-check`, or the `--audience` you pass, with that key. It forwards to
+   `http://<listen>/mcp`. The default listen address is `127.0.0.1:8787`. When
+   the gateway runs on another machine, listen on an address the gateway can
+   reach, such as `--listen 0.0.0.0:8787`.
+3. **Run the checker** from a checkout, after `npm ci` and
+   `npm run build:service`. Pass the URL a backend would call:
+
+   ```sh
+   IDENTITY_HMAC_KEY=<test key> node scripts/check-gateway.mjs --gateway https://<gateway>/<route>
+   ```
+
+   If the gateway authenticates its callers, put the caller's credential
+   headers in `GATEWAY_CHECK_HEADERS` as a JSON object, such as
+   `{"authorization": "Bearer ..."}`, each value at least 8 characters. The
+   checker never prints the key or those values: any place a credential would
+   appear in its output reads `<credential>`. It checks that none of them
+   reaches the deployment.
+
+Each request must get its whole answer within 30 s, and the slow render's
+within 30 s of the render's end. Ctrl-C during a run closes the stand-in and
+removes its temporary files. A `--gateway` URL with a user name or password in
+it is refused, since the URL is printed: send credentials in
+`GATEWAY_CHECK_HEADERS`.
+
+The checks, in order:
+
+| Check | What passes |
+| --- | --- |
+| `initialize` | it reaches the deployment and verifies, and its result reaches the caller |
+| `initialized-notification` | the notification verifies too: `_meta` injected into a message with no id. A notification the gateway forwards after answering its caller counts, if it arrives before the deployment goes quiet for 1 s. Inconclusive when the gateway answers the notification itself and never forwards it |
+| `second-session` | a second session that opens with the same bytes, `initialize` with id 0 and the same notification, verifies too. A `request_id` derived from the caller's id or body would repeat, and be refused as a replay |
+| `tools-list` | it verifies, and a tools list reaches the caller. Any of the four service tools the caller does not get is named |
+| `tools-call` | `tools/call list_templates` verifies, with `tool` = `params.name` |
+| `arguments` | `render_still` arguments with Turkish text, an emoji, quotes, a backslash and markup reach the deployment unchanged, and the image reaches the caller |
+| `caller-identity` | a caller's own `X-Render-Identity` is replaced, never forwarded, and a caller's own `_meta` request id gives way to one the gateway mints. A gateway that refuses such a call itself, with a 4xx or a JSON-RPC error, passes |
+| `slow-answer` | a render that takes 58 s reaches the caller: no upstream timeout under 58 s. The contract asks for at least 60 s, so a 60 s timeout passes. The service's own slowest answer is about 45 s: at its deadline it answers `render_timeout` at once and finishes the kill in the background. An idle timeout longer than 15 s passes too |
+| `sse-streaming` | during that render, the stand-in's marker reaches the caller before the render ends. The marker is an SSE comment with a nonce, written every 15 s beside the service's own keep-alive. Bytes the gateway writes itself, its own `: keepalive` included, do not count |
+| `disconnect` | a caller that disconnects mid-render closes the deployment's request within 10 s, and the render stops. Act on the caller's close itself: the deployment may write nothing for 15 s, so a gateway that notices only on its next write fails. Inconclusive when the probe's render never started |
+| `stray-requests` | no POST reached the deployment that no call accounts for and the deployment refused, such as a retry or a copy of a request with the same header. Anything else, such as a health check by any method or path, is listed, never failed |
+| `headers` | every forwarded request has, as the service's SDK reads them, `accept` with both types, one `content-type: application/json`, and no `mcp-protocol-version` or one the SDK supports |
+| `caller-credentials` | no `GATEWAY_CHECK_HEADERS` value reaches the deployment: not in a header under any name, not in the URL, not in the body, and not signed into the identity claims, whole or as the token after its scheme, as is, percent-encoded or JSON-escaped. This one is not in the obligations list: it follows from [one key per deployment](#deployments). A deployment's operator holding a backend's gateway credential could call the gateway as that backend. Skipped when `GATEWAY_CHECK_HEADERS` is unset |
+
+`--skip-slow` skips the 58 s render, and with it `slow-answer` and
+`sse-streaming`. `--json` prints the results as JSON. The exit status is:
+
+- 0 when every check passed or was skipped;
+- 1 when a check failed;
+- 2 for a usage or setup error;
+- 3 when no check failed but one was inconclusive.
+
+`sse-streaming` fails when the marker arrived only once the render had ended,
+or when the answer arrived as one JSON body instead of an event stream. It is
+inconclusive when the answer arrived as SSE but no marker did: the gateway
+buffers the answer, or drops SSE comments. It is also inconclusive when the
+render ended before the first marker, as when a short upstream timeout cut it
+off.
+
+**`--serve`** only listens, and prints one line for each request that
+reaches it until Ctrl-C. Each line says whether the request verified and, if
+not, why. Use it to send a real backend through the gateway before a group's
+deployment exists. Its `render_still` knows only the test pack's templates. A
+`GET /mcp` answered 405 is the SDK client's own stream, and is reported as
+expected. It keeps no request after printing its line.
+
+**What it does not check.** It does not check the gateway's other routes or
+other audiences. It checks one 58 s answer, not each of the gateway's timeout
+settings. It never makes an upstream request fail, so it does not see whether
+the gateway retries one with the same header, which the
+[replay set](#the-replay-set) refuses. A copy the gateway sends on its own is
+seen only if it arrives before the deployment has gone quiet for 1 s at the
+end of the run. It checks the clock only as far as each
+request's `iat` against this machine's clock. The stand-in is a test tool:
+never route a backend's real traffic to it.
