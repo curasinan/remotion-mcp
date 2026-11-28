@@ -15,7 +15,8 @@ import {
   UsageError,
 } from "../scripts/check-gateway.mjs";
 import { startReferenceGateway } from "./helpers/reference-gateway.mjs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 if (!fs.existsSync(path.join(import.meta.dirname, "..", "dist-service", "service", "http.js"))) {
@@ -497,3 +498,45 @@ test("the CLI refuses a --gateway that is not http(s), or that carries a passwor
       assert.ok(!`${outcome.stdout}${outcome.stderr}`.includes("pa55word"));
     }
   });
+
+test("a whole run leaves no timer or socket behind, so its process exits on its own", TIMED, async () => {
+  const checker = pathToFileURL(path.join(import.meta.dirname, "..", "scripts", "check-gateway.mjs")).href;
+  const helper = pathToFileURL(path.join(import.meta.dirname, "helpers", "reference-gateway.mjs")).href;
+  const source = [
+    "import { randomBytes } from \"node:crypto\";",
+    `const { runCheck } = await import(${JSON.stringify(checker)});`,
+    `const { startReferenceGateway } = await import(${JSON.stringify(helper)});`,
+    "const key = randomBytes(32);",
+    "const gateway = await startReferenceGateway({ key, audience: \"exit\", faults: JSON.parse(process.argv[1]) });",
+    "const results = await runCheck({ gatewayUrl: gateway.url, key, audience: \"exit\", skipSlow: false, slowMs: 1500,",
+    "  markerMs: 100, quietMs: 200, onListening: (url) => gateway.setUpstream(url) });",
+    "await gateway.close();",
+    "console.log(results.map((result) => result.status).join(\" \"));",
+  ].join("\n");
+  // The disconnect probe runs too: a buffering gateway's own heartbeat once outlived the caller who disconnected.
+  await Promise.all([{}, { ownHeartbeat: true }].map(async (faults) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, JSON.stringify(faults)]);
+    let stdout = "";
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+    const printed = new Promise((resolve) => child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (stdout.includes("\n")) resolve();
+    }));
+    await Promise.race([printed, exited]);
+    // The run is over: a process with nothing left to do exits well within 10 s.
+    let timer;
+    const code = await Promise.race([exited,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve("running"), 10_000);
+      })]);
+    clearTimeout(timer);
+    if (code === "running") child.kill();
+    assert.equal(code, 0, `${JSON.stringify(faults)}: ${code === "running" ? "still running 10 s after the run"
+      : `exit ${code}`}; ${stderr}`);
+    assert.match(stdout, /^(\w+ ){12}\w+\r?\n$/, `${JSON.stringify(faults)}: ${stdout}`);
+  }));
+});

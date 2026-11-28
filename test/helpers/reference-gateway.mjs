@@ -189,6 +189,8 @@ export async function startReferenceGateway({ key, audience, principal = "backen
           res.writeHead(upRes.statusCode, out);
           res.flushHeaders();
           heartbeat = setInterval(() => res.write(`: ${faults.heartbeatText ?? "gateway heartbeat"}\n\n`), 100);
+          // A caller that disconnects destroys the upstream request, so its answer never ends: stop here too.
+          res.on("close", () => clearInterval(heartbeat));
         }
         if (faults.jsonAnswer) {
           res.writeHead(upRes.statusCode, { ...out, "content-type": "application/json" });
